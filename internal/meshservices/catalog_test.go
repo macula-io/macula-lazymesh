@@ -43,6 +43,7 @@ func TestCurated_ExcludesKnownMutatingOrGatedProcedures(t *testing.T) {
 		"hecate-rag.prune_chunks",
 		"hecate-rag.schedule_reembed",
 		"hecate-rag.retire_document",
+		"hecate-rag.classify_topics", // curated from the name, not the handler -- actually writes rag_store:tag_chunk (Fable's review, 2026-09-06)
 		"hecate_graph.learn_link",
 	}
 	procedures := map[string]bool{}

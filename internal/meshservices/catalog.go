@@ -15,7 +15,16 @@ import "strings"
 // serving and read-only. Deliberately excluded, domain by domain:
 //   - hecate-rag's ingest_document/add_knowledge/upload_knowledge/
 //     prune_chunks/schedule_reembed/retire_document (all mutate the
-//     shared corpus)
+//     shared corpus). classify_topics also belongs on this list --
+//     CORRECTED 2026-09-06 (Fable's Phase 3 review): curated from the
+//     tool NAME, not its handler. Real behavior
+//     (apps/embed_corpus/maybe_classify_topics.erl, right next to
+//     prune_chunks/retire_document): loads a document, chunks it, calls a
+//     paid LLM classifier per chunk, then WRITES topic tags back into the
+//     shared corpus (rag_store:tag_chunk) -- changing everyone's
+//     topic-filtered search results, not a read. The lesson, not just the
+//     fix: curating this list means reading the handler source, never
+//     inferring safety from a name that merely sounds like a query.
 //   - hecate_graph's learn_link (ownership-proof-gated, mutates)
 //   - hecate_mail, hecate_citizens entirely (state-mutating and/or
 //     ownership-gated; not live-verified read-safe at survey time)
@@ -52,7 +61,6 @@ var Curated = []CuratedProcedure{
 	{Domain: "hecate-rag", Method: "list_sources_page", Description: "Page through the corpus's source documents. Args (inferred): page/page_size or a cursor, optional -- try with no args first."},
 	{Domain: "hecate-rag", Method: "list_chunks_by_source", Description: "List the chunks belonging to one source document. Args (inferred): source_id (string, required)."},
 	{Domain: "hecate-rag", Method: "get_document_verbatim", Description: "Fetch a source document's original, unchunked text. Args (inferred): source_id (string, required)."},
-	{Domain: "hecate-rag", Method: "classify_topics", Description: "Classify text into corpus topic labels. Args (inferred): text (string, required)."},
 	{Domain: "hecate-rag", Method: "rerank_results", Description: "Rerank a candidate result set against a query. Args (inferred): query_text (string) and a list of candidates -- shape not verified."},
 	{Domain: "hecate_agora", Method: "search_posts", Description: "Search forum/agora posts. Args (inferred): query (string, required)."},
 	{Domain: "hecate_agora", Method: "search_archive", Description: "Search the archived (older/retention-managed) subset of posts. Args (inferred): same shape as search_posts."},

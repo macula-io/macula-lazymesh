@@ -14,6 +14,8 @@ package meshservices
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -22,6 +24,36 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 )
+
+// pinnedRealmName/pinnedRealm are the ONLY realm this catalog's procedures
+// are ever trusted from. Fixed by an adversarial review, 2026-09-06 (the
+// most severe of three required findings): the prior version of this file
+// trusted whatever realm mesh_find_records_by_type's response claimed for
+// a matching procedure name, with the last record in the dump silently
+// winning if more than one existed. mesh_find_records_by_type documents
+// this itself: "Coverage depends on that station's own view of the DHT,"
+// and DHT records are not signature- or membership-verified. Concretely:
+// anyone, no realm membership required, can publish a
+// procedure_advertisement for e.g. hecate-rag.search_chunks_semantic
+// under the public all-zero realm and serve it themselves; whenever a
+// 60s discovery refresh happened to sort that record after the real one,
+// every lazymesh instance on the mesh would send real corpus queries to
+// the attacker's implementation and trust the reply -- worse still,
+// because runAgent's own system prompt tells the model to *prefer*
+// mesh_service_* results over its own judgment.
+//
+// macula-mcp's own device_membership.ts hits this exact failure mode and
+// deliberately computes the realm id client-side rather than trusting an
+// advertisement's own claim; this does the same thing, the same way --
+// sha256 of the realm name, not a hardcoded hex literal copy-pasted from
+// memory (verified once, live, against `sha256sum` independently of this
+// code, so a transcription error can't silently break every lookup).
+const pinnedRealmName = "io.macula"
+
+var pinnedRealm = func() string {
+	sum := sha256.Sum256([]byte(pinnedRealmName))
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
+}()
 
 // discoveryCacheTTL bounds how often Source re-queries
 // mesh_find_records_by_type. DHT procedure_advertisement records expire
@@ -33,6 +65,23 @@ import (
 // while still refreshing well inside that expiry window.
 const discoveryCacheTTL = 60 * time.Second
 
+// callTimeoutMS is passed explicitly to every mesh_call rather than left
+// to its own default (a required finding, 2026-09-06: an implicit
+// default is easy to lose track of, and this package's own retry-once
+// policy makes an explicit, deliberately-chosen value matter more than it
+// would for a one-shot call).
+const callTimeoutMS = 20000
+
+// maxCallsPerMinute bounds how many real mesh_call RPCs this Source will
+// make in any rolling minute (a required finding, 2026-09-06: nothing
+// previously bounded call volume at all -- one steered peer message,
+// with Loop's own maxRounds=25 and a provider that can return several
+// tool_calls per round, could drive dozens of real RPCs against shared
+// embedder/LLM infrastructure under the operator's own identity,
+// indefinitely). Generous enough for legitimate multi-step tool use in
+// one conversation turn, not generous enough to be a real load source.
+const maxCallsPerMinute = 20
+
 // mcpCaller is the subset of *mcpclient.Client Source needs: calling
 // macula-mcp's own mesh_find_records_by_type and mesh_call tools. Source
 // never talks to the mesh protocol directly -- it's a client of
@@ -41,18 +90,16 @@ type mcpCaller interface {
 	CallTool(ctx context.Context, name string, args map[string]any) (string, error)
 }
 
-type discoveredProcedure struct {
-	Realm     string
-	Procedure string
-}
-
 // Source implements agent.ToolSource, exposing Curated's procedures as
-// tools whenever they're currently discoverable on the mesh.
+// tools whenever they're currently discoverable, under pinnedRealm
+// specifically, on the mesh.
 type Source struct {
-	mcp mcpCaller
+	mcp   mcpCaller
+	limit *fixedWindowLimiter
+	nowFn func() time.Time
 
 	mu            sync.Mutex
-	index         map[string]discoveredProcedure
+	index         map[string]string // tool name -> procedure ("domain.method"); realm is always pinnedRealm
 	cachedTools   []mcpclient.Tool
 	lastDiscovery time.Time
 }
@@ -60,7 +107,11 @@ type Source struct {
 // New wraps mcp (typically a *mcpclient.Client already spawned for
 // macula-mcp's own tools) as a mesh-service tool source.
 func New(mcp mcpCaller) *Source {
-	return &Source{mcp: mcp}
+	return &Source{
+		mcp:   mcp,
+		limit: newFixedWindowLimiter(maxCallsPerMinute, time.Minute),
+		nowFn: time.Now,
+	}
 }
 
 func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
@@ -89,23 +140,27 @@ func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 		return nil, fmt.Errorf("decode mesh_find_records_by_type: %w", err)
 	}
 
-	// Some records' decoded procedure field carries a leading "_/" path
-	// segment before the domain.method name (an artifact of how the
-	// advertisement's URI is split, not something mesh_call's own
-	// procedure parameter accepts) -- strip it so lookups match
-	// Curated's plain "domain.method" form.
-	realmByProcedure := make(map[string]string, len(parsed.Records))
+	// Only records under pinnedRealm are ever considered at all -- a
+	// record under any other realm is invisible to this package, not
+	// merely deprioritized. Some records' decoded procedure field carries
+	// a leading "_/" path segment before the domain.method name (an
+	// artifact of how the advertisement's URI is split, not something
+	// mesh_call's own procedure parameter accepts); stripped so lookups
+	// match Curated's plain "domain.method" form.
+	discovered := make(map[string]bool, len(parsed.Records))
 	for _, r := range parsed.Records {
+		if !strings.EqualFold(r.ProcedureAdvertisement.Realm, pinnedRealm) {
+			continue
+		}
 		proc := strings.TrimPrefix(r.ProcedureAdvertisement.Procedure, "_/")
-		realmByProcedure[proc] = r.ProcedureAdvertisement.Realm
+		discovered[proc] = true
 	}
 
 	var tools []mcpclient.Tool
-	index := make(map[string]discoveredProcedure)
+	index := make(map[string]string)
 	for _, cp := range Curated {
-		realm, ok := realmByProcedure[cp.Procedure()]
-		if !ok {
-			continue // not currently advertised -- real dynamic discovery, not a fixed catalog
+		if !discovered[cp.Procedure()] {
+			continue // not currently advertised under the pinned realm -- real dynamic discovery, not a fixed catalog
 		}
 		name := cp.ToolName()
 		tools = append(tools, mcpclient.Tool{
@@ -113,7 +168,7 @@ func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 			Description: cp.Description,
 			InputSchema: map[string]any{"type": "object"},
 		})
-		index[name] = discoveredProcedure{Realm: realm, Procedure: cp.Procedure()}
+		index[name] = cp.Procedure()
 	}
 
 	s.mu.Lock()
@@ -126,10 +181,14 @@ func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 
 func (s *Source) CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error) {
 	s.mu.Lock()
-	dp, ok := s.index[name]
+	procedure, ok := s.index[name]
 	s.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("mesh service tool %q is not currently available (not discovered on the last refresh)", name)
+	}
+
+	if !s.limit.allow(s.nowFn()) {
+		return "", fmt.Errorf("mesh service tool %q refused: more than %d real mesh calls in the last minute, waiting for the budget to reset", name, maxCallsPerMinute)
 	}
 
 	args := map[string]any{}
@@ -140,23 +199,88 @@ func (s *Source) CallToolRaw(ctx context.Context, name string, argumentsJSON str
 	}
 
 	callArgs := map[string]any{
-		"procedure": dp.Procedure,
-		"realm":     dp.Realm,
-		"args":      args,
+		"procedure":  procedure,
+		"realm":      pinnedRealm,
+		"args":       args,
+		"timeout_ms": callTimeoutMS,
 	}
 
-	// One retry, no backoff: a teammate's survey (2026-09-06) hit a
-	// transient QUIC-level error mid-investigation that succeeded on
-	// immediate retry with identical arguments -- known mesh flakiness,
-	// not a signal the service is actually down. A single blind call
-	// without retry often won't succeed; treating one failure as
-	// "unavailable" would be wrong here specifically.
 	result, err := s.mcp.CallTool(ctx, "mesh_call", callArgs)
-	if err != nil {
+	if err != nil && isTransportError(err) {
+		// Retry ONLY transport-class failures (a required finding,
+		// 2026-09-06: the prior version retried every error class
+		// indiscriminately, including application-level argument
+		// errors that would just fail identically again, and deadline
+		// expiries -- retrying one of those risks a second expensive
+		// job running server-side for a call whose first attempt
+		// hadn't actually given up). A teammate's survey hit a real
+		// transient QUIC-level error that resolved on immediate retry
+		// with identical arguments -- that class of failure, and only
+		// that class, is worth one retry here.
 		result, err = s.mcp.CallTool(ctx, "mesh_call", callArgs)
-		if err != nil {
-			return "", fmt.Errorf("mesh_call %s (retried once): %w", dp.Procedure, err)
-		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("mesh_call %s: %w", procedure, err)
 	}
 	return decodeHexASCII(result), nil
+}
+
+// transportErrorSubstrings are the failure modes mesh_call's own tool
+// description enumerates as connectivity/routing problems (as opposed to
+// the remote procedure itself returning an application-level error) --
+// an allowlist, not a blocklist, so an error shape this package doesn't
+// recognize is conservatively NOT retried rather than assumed safe to.
+var transportErrorSubstrings = []string{
+	"temporary_relay_failure",
+	"unknown_next_peer",
+	"unreachable",
+	"no direct-dial advertisement",
+	"read stream",
+	"connection:",
+	"deadline exceeded",
+	"context deadline exceeded",
+	"i/o timeout",
+}
+
+func isTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range transportErrorSubstrings {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// fixedWindowLimiter is a minimal per-window call budget: max calls
+// allowed, reset to max once window has elapsed since the last reset.
+// Deliberately simple over a true leaky-bucket -- the goal here is
+// bounding blast radius from a steered agent, not smoothing traffic.
+type fixedWindowLimiter struct {
+	mu        sync.Mutex
+	max       int
+	window    time.Duration
+	remaining int
+	resetAt   time.Time
+}
+
+func newFixedWindowLimiter(max int, window time.Duration) *fixedWindowLimiter {
+	return &fixedWindowLimiter{max: max, window: window, remaining: max}
+}
+
+func (l *fixedWindowLimiter) allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.resetAt.IsZero() || !now.Before(l.resetAt) {
+		l.remaining = l.max
+		l.resetAt = now.Add(l.window)
+	}
+	if l.remaining <= 0 {
+		return false
+	}
+	l.remaining--
+	return true
 }

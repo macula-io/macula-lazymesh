@@ -243,6 +243,101 @@ it, but worth an `EvalSymlinks` check or an explicit doc note if
 file-tools are ever split from `shell_exec` later. Not fixed in this pass
 — tracked here rather than silently dropped.
 
+## Security review findings, round 2: Phase 3 (2026-09-06)
+
+A fresh adversarial review (Fable, dispatched by a teammate against
+`68541da`'s `meshservices/catalog/hexdecode.go` specifically — new
+capability surface gets its own review, not just a closure check on
+prior findings) found 3 required findings, more serious than round 1's:
+#2 has mesh-wide blast radius, not just this instance. All three fixed:
+
+1. **`classify_topics` was mislabeled read-only.** Curated from the tool
+   NAME, not its handler. Real behavior
+   (`apps/embed_corpus/maybe_classify_topics.erl`, right next to
+   `prune_chunks`/`retire_document`, which the catalog already correctly
+   excluded): loads a document, chunks it, calls a paid LLM classifier
+   per chunk, then WRITES topic tags back into the shared corpus
+   (`rag_store:tag_chunk`) — changing everyone's topic-filtered search
+   results, not a read at all. **Fix:** removed from `Curated`. The
+   lesson matters as much as the fix: curating this list means reading
+   the handler source, never inferring safety from a name that merely
+   sounds like a query.
+2. **(most severe, mesh-wide) Realm was never pinned during service
+   discovery.** `meshservices.go` mapped procedure name → realm from
+   whatever `mesh_find_records_by_type` returned, with the last matching
+   record in the dump silently winning — not stable across the 60s
+   cache, and DHT records are neither signature- nor
+   membership-verified. Concrete attack: anyone, no realm membership
+   required, publishes a `procedure_advertisement` for e.g.
+   `hecate-rag.search_chunks_semantic` under the public all-zero realm
+   and serves it themselves; whenever a refresh happened to sort that
+   record after the real one, every lazymesh instance on the mesh would
+   send real corpus queries to the attacker's implementation and trust
+   the reply as "the shared corpus" — worse because `runAgent`'s own
+   system prompt tells the model to *prefer* `mesh_service_*` results
+   over its own judgment. **Fix:** `pinnedRealm` (`sha256("io.macula")`,
+   computed at package init — not a hardcoded hex literal that could be
+   transcribed wrong — and verified independently against `sha256sum`
+   before writing the code that depends on it) is now the ONLY realm
+   ever trusted; a record under any other realm is invisible to this
+   package entirely, not merely deprioritized. Matches what macula-mcp's
+   own `device_membership.ts` already does for the identical reason. New
+   regression tests plant a spoofed record under the all-zero realm
+   alongside a real one under the pinned realm, in the order that broke
+   the old logic, and confirm only the pinned-realm one is ever used.
+3. **Retry-once fired on every error class; nothing bounded call
+   volume.** Transport errors, deadline expiry, and application-level
+   errors (`missing_entity_id`) were all retried identically with the
+   same arguments — a deadline-expiry retry risks two expensive jobs
+   running server-side for one tool call, and an argument error will
+   just fail identically again. No explicit `timeout_ms` (silently used
+   `mesh_call`'s own 30s default). No rate limiter anywhere: one steered
+   peer message could drive dozens of real RPCs against shared
+   embedder/LLM infrastructure under the operator's own identity,
+   indefinitely (`Loop`'s own `maxRounds=25`, and a provider can return
+   several tool_calls per round). **Fix:** `isTransportError` classifies
+   by an explicit allowlist of connectivity/routing failure substrings
+   mesh_call's own tool description enumerates (an unrecognized error
+   shape is conservatively NOT retried, never assumed safe to); only
+   that class gets the one retry. `callTimeoutMS` (20s) is now passed
+   explicitly on every call. `fixedWindowLimiter` caps real `mesh_call`
+   RPCs to `maxCallsPerMinute` (20) in any rolling minute, refusing
+   (returned as a normal tool error, same as any other) once exhausted.
+
+Non-blocking observations from the same review, tracked here rather than
+silently dropped, not fixed in this pass:
+
+- Discovery failure now halts room participation entirely after ~4min of
+  backoff — a real functional regression Phase 1 never depended on the
+  DHT for at all. Worth its own look if it recurs in practice.
+- The hex-decode heuristic (`hexdecode.go`) has real false positives
+  verified live, not just hypothetical — e.g. `"2024"` round-trips
+  through hex decode to something else printable. A narrower heuristic
+  (field-name allowlist, or requiring the decoded text to look like a
+  status word) would close this at some cost to generality.
+- `get_document_verbatim` is actually broken as shipped: wrong expected
+  field name, and doesn't handle the real 0x-hex CBOR encoding the
+  procedure returns — one of the "curated safe" tools doesn't
+  functionally work. Left in `Curated` for now (a functional bug, not a
+  security exposure) but flagged so it isn't mistaken for working.
+- `mesh_remember`/`add_knowledge` (a macula-mcp tool, not this package's
+  own) is an ungated, persistent injection channel into the same shared
+  corpus `hecate-rag`'s other procedures read from — plant once, fires
+  on any future matching query, no room presence needed at call time.
+  Out of scope for this package to fix (macula-mcp's own tool), noted
+  for whoever owns that surface.
+- `hecate_graph`'s `depth` parameter is unbounded (an owned-library bug,
+  not introduced here, but this package exposes it by default) —
+  `depth: 1e9` is a CPU/memory DoS on shared Cozo. `narrate_*` also
+  passes a caller-supplied model string to `hecate-llm` verbatim, so a
+  steered agent can pick the priciest available model. Both need a fix
+  in the owning service, not a client-side workaround here.
+- `resolveAllowlist` silently drops ALL `mesh_service_*` defaults the
+  moment an operator sets ANY `tool_allowlist` override at all (they'd
+  need to re-list every curated tool name themselves to keep them). A
+  footgun, not a security hole, worth a doc note or an explicit "add to
+  defaults" merge mode later.
+
 ## TUI / chat interface redesign (2026-09-06, implemented)
 
 Raf's own steer, from a live design conversation after Phase 3 landed.
