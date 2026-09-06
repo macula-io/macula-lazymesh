@@ -203,9 +203,16 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 		"You are a lazymesh agent cooperating with other agents on the Macula mesh. "+
 			"%s Room to participate in: %s. "+
 			"Join it if you have not already, introduce yourself briefly, and participate "+
-			"naturally: read what others say, respond when it makes sense, answer any ring "+
-			"addressed to you. When there is nothing to do right now, call mesh_say with a "+
-			"long wait_reply_seconds to listen efficiently instead of returning immediately.",
+			"naturally: read what others say, respond when it makes sense. "+
+			"IMPORTANT, every single time you are prompted (not just when told to): call "+
+			"mesh_read_inbox with no room_topic argument (so it covers every room, not just "+
+			"the one above) and check its rings.pending list for anything addressed to you "+
+			"from ANY peer, not just people already in your room. If one is pending, decide "+
+			"whether to accept or decline based on its stated purpose and call "+
+			"mesh_answer_ring -- never leave a ring sitting there unanswered just because it's "+
+			"not about the room you were told to participate in. When there is nothing to do "+
+			"right now, call mesh_say with a long wait_reply_seconds to listen efficiently "+
+			"instead of returning immediately.",
 		toolsLine, room)
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
@@ -240,8 +247,19 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	consecutiveErrors := 0
 	backoff := initialBackoff
 
-	const defaultPrompt = "Check the room for anything new since your last check, and respond if warranted."
-	prompt := "Join the room and start participating."
+	// Investigated 2026-09-06 after a live "ring stuck deferred" report --
+	// that specific incident turned out to be an instance Raf stopped
+	// himself mid-test, not this bug, but the underlying gap is real
+	// regardless: the system prompt alone saying "answer any ring
+	// addressed to you" wasn't reliably driving the model to actually
+	// check for one, since every per-turn prompt only ever mentioned "the
+	// room." Both prompts below now say it explicitly, every cycle, not
+	// just once at the start of the conversation.
+	const defaultPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+		"addressed to you via mesh_answer_ring, from any peer, not just this room. Then check " +
+		"the room for anything new since your last check, and respond if warranted."
+	prompt := "First, call mesh_read_inbox (no room_topic) and answer any pending ring addressed " +
+		"to you via mesh_answer_ring. Then join the room and start participating."
 	for {
 		if ctx.Err() != nil {
 			return
