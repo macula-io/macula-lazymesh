@@ -64,12 +64,18 @@ func youChatEntry(text string) chatEntry {
 	return chatEntry{kind: chatYou, at: time.Now(), text: text}
 }
 
+// Colors match the macula brand palette (macula-artwork's own documented
+// hex values -- the same blue/orange pair every macula-*-full-*.svg logo
+// uses), not lipgloss's generic 256-color example palette. You/Assistant
+// deliberately mirror the logo's own wordmark(blue)/sub-label(orange)
+// pairing instead of an arbitrary pink (ANSI 212, a Charm-tutorial
+// default with no connection to this project's brand).
 var (
-	chatYouStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	chatAssistantStyl = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+	chatYouStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8")).Bold(true)
+	chatAssistantStyl = lipgloss.NewStyle().Foreground(lipgloss.Color("#FB923C"))
 	chatToolStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	chatErrorStyleTUI = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	chatSystemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true)
+	chatSystemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
 	chatTimeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 

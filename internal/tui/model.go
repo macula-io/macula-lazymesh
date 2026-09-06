@@ -273,12 +273,18 @@ func (m *Model) syncViewport() {
 	m.chatViewport.GotoBottom()
 }
 
+// Colors match the macula brand palette (see chat.go's own comment) --
+// structural chrome (panel borders, titles, the status strip) uses the
+// same brand blue as every macula-*-full-*.svg logo, not lipgloss's
+// generic 256-color example palette (panelStyle/titleStyle/
+// statusStripStyle were ANSI 62/212/212 -- an arbitrary purple and an
+// arbitrary pink, no connection to this project's brand).
 var (
-	panelStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62")).Padding(0, 1)
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	panelStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#38BDF8")).Padding(0, 1)
+	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38BDF8"))
 	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	statusStripStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	statusStripStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38BDF8"))
 )
 
 func (m Model) View() string {
