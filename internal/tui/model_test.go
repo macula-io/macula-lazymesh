@@ -390,6 +390,31 @@ func TestHandleEditorFinished_ErrorSurfacesAsChatEntry(t *testing.T) {
 	}
 }
 
+// Regression guard, found live 2026-09-06: a tool result containing
+// pretty-printed JSON (raw newlines) landed in the chatter line and
+// secretly rendered as more than one terminal row, so
+// resizeComponents' `len(m.statusLines()) + 2` reserved-height math
+// (one slice element assumed to be one row) undercounted -- the chat
+// viewport visibly jumped on every update. statusLines()'s own line
+// count must always match what actually prints as one row each.
+func TestStatusLines_ChatterLineNeverContainsEmbeddedNewlines(t *testing.T) {
+	m := newTestModel(t)
+	m.agentEvents = make(chan agent.Event)
+
+	prettyJSON := "{\n  \"rooms\": [\n    \"agents.room.deadbeef\"\n  ]\n}"
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventToolResult, ToolName: "mesh_rooms", Text: prettyJSON}))
+	m = updated.(Model)
+
+	for i, line := range m.statusLines() {
+		if strings.Contains(line, "\n") {
+			t.Fatalf("statusLines()[%d] contains an embedded newline, breaking the one-element-one-row assumption: %q", i, line)
+		}
+	}
+	if got, want := len(strings.Split(m.renderStatusStrip(), "\n")), len(m.statusLines()); got != want {
+		t.Fatalf("renderStatusStrip rendered as %d rows, but resizeComponents counted %d via statusLines()", got, want)
+	}
+}
+
 func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 	m := newTestModel(t)
 	m.agentEvents = make(chan agent.Event) // never fires again, fine for this assertion

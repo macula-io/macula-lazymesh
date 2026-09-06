@@ -84,3 +84,26 @@ func TestTruncateForChat(t *testing.T) {
 		t.Fatalf("unexpected truncation result: %q", got)
 	}
 }
+
+// Regression guard, found live 2026-09-06: pretty-printed JSON (a
+// mesh_read_inbox/mesh_rooms tool result) still containing a raw newline
+// after truncation silently rendered as more than one terminal row,
+// breaking statusLines()'s "one slice element = one row" assumption --
+// the status block's chatter line (issue #2) visibly wrapped and made the
+// chat viewport jump every update.
+func TestTruncateForChat_StripsEmbeddedNewlines(t *testing.T) {
+	got := truncateForChat("{\n  \"a\": 1,\n  \"b\": 2\n}", 100)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("expected no embedded newline in a chat-collapsed string, got %q", got)
+	}
+}
+
+func TestCollapseNewlines_HandlesAllLineEndings(t *testing.T) {
+	got := collapseNewlines("a\nb\r\nc\rd")
+	if strings.Contains(got, "\n") || strings.Contains(got, "\r") {
+		t.Fatalf("expected all line endings collapsed to spaces, got %q", got)
+	}
+	if got != "a b c d" {
+		t.Fatalf("expected %q, got %q", "a b c d", got)
+	}
+}

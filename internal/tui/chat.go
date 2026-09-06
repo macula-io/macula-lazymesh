@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -111,7 +112,23 @@ func (e chatEntry) render(detailsExpanded bool) string {
 	}
 }
 
+// collapseNewlines flattens embedded newlines to spaces before a string
+// is truncated for single-line display. Tool call/result text is often
+// pretty-printed JSON (mesh_read_inbox, mesh_rooms, ...), and a truncated
+// snippet that still contains a raw newline silently renders as more than
+// one terminal row. That broke statusLines()'s "one slice element = one
+// row" invariant (resizeComponents counts len(statusLines()) as the
+// reserved row count, see model.go): the chatter line (issue #2) would
+// secretly wrap to 2-3 rows depending on how many newlines happened to
+// land inside that particular truncated window, so the viewport height
+// calc was wrong by a different amount on every update -- the chat pane
+// visibly jumped. Found live 2026-09-06.
+func collapseNewlines(s string) string {
+	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
+}
+
 func truncateForChat(s string, n int) string {
+	s = collapseNewlines(s)
 	if len(s) <= n {
 		return s
 	}
