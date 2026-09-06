@@ -29,6 +29,18 @@ func TestNextBackoff_DoublesUntilCap(t *testing.T) {
 	}
 }
 
+func TestProviderLabel_MatchesBuildProviderDefault(t *testing.T) {
+	// buildProvider's own switch treats "" the same as "deepseek" -- the
+	// status strip must show that resolved default, never a blank
+	// provider name just because config.yaml left it unset.
+	if got := providerLabel(config.Config{Provider: ""}); got != "deepseek" {
+		t.Fatalf("expected empty Provider to resolve to %q, got %q", "deepseek", got)
+	}
+	if got := providerLabel(config.Config{Provider: "anthropic"}); got != "anthropic" {
+		t.Fatalf("expected an explicit Provider to pass through unchanged, got %q", got)
+	}
+}
+
 func TestResolveAllowlist_DefaultsWhenUnset(t *testing.T) {
 	got := resolveAllowlist(config.Config{})
 	wantLen := len(agent.DefaultToolAllowlist) + len(meshservices.AllowedToolNames())

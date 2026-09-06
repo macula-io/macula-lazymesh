@@ -773,6 +773,52 @@ the remaining "ring vanished" mystery rather than leaving it a maybe),
 not a shrug. Not digging into `rings.ts` myself -- still ab's
 investigation to own. Cleaned up the same way as before.
 
+## Two real live findings from actual usage: composing interrupted, no model visibility (2026-09-06)
+
+**Bug: an incoming ring silently interrupted active text composition.**
+`processPendingRings` (called from `handleRefresh`, firing every 2s) set
+`m.mode = ModeRingPopup` unconditionally whenever an unseen, untrusted
+ring arrived -- including while the operator was mid-composition in
+`ModeInsert`. The pop-up's own render path never touches or preserves
+`m.input`, so the in-progress message just vanished from view. Given how
+much ring traffic was flying around tonight, this was very likely live
+and reproducible, not a hypothetical edge case -- and it was: Raf hit it.
+
+Fix: `processPendingRings` no longer switches out of `ModeInsert` at all
+(`if m.mode != ModeInsert && m.pendingRingPopup == nil`). A ring that
+arrives mid-composition simply isn't marked `seenRingIDs` and stays in
+`m.state.pending` -- still reflected live in the status strip's own
+"pending rings" count the whole time -- so the exact same function picks
+it up on a later refresh tick once the operator leaves `ModeInsert` on
+their own (Esc or Enter-submit both return to `ModeNormal`). Two new
+tests, RED-confirmed against the bug then GREEN against the fix: one
+proving composition survives an incoming ring untouched, one proving the
+deferred ring still surfaces once back in `ModeNormal`.
+
+**Live-checked, honestly incomplete:** rang a fresh instance while it was
+mid-composition in a real tmux session -- input survived untouched across
+7+ seconds of live polling, and Esc correctly returned to normal mode with
+no stray pop-up. Could not observe the ring actually queuing-then-
+surfacing end to end live, because the still-open "ring never reaches the
+callee's pending query" mystery (two sections up) blocked it from ever
+showing as pending in the first place -- same known gap, not a new one,
+and not this fix's problem to solve. The unit tests are the authoritative
+verification for the actual code path; the live check only additionally
+confirms no regression in real interactive use.
+
+**Feature: no visibility into which provider/model is actually running.**
+Raf noticed using it live: nothing in the TUI showed which LLM was
+actually configured, only pending/room/agent counts. Added
+`Options.AgentModel` (e.g. `"deepseek/deepseek-v4-flash"`), shown in the
+status strip, but only ever set when a `--room` agent is actually running
+(`cmd/lazymesh/main.go` only populates it inside the `if room != ""`
+block) -- an idle mesh-watching instance has no "running" model to report,
+so it stays blank rather than showing a misleadingly-labeled idle default.
+New `providerLabel(cfg)` resolves `cfg.Provider`'s own empty-means-
+"deepseek" default (matching `buildProvider`'s existing switch exactly)
+so the label is never blank just because an operator left `provider`
+unset in `config.yaml`.
+
 ## Success criteria
 
 - [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to

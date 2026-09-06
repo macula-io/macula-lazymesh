@@ -64,6 +64,13 @@ type Options struct {
 	// accepted immediately; everyone else still gets it.
 	ContactPolicyFile string
 	AutoAcceptKnown   bool
+
+	// AgentModel is shown in the status strip (e.g. "deepseek/deepseek-v4-flash")
+	// so an operator watching live can see which provider/model is actually
+	// driving the agent, rather than having to go read config.yaml. Leave
+	// empty when no --room agent is running -- there's nothing "actually
+	// running" to report in that case, just a configured-but-idle default.
+	AgentModel string
 }
 
 // Model is the bubbletea model for lazymesh's TUI.
@@ -85,6 +92,7 @@ type Model struct {
 	detailsExpanded   bool // global expand/collapse for tool-call detail in chat
 	muted             bool
 	statusBarPosition string // "top" or "bottom"
+	agentModel        string // see Options.AgentModel
 
 	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
 
@@ -120,6 +128,7 @@ func New(client toolCaller, opts Options) Model {
 		seenRingIDs:       make(map[string]bool),
 		mode:              ModeNormal,
 		statusBarPosition: statusBarPosition,
+		agentModel:        opts.AgentModel,
 		input:             ti,
 		chatViewport:      viewport.New(80, 20),
 		// Bell defaults ON: Fable's finding #3 is specifically that a
@@ -289,6 +298,16 @@ func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
 // dismissed) is never revisited. Mutates m directly since this is only
 // ever called from within handleRefresh, which already holds its own
 // value-receiver copy.
+//
+// Never force-switches OUT of ModeInsert: found live 2026-09-06 -- an
+// incoming ring while the operator was mid-composition silently yanked
+// them into ModeRingPopup, and the in-progress input just vanished from
+// view (the pop-up's own render path doesn't touch or preserve m.input at
+// all). A not-yet-shown ring simply stays in m.state.pending/not yet in
+// seenRingIDs -- still visible in the status strip's own "pending rings"
+// count the whole time -- and this same function picks it up on a later
+// refresh tick once the operator leaves ModeInsert on their own. Trusted
+// auto-accepts are unaffected either way: they were never interactive.
 func (m *Model) processPendingRings() []tea.Cmd {
 	var cmds []tea.Cmd
 	for _, ring := range m.state.pending {
@@ -305,7 +324,7 @@ func (m *Model) processPendingRings() []tea.Cmd {
 			cmds = append(cmds, answerRingCmd(m.mcp, ring.RingID, answerAccept, false, ""))
 			continue
 		}
-		if m.pendingRingPopup == nil {
+		if m.mode != ModeInsert && m.pendingRingPopup == nil {
 			r := ring
 			m.pendingRingPopup = &r
 			m.mode = ModeRingPopup
@@ -396,6 +415,9 @@ func (m Model) View() string {
 func (m Model) renderStatusStrip() string {
 	line := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
 		len(m.state.joined), len(m.state.pending), len(m.state.agents))
+	if m.agentModel != "" {
+		line += " · " + m.agentModel
+	}
 	if m.muted {
 		line += "  [muted]"
 	}

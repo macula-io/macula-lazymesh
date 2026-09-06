@@ -103,6 +103,10 @@ func run(configPath, room, goalText string) error {
 	tuiEvents := make(chan agent.Event, 64)
 	userInputCh := make(chan string, 8)
 
+	// Empty only when no --room agent runs -- see tui.Options.AgentModel's
+	// own doc comment for why it's not shown at all in that case.
+	var agentModelLabel string
+
 	if room != "" {
 		p, err := buildProvider(cfg)
 		if err != nil {
@@ -131,6 +135,7 @@ func run(configPath, room, goalText string) error {
 		fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
 		localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
 		go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog, tuiEvents, userInputCh)
+		agentModelLabel = providerLabel(cfg) + "/" + cfg.Model
 	}
 
 	tuiModel := tui.New(client, tui.Options{
@@ -139,6 +144,7 @@ func run(configPath, room, goalText string) error {
 		StatusBarPosition: cfg.StatusBarPosition,
 		ContactPolicyFile: cfg.ContactPolicyFile,
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
+		AgentModel:        agentModelLabel,
 	})
 	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	_, err = program.Run()
@@ -163,6 +169,17 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown provider %q", cfg.Provider)
 	}
+}
+
+// providerLabel resolves cfg.Provider the same way buildProvider's own
+// switch does ("" means deepseek), so the status strip's provider/model
+// label matches what actually built -- never shows a blank provider name
+// just because the operator left config.yaml's provider field unset.
+func providerLabel(cfg config.Config) string {
+	if cfg.Provider == "" {
+		return "deepseek"
+	}
+	return cfg.Provider
 }
 
 // buildToolSource combines macula-mcp, Phase 3's mesh-service tools

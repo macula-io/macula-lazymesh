@@ -221,6 +221,59 @@ func TestProcessPendingRings_ShowsPopupForUntrustedPeer(t *testing.T) {
 	}
 }
 
+// Regression guard for a real bug found live 2026-09-06: an incoming ring
+// while the operator was mid-composition silently switched them to
+// ModeRingPopup, and their in-progress input just vanished (the pop-up's
+// own render path never touches or preserves m.input). A ring must never
+// force a mode switch out of ModeInsert.
+func TestProcessPendingRings_DoesNotInterruptInsertMode(t *testing.T) {
+	fake := &fakeToolCaller{}
+	m := newPopupTestModel(t, fake)
+	m.mode = ModeInsert
+	m.input.SetValue("half-typed message")
+	m.state.pending = []pendingRing{{RingID: "r1", Peer: "stranger", Purpose: "hi"}}
+
+	cmds := m.processPendingRings()
+
+	if m.mode != ModeInsert {
+		t.Fatalf("expected mode to stay ModeInsert, got %v", m.mode)
+	}
+	if m.pendingRingPopup != nil {
+		t.Fatalf("expected no pop-up while composing, got %+v", m.pendingRingPopup)
+	}
+	if m.input.Value() != "half-typed message" {
+		t.Fatalf("expected the in-progress input to survive untouched, got %q", m.input.Value())
+	}
+	if m.seenRingIDs["r1"] {
+		t.Fatalf("expected the ring to remain unseen -- a later tick must still pick it up")
+	}
+	if len(cmds) != 0 {
+		t.Fatalf("expected no commands while deferring a ring during composition, got %d", len(cmds))
+	}
+}
+
+// The other half of the same guard: once the operator leaves ModeInsert,
+// a ring that was deferred while they were composing must still surface
+// -- it was never marked seen, so the next refresh tick's own call to
+// processPendingRings picks it up exactly as if it had just arrived.
+func TestProcessPendingRings_ShowsDeferredRingOnceBackToNormal(t *testing.T) {
+	fake := &fakeToolCaller{}
+	m := newPopupTestModel(t, fake)
+	m.mode = ModeInsert
+	m.state.pending = []pendingRing{{RingID: "r1", Peer: "stranger", Purpose: "hi"}}
+	m.processPendingRings() // deferred while composing, per the test above
+
+	m.mode = ModeNormal
+	m.processPendingRings()
+
+	if m.pendingRingPopup == nil || m.pendingRingPopup.RingID != "r1" {
+		t.Fatalf("expected the previously-deferred ring to surface now, got %+v", m.pendingRingPopup)
+	}
+	if m.mode != ModeRingPopup {
+		t.Fatalf("expected mode to switch to ModeRingPopup now that composing is done, got %v", m.mode)
+	}
+}
+
 func TestProcessPendingRings_NeverRevisitsASeenRing(t *testing.T) {
 	fake := &fakeToolCaller{}
 	m := newPopupTestModel(t, fake)

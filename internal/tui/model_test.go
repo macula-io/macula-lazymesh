@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -196,6 +197,25 @@ func TestNormalMode_ToggleMute(t *testing.T) {
 	m = updated.(Model)
 	if !m.muted {
 		t.Fatalf("expected 'b' to mute")
+	}
+}
+
+func TestRenderStatusStrip_OmitsAgentModelWhenNoAgentRunning(t *testing.T) {
+	m := newTestModel(t)
+	got := m.renderStatusStrip()
+	if strings.Contains(got, "deepseek") {
+		t.Fatalf("expected no model label with no --room agent running, got %q", got)
+	}
+}
+
+func TestRenderStatusStrip_ShowsAgentModelWhenSet(t *testing.T) {
+	userInputCh := make(chan string, 8)
+	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "bottom", AgentModel: "deepseek/deepseek-v4-flash"})
+	m.width, m.height = 80, 24
+	m.resizeComponents()
+	got := m.renderStatusStrip()
+	if !strings.Contains(got, "deepseek/deepseek-v4-flash") {
+		t.Fatalf("expected the configured provider/model in the status strip, got %q", got)
 	}
 }
 
