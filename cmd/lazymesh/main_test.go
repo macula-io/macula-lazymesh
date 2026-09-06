@@ -10,6 +10,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 )
 
 func TestNextBackoff_DoublesUntilCap(t *testing.T) {
@@ -262,5 +263,107 @@ func TestSayGoodbye_ToleratesFailureWithoutPropagatingIt(t *testing.T) {
 	sayGoodbye(f, time.Second) // must not panic and has nothing to return
 	if f.calledName != "mesh_goodbye" {
 		t.Fatalf("expected mesh_goodbye to still have been attempted, got %q", f.calledName)
+	}
+}
+
+// Covers macula-io/macula-lazymesh#14/#15: the system prompt must stop
+// instructing the model to reach for mesh_say's long wait_reply_seconds
+// itself, and explain what happens instead. Unconditional now (no more
+// spike-vs-baseline split) -- this is the only behavior.
+func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false)
+	if strings.Contains(got, "call mesh_say with a long") {
+		t.Fatalf("expected the model-driven long-wait instruction to be gone, got: %s", got)
+	}
+	if !strings.Contains(got, "do not need to wait for messages yourself") {
+		t.Fatalf("expected the system prompt to explain the harness now handles waiting, got: %s", got)
+	}
+}
+
+func TestParseJoinedRooms_ExtractsTopics(t *testing.T) {
+	got := parseJoinedRooms(`{"joined":[{"room_topic":"agents.room.a"},{"room_topic":"agents.room.b"}],"seen_on_central":[]}`)
+	want := []string{"agents.room.a", "agents.room.b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestParseJoinedRooms_MalformedResultReturnsNil(t *testing.T) {
+	if got := parseJoinedRooms("not json"); got != nil {
+		t.Fatalf("expected nil for a malformed result, got %v", got)
+	}
+}
+
+func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
+	ch := make(chan string, 1)
+	ch <- "from the human"
+	got, ok := nextEvent(context.Background(), ch, nil, time.Hour)
+	if !ok || got != "from the human" {
+		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
+	}
+}
+
+func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
+	mgr := roomwaiter.New(nil, "")
+	ch := make(chan string, 1)
+	ch <- "human message"
+
+	got, ok := nextEvent(context.Background(), ch, mgr, time.Hour)
+	if !ok || got != "human message" {
+		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
+	}
+}
+
+func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
+	mgr := roomwaiter.New(nil, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ch := make(chan string)
+
+	_, ok := nextEvent(ctx, ch, mgr, time.Hour)
+	if ok {
+		t.Fatalf("expected nextEvent to report !ok once ctx is done")
+	}
+}
+
+// Covers the ring-checking gap found while building #15: rings have no
+// blocking-wait primitive analogous to mesh_wait_room, so nextEvent must
+// wake up on its own periodically even with nothing else pending, or a
+// ring arriving during a quiet stretch would never be noticed.
+// fakeRoomWaiterCaller lets a test drive a real roomwaiter.Manager (via
+// Sync) without a real macula-mcp spawn -- roomwaiter.Caller is exported
+// exactly so cross-package callers like nextEvent's own tests can do this.
+type fakeRoomWaiterCaller struct{}
+
+func (fakeRoomWaiterCaller) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	return `{"reply":{"from":"peer"},"timed_out":0}`, nil
+}
+
+func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
+	mgr := roomwaiter.New(fakeRoomWaiterCaller{}, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Sync(ctx, []string{"agents.room.deadbeef"})
+
+	ch := make(chan string)
+	got, ok := nextEvent(ctx, ch, mgr, time.Hour)
+	if !ok {
+		t.Fatalf("expected ok, got false")
+	}
+	if !strings.Contains(got, "agents.room.deadbeef") {
+		t.Fatalf("expected the room arrival's prompt to name the room, got %q", got)
+	}
+}
+
+func TestNextEvent_WakesOnTickIntervalWhenNothingElsePending(t *testing.T) {
+	mgr := roomwaiter.New(nil, "")
+	ch := make(chan string)
+
+	got, ok := nextEvent(context.Background(), ch, mgr, 10*time.Millisecond)
+	if !ok {
+		t.Fatalf("expected ok, got false")
+	}
+	if got != agentDefaultPrompt {
+		t.Fatalf("expected the tick to reuse agentDefaultPrompt (which already asks the model to check rings and rooms), got %q", got)
 	}
 }

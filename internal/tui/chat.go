@@ -56,6 +56,18 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 		return chatEntry{kind: chatSystem, at: now, text: "agent hit an error, backing off before retrying"}
 	case agent.EventMaxFailuresReached:
 		return chatEntry{kind: chatSystem, at: now, text: "agent stopped after repeated failures -- see agent.log"}
+	case agent.EventListening:
+		// macula-io/macula-lazymesh#13/#15: the loop-owned room-waiter
+		// design parks silently between real events, with none of the
+		// old design's periodic mesh_say tool-call traffic to show
+		// something is alive. This is the replacement liveness signal --
+		// routed to the status strip as chatter (see isChatter in
+		// model.go), not the main chat pane, since it fires every cycle
+		// and would otherwise drown out real conversation. The captured
+		// clock time is what makes it a genuine liveness cue rather than
+		// static text: a frozen process would show the same timestamp
+		// forever, a working one keeps advancing it.
+		return chatEntry{kind: chatSystem, at: now, text: fmt.Sprintf("listening (%s)", now.Format("15:04:05"))}
 	default:
 		return chatEntry{kind: chatSystem, at: now, text: "(unrecognized event)"}
 	}

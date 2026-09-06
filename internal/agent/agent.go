@@ -44,6 +44,15 @@ const (
 	// signal instead of remaining indistinguishable from normal activity.
 	EventBackoff
 	EventMaxFailuresReached
+	// EventListening is emitted by cmd/lazymesh's runAgent once per cycle,
+	// right before it waits for the next human message or room arrival
+	// (macula-io/macula-lazymesh#13/#15). Loop-owned room-waiting means the
+	// agent loop now parks silently in a Go select between events, with no
+	// tool-call traffic of its own to show the TUI something is alive --
+	// this is the replacement signal, a real acceptance criterion for #15,
+	// not cosmetic polish: without it, a correctly-idle agent and a frozen
+	// one look identical again, the exact regression #13 warned about.
+	EventListening
 )
 
 // Event is one step the loop took, emitted as it happens so a caller (the
@@ -64,6 +73,24 @@ type Loop struct {
 	Tools    ToolSource
 
 	messages []provider.Message
+	usage    provider.Usage
+}
+
+// Usage returns the cumulative token usage this Loop has consumed across
+// every ChatCompletion call so far, for backends that report it (zero
+// otherwise -- see provider.Usage's own doc comment).
+func (l *Loop) Usage() provider.Usage {
+	return l.usage
+}
+
+// MessageCount returns how many messages are currently in this Loop's own
+// conversation history (including the leading system message, if any) --
+// exists so a caller can measure trimHistory's real rotation rate under
+// sustained load (macula-io/macula-lazymesh#14/#15's carried-over
+// follow-up) instead of only estimating it from maxHistoryMessages and an
+// assumed messages-per-cycle count.
+func (l *Loop) MessageCount() int {
+	return len(l.messages)
 }
 
 // NewLoop starts a loop with the given system prompt as its first message.
@@ -122,6 +149,9 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 			return err
 		}
 		l.messages = append(l.messages, resp.Message)
+		l.usage.PromptTokens += resp.Usage.PromptTokens
+		l.usage.CompletionTokens += resp.Usage.CompletionTokens
+		l.usage.TotalTokens += resp.Usage.TotalTokens
 
 		if resp.Message.Content != "" {
 			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})

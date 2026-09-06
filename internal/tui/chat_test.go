@@ -65,6 +65,23 @@ func TestChatEntryFromAgentEvent_BackoffAndMaxFailures(t *testing.T) {
 	}
 }
 
+// Covers macula-io/macula-lazymesh#13/#15: EventListening is the
+// liveness signal replacing the old design's incidental mesh_say
+// tool-call traffic. Must render as chatter (routed to the status
+// strip, see isChatter in model.go) and must be routine, not alarming.
+func TestChatEntryFromAgentEvent_Listening(t *testing.T) {
+	entry := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventListening})
+	if entry.kind != chatSystem {
+		t.Fatalf("expected chatSystem, got %v", entry.kind)
+	}
+	if !strings.Contains(entry.render(false), "listening") {
+		t.Fatalf("expected the rendered text to say it's listening, got %q", entry.render(false))
+	}
+	if !isChatter(agent.EventListening) {
+		t.Fatalf("expected EventListening to be routed as chatter (status strip, not the main chat pane)")
+	}
+}
+
 func TestYouChatEntry(t *testing.T) {
 	entry := youChatEntry("hi agent")
 	if entry.kind != chatYou || entry.text != "hi agent" {

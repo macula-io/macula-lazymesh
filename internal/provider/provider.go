@@ -50,9 +50,21 @@ type ChatRequest struct {
 	Tools    []ToolSpec
 }
 
+// Usage is a provider's own token accounting for one ChatCompletion call,
+// when it reports one -- not every provider does, so all fields are zero
+// rather than an error when unavailable. Added for macula-io/macula-
+// lazymesh#14/#15 (the room-waiter concurrency work): measuring token
+// cost needed real numbers, not an estimate.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
 // ChatResponse is the assistant's reply to a ChatRequest.
 type ChatResponse struct {
 	Message Message
+	Usage   Usage
 }
 
 // Provider is an LLM chat-completions backend. DeepSeek is the default

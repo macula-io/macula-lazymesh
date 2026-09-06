@@ -91,8 +91,15 @@ type dsChoice struct {
 	Message dsMessage `json:"message"`
 }
 
+type dsUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type dsChatResponse struct {
 	Choices []dsChoice `json:"choices"`
+	Usage   dsUsage    `json:"usage"`
 	Error   *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -198,5 +205,12 @@ func (d *DeepSeek) ChatCompletion(ctx context.Context, req ChatRequest) (ChatRes
 			Arguments: tc.Function.Arguments,
 		})
 	}
-	return ChatResponse{Message: out}, nil
+	return ChatResponse{
+		Message: out,
+		Usage: Usage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+			TotalTokens:      parsed.Usage.TotalTokens,
+		},
+	}, nil
 }

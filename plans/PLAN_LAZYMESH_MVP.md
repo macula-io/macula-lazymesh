@@ -2,7 +2,8 @@
 
 **Status:** Phases 1, 2, and 3 implemented and live-verified. All three
 Fable-identified required security findings fixed (see "Security review
-findings" below).
+findings" below). Loop-owned room listening (#14 spike, #15 real
+implementation) also shipped -- see its own section below.
 **Created:** 2026-09-06
 **Last Updated:** 2026-09-06
 
@@ -960,3 +961,103 @@ verification timeout before any `mesh_say`, so no chat noise was left in
 any real room; the room-join events themselves are the only trace left
 on the mesh, an inherent and harmless side effect of correctly joining as
 designed.
+
+## Loop-owned room listening (2026-09-06/07, #14 spike + #15 implemented)
+
+**The bug (#10/#13, root-caused live):** the agent's own long `mesh_say`/
+`mesh_wait_room` wait (`wait_reply_seconds` up to 3600) tied up
+`runAgent`'s single tool-execution slot -- while blocked in that one call,
+nothing else could happen, including ever seeing a human-typed message in
+the TUI (#10) or giving any sign the process was still alive (#13). Two
+full-context-isolation proposals were floated and both beaten by Fable's
+reframe: the bug is the wait occupying the loop's one slot, not context
+count. Spiked in #14, measured live, recommended proceeding; implemented
+for real in #15.
+
+**Fix:** `internal/roomwaiter.Manager` runs one Go goroutine per joined
+room, each in a real `mesh_wait_room` call (loop-owned, not model-owned).
+`internal/agent.NoBlockingWaitSource` clamps any `mesh_say`
+`wait_reply_seconds` the model still asks for down to 10s, defense in
+depth alongside the system-prompt rewrite (`buildSystemPrompt` no longer
+instructs the model to reach for a long wait itself). `cmd/lazymesh`'s
+`nextEvent` replaced `nextPrompt`'s instant fallback with a real blocking
+select across human input, room arrivals, and a periodic ring-check tick
+-- rings have no blocking-wait primitive analogous to `mesh_wait_room`
+(confirmed against macula-mcp's own source), so without that tick a ring
+arriving during a quiet room-stretch would never be noticed; this is
+macula-mcp's own `mesh://etiquette`-documented pattern for exactly that
+shape, not an invented workaround.
+
+**#13's liveness regression, made an explicit acceptance criterion, not
+deferred:** the loop-owned design removes the old design's incidental
+`mesh_say` tool-call traffic the TUI could render as "something is
+happening." `agent.EventListening` (emitted once per cycle, right before
+`nextEvent` blocks) replaces it, rendered in the status strip (routed as
+chatter, same as tool-call/tool-result) as `listening (HH:MM:SS)` -- a
+real, advancing timestamp, not static text, so a frozen process is still
+visually distinguishable from a correctly-idle one.
+
+**A real bug found reviewing this for production, not present in the
+spike's own report:** `roomwaiter.Manager.enqueue`'s channel-full drop
+path used to leave that room's `pending` flag set forever, silently
+stopping it from ever being re-queued again over one unlucky drop --
+fixed to clear `pending` on a drop, with a regression test confirming RED
+without the fix, GREEN with it.
+
+**Live measurements** (not simulated):
+- Concurrent `mesh_wait_room` calls on one MCP session: confirmed clean
+  in practice (5 rooms, staggered ~1s apart, zero cross-interference,
+  race-clean) -- the foundational premise the whole design depends on.
+- Human-input latency: ~7.2s invisible under the old design (bounded by
+  whatever's left of the model's own wait) vs. ~1 microsecond with this
+  one.
+- macula-mcp resource cost at 30 concurrent waiters: 3.1% CPU, ~140MB
+  RSS, stable over a 20s hold.
+- **Sustained real run** (3 minutes, 3 rooms with chatter every ~4s plus
+  2 interleaved human messages, real DeepSeek calls throughout): 36 real
+  `Say()` cycles completed with zero errors -- direct evidence
+  deepseek-v4-flash behaves correctly across many real cycles under the
+  new prompt, not just a scripted mechanical check. `trimHistory`'s
+  200-message cap was actually hit and trimmed during the run (peaked at
+  201 before the next cycle's trim), giving a real rotation-rate data
+  point (~36 cycles under this chatter rate) in place of the spike's pure
+  arithmetic estimate (~50 cycles, same order of magnitude).
+- **Unplanned finding from the sustained run:** prompt-token usage was
+  large (8.7M prompt tokens / 13.6K completion tokens across the 36
+  cycles) -- far more than conversation-history growth alone would
+  explain. Root cause is almost certainly the full tool-spec array
+  (including every discovered `mesh_service_*` tool) being resent on
+  every single `ChatCompletion` round, of which each `Say()` cycle can
+  involve several (`Say`'s own `maxRounds` bounds it at 25). This is a
+  pre-existing cost property of this OpenAI-style tool-calling API usage,
+  not something the room-waiter design introduced or could fix -- flagged
+  here since it directly affects "deepseek chosen for being cheap to run
+  continuously," but out of scope for #15 to address.
+
+**Fairness policy, made a deliberate final decision, not left open:**
+human input is checked non-blockingly first (always wins if already
+pending); the rare exact-tie window between human input and a room
+arrival is left to Go's own select-among-ready-cases randomization rather
+than built out further -- the spike measured human-input pickup at ~1
+microsecond, so that tie window is only ever microseconds wide, and
+closing it fully would mean a permanently more complex always-polling
+loop for a vanishingly rare race. Room-arrival fairness AMONG rooms is
+`roomwaiter.Manager`'s own job: a room already pending is never
+re-queued, capping any one chatty room's influence to one outstanding
+slot rather than letting it dominate by volume.
+
+**Still open, carried forward rather than silently closed:**
+`NoBlockingWaitSource`'s 10s clamp was not separately measured against
+real reply latency data (a genuinely open, minor tuning question); the
+unplanned tool-schema token-cost finding above is worth its own look if
+the team wants to reduce per-round cost independent of this feature.
+
+All new/changed code covered: `internal/roomwaiter` (unit + 2 live
+tests, including a real RED/GREEN regression test), `internal/agent`
+(`NoBlockingWaitSource` unit tests, `Loop.Usage()`/`MessageCount()`),
+`internal/provider` (real token-usage parsing, live-verified against the
+real DeepSeek API), `internal/tui` (`EventListening` rendering/chatter
+routing), `cmd/lazymesh` (`buildSystemPrompt`/`nextEvent`/
+`parseJoinedRooms` unit tests plus 3 live tests: the old-design
+reproduction, the new-design fix, and the 3-minute sustained run). Full
+suite green, `go vet` clean, race-detector clean.

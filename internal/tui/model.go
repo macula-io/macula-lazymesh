@@ -409,9 +409,12 @@ func (m *Model) processPendingRings() []tea.Cmd {
 // relocates out of the conversation pane by default. Assistant messages,
 // errors, and system notices (backoff, max-failures) always stay in the
 // chat pane regardless of showChatter -- they're not routine, an operator
-// needs to see them there.
+// needs to see them there. EventListening joins the chatter set for the
+// same reason ToolCall/ToolResult are here: it fires every cycle
+// (#13/#15's liveness signal), and would drown out real conversation if
+// it went to the main pane instead of the status strip.
 func isChatter(kind agent.EventKind) bool {
-	return kind == agent.EventToolCall || kind == agent.EventToolResult
+	return kind == agent.EventToolCall || kind == agent.EventToolResult || kind == agent.EventListening
 }
 
 func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
