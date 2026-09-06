@@ -602,6 +602,52 @@ visually this session.
 - CI: at minimum a `ci.yml` running `go build`/`go vet`/`go test`, matching
   every other Go repo in this org.
 
+## Distribution: install/uninstall scripts, GoReleaser, README (2026-09-06)
+
+Adapted `macula-cli`'s own install tooling rather than inventing a new
+shape: `install.sh`/`uninstall.sh` (Linux/macOS), `install.ps1`/
+`uninstall.ps1` (Windows), `.goreleaser.yml`, and a `release.yml` workflow
+triggered on `v*` tags. `main.go` gained a `--version` flag
+(`version`/`commit`/`date` vars set via `-ldflags` at release build time,
+`"dev"`/`"none"`/`"unknown"` for a local `go build`) since lazymesh had no
+version output at all before this and the install script's final
+verification step needs one.
+
+One real difference from `macula-cli`, not just a name substitution: `macula-cli`'s
+uninstall scripts branch on OS to find the persisted-identity directory
+(`os.UserConfigDir()` resolves to `%AppData%` on Windows,
+`~/Library/Application Support` on macOS). lazymesh's own
+`internal/config/config.go` (`Default()`/`DefaultPath()`) does not do
+this — it always joins `os.UserHomeDir()` with a literal `.config/lazymesh`
+regardless of platform, so `uninstall.ps1`'s config path is
+`$env:USERPROFILE\.config\lazymesh`, not `%AppData%\lazymesh` as a blind
+copy of `macula-cli`'s script would have produced. Read the actual Go
+source before writing the script rather than assuming parity between the
+two repos. `--purge`/`-Purge` removes the whole `~/.config/lazymesh`
+directory (identity, contact_policy.json, config.yaml, workspace) in one
+step, since all of it lives under one directory here — simpler than
+`macula-cli`'s single `identity.seed` file, which is all it has to lose.
+
+`ci.yml` gained the same three jobs `macula-cli` runs for exactly this
+class of script (`goreleaser-check` as a `--snapshot` build, `shellcheck`
+on the two `.sh` files, a `pwsh` parse-check on the two `.ps1` files) —
+copied structurally, not just aspirationally added.
+
+**Verified locally, not just written:** ran `goreleaser release --snapshot
+--clean` against the real `.goreleaser.yml` — all six OS/arch archives
+built and packaged cleanly (`lazymesh`/`lazymesh.exe` binary name,
+`macula-lazymesh_<version>_<os>_<arch>` archive name, README + both
+LICENSE files bundled, `checksums.txt` generated). Then exercised
+`install.sh`'s actual checksum-verify → `tar -xzf` → `install -m 0755`
+logic against that locally-built snapshot archive (not just read the
+script and assumed it worked): checksum matched, extraction succeeded,
+the installed binary's `--version` printed the real snapshot version/
+commit/date. `bash -n` on both `.sh` files passes; no `pwsh` available in
+this environment to run the parse-check locally, so that specific check
+is deferred to CI (low risk — the scripts are structural adaptations of
+already-CI-passing `.ps1` files with only names/paths changed, not new
+PowerShell written from scratch).
+
 ## Success criteria
 
 - [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to

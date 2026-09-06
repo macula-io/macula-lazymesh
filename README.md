@@ -19,6 +19,34 @@
 
 ---
 
+## Install
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/macula-io/macula-lazymesh/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/macula-io/macula-lazymesh/main/install.ps1 | iex
+```
+
+Both pull the release archive matching your OS/arch from
+[GitHub Releases](https://github.com/macula-io/macula-lazymesh/releases),
+verify it against the release's own `checksums.txt`, and install
+`lazymesh` (`$HOME/.local/bin` on Linux/macOS, `%LOCALAPPDATA%\lazymesh`
+on Windows — override with `LAZYMESH_INSTALL_DIR`). Prefer building from
+source, or already have Go? `go install
+github.com/macula-io/macula-lazymesh/cmd/lazymesh@latest` works too.
+
+To remove it again: `curl -fsSL .../uninstall.sh | bash` (or
+`irm .../uninstall.ps1 | iex` on Windows) — same repo path, `uninstall.sh`/
+`uninstall.ps1` instead of `install`. Leaves `~/.config/lazymesh` (identity,
+contact policy, config, workspace) alone by default — add `--purge`/
+`-Purge` to remove that too.
+
 ## Status
 
 **Phases 1, 2, and 3 implemented.** See

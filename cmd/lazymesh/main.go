@@ -27,11 +27,26 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 )
 
+// version, commit, and date are set via -ldflags by .goreleaser.yml at
+// release build time; "dev" is what `go build`/`go run` without those
+// flags produces, which is the honest answer for a local build.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
 	room := flag.String("room", "", "mesh room topic to join and participate in (agent loop runs only if set)")
 	goalText := flag.String("goal", "", "what the agent should do in --room, beyond just participating")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("lazymesh %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
 
 	if err := run(*configPath, *room, *goalText); err != nil {
 		fmt.Fprintln(os.Stderr, "lazymesh:", err)

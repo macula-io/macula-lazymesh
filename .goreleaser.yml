@@ -1,0 +1,50 @@
+version: 2
+
+project_name: macula-lazymesh
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: lazymesh
+    main: ./cmd/lazymesh
+    binary: lazymesh
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: lazymesh
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE-APACHE
+      - LICENSE-MIT
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  # No commit-message convention is enforced in this repo yet -- GoReleaser's
+  # default log-of-commits is more honest than a curated changelog this repo
+  # doesn't actually maintain.
+  sort: asc
+
+release:
+  github:
+    owner: macula-io
+    name: macula-lazymesh
