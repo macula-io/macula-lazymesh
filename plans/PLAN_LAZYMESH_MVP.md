@@ -243,6 +243,98 @@ it, but worth an `EvalSymlinks` check or an explicit doc note if
 file-tools are ever split from `shell_exec` later. Not fixed in this pass
 — tracked here rather than silently dropped.
 
+## TUI / chat interface redesign (2026-09-06, not yet implemented)
+
+Raf's own steer, from a live design conversation after Phase 3 landed.
+Current state, checked directly against the code before writing this
+down: `internal/tui/model.go` has zero keybindings beyond quit
+(`q`/`ctrl+c`) and no chat rendering at all — `--room` mode's agent
+activity goes only to `~/.config/lazymesh/agent.log`, tailed in a second
+terminal. This section is the first real design of the interactive
+surface, not a revision of one.
+
+**The actual problem this solves:** lazymesh has two origin stories
+layered on top of each other. The founding idea (the team room, before
+Raf's own scope-widening steer) was purely observational — a lazygit-
+style live view so a human doesn't have to poll. Phase 1's steer added a
+second, bigger thing on top: a real agent with a real LLM a human
+directs. Those are different modes of attention (glance at what the mesh
+is doing vs. have a focused conversation with the agent), and the
+current TUI only serves the first one, half-built — permanently-on mesh
+panels, no conversation surface at all. The redesign below makes both
+modes first-class instead of the second one being a log file you tail
+separately.
+
+- **Mesh view: a persistent one-line status strip, not a hard on/off
+  toggle**, expandable into the full three-panel view (rooms/rings/
+  presence) on demand and collapsible back. e.g.
+  `3 rooms · 2 pending rings · 8 agents seen`, always visible, one key
+  (`m`, in normal mode) expands/collapses the full panels. A pure
+  hide/show toggle risks losing the ambient-awareness value this whole
+  project exists for if the human forgets to expand it; the status strip
+  keeps that awareness cheap and glanceable without the clutter of full
+  panels competing with the chat.
+- **Status strip position: bottom by default, configurable.** Matches
+  the convention of the tools this borrows its whole aesthetic from —
+  vim's own statusline+command-line sit at the bottom, so does tmux's
+  status bar by default. Layout is just string concatenation in
+  bubbletea, so exposing `status_bar_position: top|bottom` in config is
+  low-cost and there's no reason to force a choice.
+- **Chat pane: minimal, but never invisible.** A real conversation view
+  needs to exist (it doesn't today). Tool calls render as one collapsed
+  line inline in the chat stream (`→ mesh_say("...")`,
+  `→ mesh_service_hecate_rag_search_chunks_semantic(...)`), expandable on
+  demand — not the full JSON args+result dump inline, and not hidden
+  either. Full verbose detail stays available in `agent.log` for anyone
+  who wants to tail it; the two surfaces serve different needs, this
+  isn't replacing the log. Given the tool-allowlist work earlier tonight
+  was specifically about an operator being able to trust and reason
+  about what the agent can do, a chat view that hides tool calls entirely
+  would undercut that same goal from a different angle.
+- **Modal input, vim-style — the full model, not a few remapped keys.**
+  The reason this matters more than "nice to have hjkl": once there's
+  real text entry (composing a message to the agent) alongside
+  navigation (scrolling history, expanding the mesh view, switching
+  focus), lazymesh has exactly the problem vim's modal design exists to
+  solve — text entry and commands competing for the same keys. Adopt the
+  actual solution, not just the keycaps: **normal mode by default**
+  (j/k or arrow keys scroll history, `m` toggles the mesh view, `q`
+  quits), **`i` enters insert mode to compose a message**, **Esc returns
+  to normal**. Use `bubbles`' existing multi-key `key.Binding` support
+  (binding both hjkl AND arrow keys to the same action) so this isn't
+  vim-only — cheap to do correctly from the start, no reason to exclude
+  non-vim users.
+- **Audio cues — lean version, not an audio engine.** Genuinely useful,
+  not just atmospheric: Fable's finding #3 (see above) is that the agent
+  can get silently wedged in a retry loop while "the TUI still looks
+  healthy" — a sound is a better signal for exactly that class of event
+  than anything visual, since it doesn't require looking at the screen.
+  Design, kept deliberately lean given this project's own "no theatre"
+  MVP philosophy:
+  - Plain terminal bell (`\a`/BEL) only — every terminal supports it,
+    zero dependencies, no bundled sound assets, no audio library.
+  - Differentiate by **cadence, not by different sound files**: single
+    bell for an ordinary room message, quick double-bell for a ring
+    addressed to you specifically, a distinct rapid/triple pattern for
+    "agent entered backoff" or "hit max consecutive failures." Real
+    differentiation from one universal primitive.
+  - Silent for the agent's own outgoing messages — no alert needed for
+    your own action, and it stops the chat from feeling like a slot
+    machine during an active conversation.
+  - Must degrade silently (never error) where the bell is muted/routed
+    nowhere (a headless box, an SSH session, a terminal configured for
+    visual bell only) — detect and no-op, don't assume it always fires.
+    One-key mute toggle, default-on vs. default-off is an open call for
+    whoever implements this.
+  - **Explicitly out of scope for this pass:** actual sound files,
+    distinct per event class, via a real audio library. Genuine future
+    enhancement, deliberately not bundled into this work so it doesn't
+    quietly balloon the dependency footprint of a project that's
+    supposed to stay lean.
+
+Not yet delegated to a specific implementation session as of this
+write-up — see the coordinator for current assignment.
+
 ## Repo conventions (matching this org's other Go SDKs)
 
 - Go 1.27.0 (`.tool-versions`: `golang 1.27.0`, matching `macula-cli`).
