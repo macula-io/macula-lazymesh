@@ -18,7 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
-	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
+	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 )
 
 // refreshInterval is how often the mesh-state panels re-poll macula-mcp.
@@ -35,23 +35,47 @@ type tickMsg time.Time
 type agentEventMsg agent.Event
 
 // Mode is the TUI's modal-input state: normal mode navigates/commands,
-// insert mode composes a message to the agent. Deliberately the real vim
-// model (not a few remapped keys) -- see the plan doc's own reasoning: text
-// entry and navigation compete for the same keys once both exist, and this
-// is the actual solution to that, not a workaround.
+// insert mode composes a message to the agent, ring-popup mode is a
+// blocking phone-call-style prompt for one incoming ring. Deliberately
+// the real vim model (not a few remapped keys) -- see the plan doc's own
+// reasoning: text entry and navigation compete for the same keys once
+// both exist, and this is the actual solution to that, not a workaround.
 type Mode int
 
 const (
 	ModeNormal Mode = iota
 	ModeInsert
+	ModeRingPopup
 )
+
+// Options configures a new Model. Zero values are all valid (no agent
+// running, no ring auto-accept, status strip at the bottom).
+type Options struct {
+	AgentEvents <-chan agent.Event // nil when no --room agent is running
+	UserInputCh chan<- string      // where a submitted message is sent for runAgent to pick up
+
+	StatusBarPosition string // "top" or "bottom"
+
+	// ContactPolicyFile and AutoAcceptKnown together drive the ring
+	// pop-up's own layered policy (see config.RingPolicy's doc comment
+	// for why this isn't a direct map onto macula-mcp's contact_policy):
+	// AutoAcceptKnown peers found in ContactPolicyFile's own allowlist
+	// (via internal/contactpolicy.IsTrusted) skip the pop-up and are
+	// accepted immediately; everyone else still gets it.
+	ContactPolicyFile string
+	AutoAcceptKnown   bool
+}
 
 // Model is the bubbletea model for lazymesh's TUI.
 type Model struct {
-	mcp *mcpclient.Client
+	mcp toolCaller
 
-	agentEvents <-chan agent.Event // nil when no --room agent is running
-	userInputCh chan<- string      // where a submitted message is sent for runAgent to pick up
+	agentEvents <-chan agent.Event
+	userInputCh chan<- string
+
+	contactPolicyFile string
+	autoAcceptKnown   bool
+	seenRingIDs       map[string]bool // rings already auto-accepted, answered via the pop-up, or dismissed -- never re-surfaced
 
 	state   meshState
 	lastErr error
@@ -62,6 +86,8 @@ type Model struct {
 	muted             bool
 	statusBarPosition string // "top" or "bottom"
 
+	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
+
 	chatEntries  []chatEntry
 	chatViewport viewport.Model
 	input        textinput.Model
@@ -71,23 +97,27 @@ type Model struct {
 }
 
 // New builds a Model that reads mesh state through client, renders
-// agentEvents into the chat pane as they arrive (nil if no agent loop is
-// running), and sends composed messages on userInputCh (nil has the same
-// effect -- composing is still possible, it just has nowhere to go).
-func New(client *mcpclient.Client, agentEvents <-chan agent.Event, userInputCh chan<- string, statusBarPosition string) Model {
+// agentEvents into the chat pane as they arrive, and sends composed
+// messages on userInputCh -- see Options' own doc comment for what each
+// zero value means.
+func New(client toolCaller, opts Options) Model {
 	ti := textinput.New()
 	ti.Placeholder = "message the agent..."
 	ti.CharLimit = 2000
 	ti.Prompt = "> "
 
+	statusBarPosition := opts.StatusBarPosition
 	if statusBarPosition != "top" {
 		statusBarPosition = "bottom"
 	}
 
 	return Model{
 		mcp:               client,
-		agentEvents:       agentEvents,
-		userInputCh:       userInputCh,
+		agentEvents:       opts.AgentEvents,
+		userInputCh:       opts.UserInputCh,
+		contactPolicyFile: opts.ContactPolicyFile,
+		autoAcceptKnown:   opts.AutoAcceptKnown,
+		seenRingIDs:       make(map[string]bool),
 		mode:              ModeNormal,
 		statusBarPosition: statusBarPosition,
 		input:             ti,
@@ -159,6 +189,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentEventMsg:
 		return m.handleAgentEvent(msg)
+
+	case ringAnsweredMsg:
+		return m.handleRingAnswered(msg)
 	}
 	return m, nil
 }
@@ -166,6 +199,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, DefaultKeyMap.ForceQuit) {
 		return m, tea.Quit
+	}
+
+	if m.mode == ModeRingPopup {
+		return m.handleRingPopupKey(msg)
 	}
 
 	if m.mode == ModeInsert {
@@ -237,7 +274,47 @@ func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
 	if ring := detectRingBell(prev, m.state); ring != bellNone {
 		pattern = ring // a ring is rarer/more actionable than an ordinary message
 	}
-	return m, ringBell(pattern, m.muted)
+
+	cmds := []tea.Cmd{ringBell(pattern, m.muted)}
+	cmds = append(cmds, m.processPendingRings()...)
+	return m, tea.Batch(cmds...)
+}
+
+// processPendingRings is the layered ring-answering policy itself
+// (config.RingPolicy's own doc comment explains why this lives here
+// rather than as a direct macula-mcp contact_policy mapping): a peer
+// already on ContactPolicyFile's own allowlist is auto-accepted
+// immediately, no pop-up; anyone else gets the real pop-up, one at a
+// time -- a ring already seenRingIDs (auto-accepted, answered, or
+// dismissed) is never revisited. Mutates m directly since this is only
+// ever called from within handleRefresh, which already holds its own
+// value-receiver copy.
+func (m *Model) processPendingRings() []tea.Cmd {
+	var cmds []tea.Cmd
+	for _, ring := range m.state.pending {
+		if m.seenRingIDs[ring.RingID] {
+			continue
+		}
+		if m.autoAcceptKnown && contactpolicy.IsTrusted(m.contactPolicyFile, ring.Peer) {
+			m.seenRingIDs[ring.RingID] = true
+			m.chatEntries = append(m.chatEntries, chatEntry{
+				kind: chatSystem,
+				at:   time.Now(),
+				text: fmt.Sprintf("auto-accepted ring from %s (trusted)", displayName(ring.Peer, ring.PeerPetname)),
+			})
+			cmds = append(cmds, answerRingCmd(m.mcp, ring.RingID, answerAccept, false, ""))
+			continue
+		}
+		if m.pendingRingPopup == nil {
+			r := ring
+			m.pendingRingPopup = &r
+			m.mode = ModeRingPopup
+		}
+	}
+	if len(cmds) > 0 {
+		m.syncViewport()
+	}
+	return cmds
 }
 
 func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
@@ -289,6 +366,19 @@ var (
 
 func (m Model) View() string {
 	status := m.renderStatusStrip()
+
+	// The ring pop-up takes over the body/input area entirely while
+	// active -- a real incoming call blocks until answered too -- but the
+	// status strip stays visible either way, same ambient-awareness
+	// principle as the mesh view's own expand/collapse.
+	if m.mode == ModeRingPopup && m.pendingRingPopup != nil {
+		popup := m.renderRingPopup()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
 	var body string
 	if m.meshExpanded {
 		body = m.renderExpandedMesh()

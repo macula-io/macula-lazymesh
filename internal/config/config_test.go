@@ -127,3 +127,35 @@ func TestDefault_ContactPolicyFileIsIsolatedFromMaculaMCPDefault(t *testing.T) {
 		t.Fatalf("expected a lazymesh-specific path, not macula-mcp's own shared default: %q", got)
 	}
 }
+
+func TestDefault_RingPolicyIsAlwaysAsk(t *testing.T) {
+	if got := Default().RingPolicy; got != "always-ask" {
+		t.Fatalf("expected default ring_policy always-ask, got %q", got)
+	}
+}
+
+func TestRingPolicyContactPolicyFileValue(t *testing.T) {
+	cases := map[string]string{
+		"always-ask":        "ask",
+		"auto-accept-known": "ask", // the layered design's whole point: NOT "allowlist"
+		"accept-everyone":   "open",
+		"do-not-disturb":    "closed",
+		"anything-else":     "ask", // unrecognized -> safe default
+	}
+	for in, want := range cases {
+		if got := RingPolicyContactPolicyFileValue(in); got != want {
+			t.Fatalf("%s: expected %q, got %q", in, want, got)
+		}
+	}
+}
+
+func TestRingPolicyAutoAcceptsKnown(t *testing.T) {
+	if !RingPolicyAutoAcceptsKnown("auto-accept-known") {
+		t.Fatalf("expected auto-accept-known to report true")
+	}
+	for _, other := range []string{"always-ask", "accept-everyone", "do-not-disturb", ""} {
+		if RingPolicyAutoAcceptsKnown(other) {
+			t.Fatalf("expected %q to report false", other)
+		}
+	}
+}

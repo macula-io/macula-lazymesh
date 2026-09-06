@@ -19,7 +19,7 @@ func typeKey(t tea.KeyType) tea.KeyMsg {
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	userInputCh := make(chan string, 8)
-	m := New(nil, nil, userInputCh, "bottom")
+	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "bottom"})
 	m.width, m.height = 80, 24
 	m.resizeComponents()
 	return m
@@ -77,7 +77,7 @@ func TestInsertMode_EscReturnsToNormal(t *testing.T) {
 
 func TestInsertMode_EnterSubmitsAndReturnsToNormal(t *testing.T) {
 	userInputCh := make(chan string, 8)
-	m := New(nil, nil, userInputCh, "bottom")
+	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "bottom"})
 	m.width, m.height = 80, 24
 	m.resizeComponents()
 
@@ -171,6 +171,19 @@ func TestForceQuit_WorksInEitherMode(t *testing.T) {
 	m = updated.(Model)
 	if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
 		t.Fatalf("expected ctrl+c to quit even while composing")
+	}
+}
+
+// Regression guard added alongside the ring pop-up: adding a third mode
+// must not accidentally exempt it from the universal quit key.
+func TestForceQuit_WorksDuringRingPopup(t *testing.T) {
+	m := newTestModel(t)
+	ring := pendingRing{RingID: "r1", Peer: "peer1"}
+	m.pendingRingPopup = &ring
+	m.mode = ModeRingPopup
+
+	if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
+		t.Fatalf("expected ctrl+c to quit even while the ring pop-up is showing")
 	}
 }
 

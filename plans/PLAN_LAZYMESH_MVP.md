@@ -526,6 +526,71 @@ to `(ctx, SpawnOptions)` to fit Version/IdentityFile/ContactPolicyFile
 cleanly — every call site updated, all live tests re-run against the
 real mesh under 0.24.0 to confirm nothing broke.
 
+## Ring-answering UX, part 2: the pop-up + corrected layered trust policy (2026-09-06)
+
+The phone-call metaphor Raf asked for, built on part 1's petname/purpose
+work: an incoming ring is a real blocking pop-up (`ModeRingPopup`), not a
+line in the pending-rings panel someone has to notice, paired with the
+double-bell already in the plan. Three actions, phone-style: `a` Answer,
+`d` Decline, `t` Answer + Trust (calls `mesh_trust_agent` right after a
+successful accept). `Esc` leaves it for later — the ring stays pending
+(an agent's own per-cycle ring-checking, if one is running, can still
+pick it up), it only suppresses the human-facing pop-up for that specific
+ring going forward this session.
+
+**The corrected design**, per the earlier finding that macula-mcp's real
+`contact_policy` tiers don't support "known auto-accept, strangers still
+asked" (`allowlist` mode declines strangers outright, it never defers):
+`internal/contactpolicy` (new package) reads/writes the identical JSON
+file `mesh_trust_agent` manages. `config.RingPolicy`'s four values —
+`always-ask` (default), `auto-accept-known`, `accept-everyone`,
+`do-not-disturb` — map through `config.RingPolicyContactPolicyFileValue`:
+the first two both keep the file's own `contact_policy` at `"ask"` (every
+ring genuinely defers, mesh-side); the known/unknown split for
+`auto-accept-known` happens in lazymesh itself
+(`contactpolicy.IsTrusted`, consulted in `internal/tui`'s
+`processPendingRings` before ever showing the pop-up) — a peer already on
+the SAME allowlist `mesh_trust_agent`/"Answer + Trust" manages skips the
+pop-up and is accepted immediately, via a direct `mesh_answer_ring` call,
+no LLM or pop-up involved. `accept-everyone`/`do-not-disturb` map
+directly onto `open`/`closed`, since those need no per-peer judgment.
+`main.go` calls `contactpolicy.Ensure` before every spawn, translating the
+configured tier into the isolated file — preserving any allowlist already
+built up, never clobbering past "Answer + Trust" choices.
+
+Never more than one pop-up at a time: `seenRingIDs` tracks every ring
+already auto-accepted, answered, or dismissed, so a ring already being
+shown or already handled is never revisited by a later refresh; a second
+new ring arriving while one pop-up is showing just waits its turn.
+`ctrl+c` still force-quits during the pop-up (its own regression test,
+added specifically because introducing a third `Mode` is exactly the
+kind of change that could silently exempt it).
+
+19 new tests (7 `internal/contactpolicy`, 12 `internal/tui`: the actual
+`mesh_answer_ring`/`mesh_trust_agent` call construction via a fake tool
+caller, all three pop-up actions plus Esc, auto-accept-vs-pop-up-vs-
+already-seen-ring branching, the one-pop-up-at-a-time property, and the
+force-quit-during-popup regression guard).
+
+**What's NOT live-verified, honestly**: trying to confirm the pop-up
+renders correctly against a real incoming ring (isolated identity, rang
+it from this session, watched via pty) surfaced a real bug in
+macula-mcp itself — `mesh_read_inbox.ts` omits its `rings` key entirely
+on the very first tool call after a fresh identity's spawn (a
+cold-start race: `presence.ensurePresence()` doesn't complete
+synchronously before `presence.currentNodeId()` is read immediately
+after, despite being called first in the same handler). Confirmed via
+a throwaway diagnostic: call 1 has no `rings` key at all, calls 2-4 (2s+
+later, same connection) show it correctly. A second, less understood
+observation from the same session: the actual ring sent had vanished
+from both `pending` and `recent` several minutes later, not fixed with
+the same confidence as the first finding — flagged as unexplained
+rather than folded into a single tidy story. Reported to the
+coordinator with exact repro steps rather than silently worked around;
+the Go-side logic above is solid per its own unit tests, but "the pop-up
+actually renders on a real live ring" specifically was not confirmed
+visually this session.
+
 ## Repo conventions (matching this org's other Go SDKs)
 
 - Go 1.27.0 (`.tool-versions`: `golang 1.27.0`, matching `macula-cli`).

@@ -16,6 +16,11 @@ type KeyMap struct {
 	Quit          key.Binding // "q" -- normal mode only, never steals a "q" typed while composing
 	ForceQuit     key.Binding // ctrl+c -- works in either mode, the universal escape hatch
 	Submit        key.Binding
+
+	// Ring pop-up only, phone-metaphor: Answer/Decline/Answer+Trust.
+	Answer  key.Binding
+	Decline key.Binding
+	Trust   key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -29,4 +34,7 @@ var DefaultKeyMap = KeyMap{
 	Quit:          key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 	ForceQuit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 	Submit:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+	Answer:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "answer")),
+	Decline:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "decline")),
+	Trust:         key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "answer + trust")),
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
+	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
@@ -46,6 +47,18 @@ func run(configPath, room, goalText string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Sets the isolated contact_policy.json's own contact_policy field
+	// before macula-mcp ever reads it, translating cfg.RingPolicy the one
+	// place that mapping happens (config.RingPolicyContactPolicyFileValue's
+	// own doc comment explains why this isn't a direct 1:1 map). Preserves
+	// any existing allowlist -- an operator's own past "Answer + Trust"
+	// choices are never clobbered by this.
+	if cfg.ContactPolicyFile != "" {
+		if err := contactpolicy.Ensure(cfg.ContactPolicyFile, config.RingPolicyContactPolicyFileValue(cfg.RingPolicy)); err != nil {
+			return fmt.Errorf("set up contact policy file: %w", err)
+		}
+	}
 
 	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{
 		Version:           cfg.MaculaMCPVersion,
@@ -95,7 +108,14 @@ func run(configPath, room, goalText string) error {
 		go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog, tuiEvents, userInputCh)
 	}
 
-	program := tea.NewProgram(tui.New(client, tuiEvents, userInputCh, cfg.StatusBarPosition), tea.WithAltScreen())
+	tuiModel := tui.New(client, tui.Options{
+		AgentEvents:       tuiEvents,
+		UserInputCh:       userInputCh,
+		StatusBarPosition: cfg.StatusBarPosition,
+		ContactPolicyFile: cfg.ContactPolicyFile,
+		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
+	})
+	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	_, err = program.Run()
 	cancel()
 	return err

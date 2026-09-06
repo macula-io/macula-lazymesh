@@ -84,6 +84,46 @@ type Config struct {
 	// otherwise all share ~/.config/macula-mcp/contact_policy.json by
 	// default regardless of identity.
 	ContactPolicyFile string `yaml:"contact_policy_file,omitempty"`
+	// RingPolicy is lazymesh's own phone-metaphor standing answer to an
+	// incoming ring: "always-ask" (default, every ring pops up), "auto-
+	// accept-known" (peers already on ContactPolicyFile's own allowlist
+	// -- the one mesh_trust_agent/the pop-up's "Answer + Trust" action
+	// manages -- skip the pop-up and are accepted immediately; anyone
+	// else still pops up), "accept-everyone", or "do-not-disturb".
+	//
+	// This does NOT map onto macula-mcp's own contact_policy tiers
+	// directly -- verified against ring_service.ts before assuming it
+	// could: real "allowlist" mode DECLINES anyone not listed outright,
+	// it never defers to ask, so there is no macula-mcp tier that means
+	// "known auto-accept, strangers still get asked." "always-ask" and
+	// "auto-accept-known" both keep the underlying file's contact_policy
+	// at "ask" (every ring genuinely defers, mesh-side) and the
+	// known/unknown split happens in lazymesh itself
+	// (internal/contactpolicy.IsTrusted, consulted before ever showing
+	// the pop-up) -- "accept-everyone"/"do-not-disturb" do map directly,
+	// onto "open"/"closed", since those need no per-peer judgment at all.
+	RingPolicy string `yaml:"ring_policy,omitempty"`
+}
+
+// RingPolicyContactPolicyFileValue translates p into the value written
+// into ContactPolicyFile's own contact_policy field -- the single place
+// this mapping happens, so main.go's setup and any future reader agree
+// on it. Unrecognized values behave as "always-ask" (the safe default).
+func RingPolicyContactPolicyFileValue(p string) string {
+	switch p {
+	case "accept-everyone":
+		return "open"
+	case "do-not-disturb":
+		return "closed"
+	default: // "always-ask", "auto-accept-known", or unrecognized
+		return "ask"
+	}
+}
+
+// RingPolicyAutoAcceptsKnown reports whether p means known/allowlisted
+// peers should skip the ring pop-up entirely.
+func RingPolicyAutoAcceptsKnown(p string) bool {
+	return p == "auto-accept-known"
 }
 
 // LocalTools configures internal/localtools. Disabled by default; a
@@ -111,6 +151,7 @@ func Default() Config {
 		StatusBarPosition: "bottom",
 		MaculaMCPVersion:  "0.24.0",
 		ContactPolicyFile: filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
+		RingPolicy:        "always-ask",
 	}
 }
 
