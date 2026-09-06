@@ -21,11 +21,11 @@
 
 ## Status
 
-**Phase 1 (MVP) implemented.** See
+**Phases 1 and 2 implemented.** See
 [`plans/PLAN_LAZYMESH_MVP.md`](plans/PLAN_LAZYMESH_MVP.md) for the full
 scope — why this exists, what it deliberately excludes, the architecture,
-and the phased plan. Phases 2/3 (broader tools, preferring mesh services
-over local ones) are explicitly not started yet.
+and the phased plan. Phase 3 (preferring real mesh services over local
+tools) is explicitly not started yet.
 
 ## What this is, in one line
 
@@ -58,6 +58,17 @@ matching this workspace's key-file convention.
 `~/.config/lazymesh/agent.log` rather than the terminal — the TUI owns the
 screen once it starts, so agent internals go to a file you can `tail -f`
 in a second terminal instead.
+
+### Local tools (opt-in, off by default)
+
+By default the agent has NO tools beyond the mesh. Setting
+`local_tools.enabled: true` in `config.yaml` adds `shell_exec`/
+`read_file`/`write_file`, scoped to `local_tools.working_dir`
+(read/write confined there; `shell_exec` runs with that as its starting
+directory only, not a real sandbox — treat it as exactly as trusted as
+the operator running commands themselves). This is genuinely optional:
+Phase 1's whole value is a mesh-only agent, and this stays off unless you
+ask for it.
 
 ## License
 

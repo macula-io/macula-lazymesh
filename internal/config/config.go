@@ -33,6 +33,18 @@ type Config struct {
 	// restarts instead of macula-mcp's default fresh-identity-per-launch
 	// behavior.
 	IdentityFile string `yaml:"identity_file,omitempty"`
+	// LocalTools is Phase 2's second, separately configurable tool source
+	// (shell_exec/read_file/write_file). Off by default -- the MVP's whole
+	// value proposition is having NO extra tools unless explicitly enabled.
+	LocalTools LocalTools `yaml:"local_tools,omitempty"`
+}
+
+// LocalTools configures internal/localtools. Disabled by default; a
+// working directory is required once enabled -- see localtools.New.
+type LocalTools struct {
+	Enabled             bool   `yaml:"enabled"`
+	WorkingDir          string `yaml:"working_dir,omitempty"`
+	ShellTimeoutSeconds int    `yaml:"shell_timeout_seconds,omitempty"`
 }
 
 // Default returns the MVP's default configuration: DeepSeek, its current
@@ -45,6 +57,10 @@ func Default() Config {
 		Model:        "deepseek-v4-flash",
 		APIKeyFile:   filepath.Join(home, ".ai-api-keys", ".deepseek-api-keys", "lazymesh"),
 		IdentityFile: filepath.Join(home, ".config", "lazymesh", "identity"),
+		LocalTools: LocalTools{
+			Enabled:    false,
+			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
+		},
 	}
 }
 

@@ -1,7 +1,8 @@
 // Package agent drives the tool-calling loop between an LLM provider and
-// macula-mcp: it converses, decides tool calls, executes them via
-// mcpclient, feeds results back, and repeats until the model stops asking
-// for tools.
+// one or more tool sources (macula-mcp, and optionally a second,
+// separately configurable source like internal/localtools): it converses,
+// decides tool calls, executes them, feeds results back, and repeats until
+// the model stops asking for tools.
 package agent
 
 import (
@@ -12,10 +13,13 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
-// ToolSource is the subset of *mcpclient.Client the loop actually needs.
-// *mcpclient.Client satisfies this structurally; the interface exists so
-// tests can drive the loop against a fake tool source without spawning a
-// real macula-mcp subprocess.
+// ToolSource is anything that can advertise tools and execute one by name.
+// *mcpclient.Client and *localtools.Source both satisfy this structurally
+// (mcpclient.Tool is a plain data struct, not an MCP-specific type, so a
+// non-MCP source producing it is not a layering violation). The interface
+// exists so tests can drive the loop against a fake tool source, and so
+// MultiSource can compose several real ones without the loop itself
+// knowing how many there are.
 type ToolSource interface {
 	ListTools(ctx context.Context) ([]mcpclient.Tool, error)
 	CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error)
@@ -43,18 +47,19 @@ type Event struct {
 	Err      error  // set for EventError
 }
 
-// Loop is one running conversation against a provider, with macula-mcp's
-// tools available to it.
+// Loop is one running conversation against a provider, with some
+// ToolSource's tools available to it -- a plain *mcpclient.Client, or a
+// *MultiSource combining several.
 type Loop struct {
 	Provider provider.Provider
-	MCP      ToolSource
+	Tools    ToolSource
 
 	messages []provider.Message
 }
 
 // NewLoop starts a loop with the given system prompt as its first message.
-func NewLoop(p provider.Provider, mcp ToolSource, systemPrompt string) *Loop {
-	l := &Loop{Provider: p, MCP: mcp}
+func NewLoop(p provider.Provider, tools ToolSource, systemPrompt string) *Loop {
+	l := &Loop{Provider: p, Tools: tools}
 	if systemPrompt != "" {
 		l.messages = append(l.messages, provider.Message{
 			Role:    provider.RoleSystem,
@@ -73,9 +78,9 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		Content: userText,
 	})
 
-	tools, err := l.MCP.ListTools(ctx)
+	tools, err := l.Tools.ListTools(ctx)
 	if err != nil {
-		return fmt.Errorf("list mcp tools: %w", err)
+		return fmt.Errorf("list tools: %w", err)
 	}
 	toolSpecs := make([]provider.ToolSpec, 0, len(tools))
 	for _, t := range tools {
@@ -112,7 +117,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		for _, tc := range resp.Message.ToolCalls {
 			emit(events, Event{Kind: EventToolCall, ToolName: tc.Name, Text: tc.Arguments})
 
-			result, callErr := l.MCP.CallToolRaw(ctx, tc.Name, tc.Arguments)
+			result, callErr := l.Tools.CallToolRaw(ctx, tc.Name, tc.Arguments)
 			toolMsg := provider.Message{
 				Role:       provider.RoleTool,
 				ToolCallID: tc.ID,

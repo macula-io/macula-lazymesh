@@ -1,6 +1,7 @@
 # lazymesh — MVP Plan
 
-**Status:** Phase 1 (MVP) implemented and mostly live-verified
+**Status:** Phases 1 and 2 implemented and mostly live-verified. Phase 3
+not started.
 **Created:** 2026-09-06
 **Last Updated:** 2026-09-06
 
@@ -115,12 +116,24 @@ name) holding:
       join a room, talk, answer a ring, and a human can watch it do that
       live. Implemented 2026-09-06; see Success criteria below for exactly
       what's live-verified vs. implemented-but-not-yet-exercised live.
-- [ ] **Phase 2: Broader tool use.** Once co-op works, add a second,
-      separately configurable tool source beyond macula-mcp (a minimal
-      shell/file tool set) so a lazymesh agent can actually do work
-      arising from mesh coordination, not just talk about it. Keep it
-      opt-in / off by default — the MVP's whole value proposition is
-      having NO extra tools by default.
+- [x] **Phase 2: Broader tool use.** Implemented 2026-09-06:
+      `internal/localtools` adds `shell_exec`/`read_file`/`write_file`,
+      off by default (`local_tools.enabled: false` unless set), gated
+      behind a required `working_dir`. `agent.MultiSource` (new,
+      `internal/agent/multisource.go`) composes it with macula-mcp without
+      `Loop` itself knowing there are two sources — errors loudly on a
+      tool-name collision between sources rather than silently shadowing
+      one. Sandbox boundary (read_file/write_file confined to
+      `working_dir`, rejecting both absolute paths and `../` escapes,
+      including the classic same-string-prefix sibling-directory trap) has
+      its own regression tests, not just happy-path coverage — this is the
+      part that actually matters here. `shell_exec` is honestly NOT a real
+      sandbox: it's scoped to `working_dir` as a starting cwd only, a
+      command can still `cd` anywhere the operator's account can reach.
+      Live-verified 2026-09-06: real macula-mcp spawn combined with a real
+      enabled localtools source, confirmed both `mesh_hello` and
+      `shell_exec` show up with no name collision, and a real `shell_exec`
+      call round-trips correctly (`cmd/lazymesh`'s `//go:build live` test).
 - [ ] **Phase 3: Prefer mesh services over local tools.** When a task can
       be done by calling a real mesh RPC procedure (discovered via
       `mesh_find_records_by_type("procedure_advertisement")`) instead of

@@ -19,6 +19,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
+	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
@@ -56,6 +57,10 @@ func run(configPath, room, goalText string) error {
 		if err != nil {
 			return fmt.Errorf("build provider: %w", err)
 		}
+		tools, err := buildToolSource(cfg, client)
+		if err != nil {
+			return fmt.Errorf("build tool source: %w", err)
+		}
 		logPath, err := agentLogPath()
 		if err != nil {
 			return fmt.Errorf("resolve agent log path: %w", err)
@@ -73,7 +78,7 @@ func run(configPath, room, goalText string) error {
 		// agent's actual room messages/presence as they land.
 		agentLog := log.New(logFile, "", log.LstdFlags)
 		fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
-		go runAgent(ctx, p, client, room, goalText, agentLog)
+		go runAgent(ctx, p, tools, room, goalText, cfg.LocalTools.Enabled, agentLog)
 	}
 
 	program := tea.NewProgram(tui.New(client), tea.WithAltScreen())
@@ -101,6 +106,25 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 	}
 }
 
+// buildToolSource returns macula-mcp alone, or macula-mcp combined with
+// Phase 2's local shell/file tools when explicitly enabled in config.
+// Local tools are opt-in -- the whole point of the default is having NO
+// extra tools beyond the mesh.
+func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSource, error) {
+	if !cfg.LocalTools.Enabled {
+		return client, nil
+	}
+	local, err := localtools.New(localtools.Config{
+		Enabled:      cfg.LocalTools.Enabled,
+		WorkingDir:   cfg.LocalTools.WorkingDir,
+		ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("local tools: %w", err)
+	}
+	return agent.NewMultiSource(client, local), nil
+}
+
 // agentLogPath is where agent activity is logged instead of stderr, since
 // stderr is unsafe to write to once the TUI's alt screen is active.
 func agentLogPath() (string, error) {
@@ -120,20 +144,26 @@ func agentLogPath() (string, error) {
 // (join, talk, answer rings, wait on mesh_say's own wait_reply_seconds) --
 // this function only supplies the cadence of asking it to keep going, not
 // any of the mesh actions themselves.
-func runAgent(ctx context.Context, p provider.Provider, client *mcpclient.Client, room, goalText string, agentLog *log.Logger) {
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsEnabled bool, agentLog *log.Logger) {
+	toolsLine := "Your only tools are macula-mcp's mesh_* tools."
+	if localToolsEnabled {
+		toolsLine = "You have macula-mcp's mesh_* tools, plus shell_exec/read_file/write_file " +
+			"scoped to a local working directory -- use those only when actual local work " +
+			"(not just mesh conversation) is genuinely called for."
+	}
 	systemPrompt := fmt.Sprintf(
 		"You are a lazymesh agent cooperating with other agents on the Macula mesh. "+
-			"Your only tools are macula-mcp's mesh_* tools. Room to participate in: %s. "+
+			"%s Room to participate in: %s. "+
 			"Join it if you have not already, introduce yourself briefly, and participate "+
 			"naturally: read what others say, respond when it makes sense, answer any ring "+
 			"addressed to you. When there is nothing to do right now, call mesh_say with a "+
 			"long wait_reply_seconds to listen efficiently instead of returning immediately.",
-		room)
+		toolsLine, room)
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
 	}
 
-	loop := agent.NewLoop(p, client, systemPrompt)
+	loop := agent.NewLoop(p, tools, systemPrompt)
 	events := make(chan agent.Event, 16)
 	go func() {
 		for ev := range events {
