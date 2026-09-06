@@ -6,6 +6,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 )
 
 func TestNextBackoff_DoublesUntilCap(t *testing.T) {
@@ -30,8 +31,19 @@ func TestNextBackoff_DoublesUntilCap(t *testing.T) {
 
 func TestResolveAllowlist_DefaultsWhenUnset(t *testing.T) {
 	got := resolveAllowlist(config.Config{})
-	if len(got) != len(agent.DefaultToolAllowlist) {
-		t.Fatalf("expected DefaultToolAllowlist when cfg.ToolAllowlist is unset, got %v", got)
+	wantLen := len(agent.DefaultToolAllowlist) + len(meshservices.AllowedToolNames())
+	if len(got) != wantLen {
+		t.Fatalf("expected agent's defaults + meshservices' curated names (%d), got %d: %v", wantLen, len(got), got)
+	}
+	for _, name := range agent.DefaultToolAllowlist {
+		if !allowlistIncludes(got, name) {
+			t.Fatalf("expected default to include agent primitive %q", name)
+		}
+	}
+	for _, name := range meshservices.AllowedToolNames() {
+		if !allowlistIncludes(got, name) {
+			t.Fatalf("expected default to include curated mesh-service tool %q", name)
+		}
 	}
 }
 

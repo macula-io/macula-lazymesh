@@ -4,12 +4,55 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 )
+
+// TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault confirms
+// Phase 3's actual production wiring (main.go's buildToolSource, not just
+// internal/meshservices in isolation): a real macula-mcp spawn, combined
+// the same way the real binary does it, lists at least one real
+// mesh_service_* tool by default -- no local_tools, no allowlist
+// override, exactly what an operator gets out of the box.
+func TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client, err := mcpclient.Spawn(ctx, "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer client.Close()
+
+	tools, err := buildToolSource(config.Config{}, client)
+	if err != nil {
+		t.Fatalf("buildToolSource: %v", err)
+	}
+
+	listed, err := tools.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	sawMeshHello, sawMeshService := false, false
+	for _, tool := range listed {
+		if tool.Name == "mesh_hello" {
+			sawMeshHello = true
+		}
+		if strings.HasPrefix(tool.Name, "mesh_service_") {
+			sawMeshService = true
+		}
+	}
+	if !sawMeshHello {
+		t.Fatalf("expected mesh_hello among the default tools")
+	}
+	if !sawMeshService {
+		t.Fatalf("expected at least one mesh_service_* tool among the default tools -- Phase 3 should be on by default")
+	}
+}
 
 // TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalToolsEnabled
 // is the specific regression Fable's review (2026-09-06) exists to guard:

@@ -21,11 +21,10 @@
 
 ## Status
 
-**Phases 1 and 2 implemented.** See
+**Phases 1, 2, and 3 implemented.** See
 [`plans/PLAN_LAZYMESH_MVP.md`](plans/PLAN_LAZYMESH_MVP.md) for the full
 scope — why this exists, what it deliberately excludes, the architecture,
-and the phased plan. Phase 3 (preferring real mesh services over local
-tools) is explicitly not started yet.
+and the phased plan.
 
 ## What this is, in one line
 
@@ -59,16 +58,34 @@ matching this workspace's key-file convention.
 screen once it starts, so agent internals go to a file you can `tail -f`
 in a second terminal instead.
 
+### Mesh service tools (Phase 3, on by default)
+
+Beyond the conversational mesh primitives, the agent can also call real
+mesh RPC procedures discovered live via `mesh_find_records_by_type` —
+`internal/meshservices`'s `Curated` list (see `catalog.go`) currently
+covers read-only search/knowledge-graph/forum capabilities from a live
+mesh survey: `hecate-rag` (semantic search, source/chunk lookups),
+`hecate_agora` (forum post search/paging), `hecate_graph` (entity/link
+resolution and narration). Only individually named, curated, currently-
+discovered procedures ever become tools — never a generic "call any mesh
+procedure" tool, which would reopen the same risk the tool allowlist
+exists to close. Discovery is real and dynamic (cached ~60s, not a fixed
+catalog): a curated procedure that isn't currently advertised on the mesh
+just doesn't show up as a tool that round. On by default, no config
+needed — unlike Phase 2's local tools below, this is read-only and scoped
+to a curated, reviewed set.
+
 ### Tool allowlist
 
 By default the agent can only see and call the conversational mesh
 primitives (`mesh_hello`, `join_room`, `leave_room`, `say`, `read_inbox`,
-`answer_ring`, `rooms`, `agents`) — deny-by-default, enforced both in what
-gets offered to the model and at execution time. This exists because the
-agent's entire conversation can be steered by arbitrary mesh peers (room
-messages, ring purposes are all peer-authored text that flows straight
-back into the model's context); a wider default tool set would mean any
-peer's room post could potentially trigger local execution.
+`answer_ring`, `rooms`, `agents`) plus the mesh-service tools above —
+deny-by-default, enforced both in what gets offered to the model and at
+execution time. This exists because the agent's entire conversation can
+be steered by arbitrary mesh peers (room messages, ring purposes are all
+peer-authored text that flows straight back into the model's context); a
+wider default tool set would mean any peer's room post could potentially
+trigger local execution.
 
 ### Local tools (opt-in, off by default, allowlist-gated separately)
 

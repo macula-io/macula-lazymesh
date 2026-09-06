@@ -21,6 +21,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 )
@@ -107,17 +108,19 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 	}
 }
 
-// buildToolSource returns macula-mcp alone, or macula-mcp combined with
-// Phase 2's local shell/file tools when explicitly enabled in config --
-// then wraps whatever that is in an AllowlistSource. The allowlist is the
-// actual gate: an agent's entire conversation can be steered by arbitrary
-// mesh peers (room messages, ring purposes), so what the model is ALLOWED
-// to see or call matters independently of what sources merely exist.
-// cfg.LocalTools.Enabled controls whether shell_exec/read_file/write_file
-// are wired up at all; it does NOT put them on the allowlist by itself --
-// see config.ToolAllowlist and internal/agent/allowlist.go.
+// buildToolSource combines macula-mcp, Phase 3's mesh-service tools
+// (always on -- real, curated, currently-discovered mesh procedures,
+// dogfooding the mesh's own service directory per the plan's actual
+// thesis), and Phase 2's local shell/file tools when explicitly enabled
+// -- then wraps whatever that is in an AllowlistSource. The allowlist is
+// the actual gate: an agent's entire conversation can be steered by
+// arbitrary mesh peers (room messages, ring purposes), so what the model
+// is ALLOWED to see or call matters independently of what sources merely
+// exist. cfg.LocalTools.Enabled controls whether shell_exec/read_file/
+// write_file are wired up at all; it does NOT put them on the allowlist
+// by itself -- see config.ToolAllowlist and internal/agent/allowlist.go.
 func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSource, error) {
-	var combined agent.ToolSource = client
+	sources := []agent.ToolSource{client, meshservices.New(client)}
 	if cfg.LocalTools.Enabled {
 		local, err := localtools.New(localtools.Config{
 			Enabled:      cfg.LocalTools.Enabled,
@@ -127,8 +130,9 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSou
 		if err != nil {
 			return nil, fmt.Errorf("local tools: %w", err)
 		}
-		combined = agent.NewMultiSource(client, local)
+		sources = append(sources, local)
 	}
+	combined := agent.NewMultiSource(sources...)
 
 	return agent.NewAllowlistSource(combined, resolveAllowlist(cfg)), nil
 }
@@ -136,12 +140,16 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSou
 // resolveAllowlist is the single place cfg.ToolAllowlist gets defaulted,
 // so buildToolSource's actual enforcement and runAgent's system-prompt
 // claim about available tools can never drift apart -- telling the model
-// it has a tool the allowlist then refuses is worse than not mentioning it.
+// it has a tool the allowlist then refuses is worse than not mentioning
+// it. The default is agent's own conversational primitives PLUS Phase 3's
+// curated mesh-service tool names (meshservices stays out of package
+// agent to avoid a reverse dependency; this is the single place the two
+// defaults get merged).
 func resolveAllowlist(cfg config.Config) []string {
 	if len(cfg.ToolAllowlist) > 0 {
 		return cfg.ToolAllowlist
 	}
-	return agent.DefaultToolAllowlist
+	return append(append([]string{}, agent.DefaultToolAllowlist...), meshservices.AllowedToolNames()...)
 }
 
 func allowlistIncludes(allowlist []string, name string) bool {
@@ -173,11 +181,15 @@ func agentLogPath() (string, error) {
 // this function only supplies the cadence of asking it to keep going, not
 // any of the mesh actions themselves.
 func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger) {
-	toolsLine := "Your only tools are macula-mcp's mesh_* tools."
+	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
+		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
+		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
+		"arguments aren't advertised; if a call errors, read the error and retry with corrected " +
+		"arguments rather than giving up after one attempt."
 	if localToolsReachable {
-		toolsLine = "You have macula-mcp's mesh_* tools, plus shell_exec/read_file/write_file " +
-			"scoped to a local working directory -- use those only when actual local work " +
-			"(not just mesh conversation) is genuinely called for."
+		toolsLine += " You also have shell_exec/read_file/write_file scoped to a local working " +
+			"directory -- use those only when actual local work (not just mesh conversation or " +
+			"a mesh service) is genuinely called for."
 	}
 	systemPrompt := fmt.Sprintf(
 		"You are a lazymesh agent cooperating with other agents on the Macula mesh. "+

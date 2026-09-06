@@ -1,7 +1,8 @@
 # lazymesh — MVP Plan
 
-**Status:** Phases 1 and 2 implemented and mostly live-verified. Phase 3
-not started.
+**Status:** Phases 1, 2, and 3 implemented and live-verified. All three
+Fable-identified required security findings fixed (see "Security review
+findings" below).
 **Created:** 2026-09-06
 **Last Updated:** 2026-09-06
 
@@ -138,15 +139,42 @@ name) holding:
       `shell_exec` is no longer reachable by default even with
       `local_tools.enabled` — see "Security review findings" for why and
       what changed.
-- [ ] **Phase 3: Prefer mesh services over local tools.** When a task can
-      be done by calling a real mesh RPC procedure (discovered via
-      `mesh_find_records_by_type("procedure_advertisement")`) instead of
-      a local tool, the agent should default to that — dogfooding the
-      mesh's own service directory as the preferred capability source
-      over hardcoded integrations. This is the philosophically important
-      one for this project's actual thesis (decentralized capability
-      discovery, not another app with a fixed integration list) but it
-      depends on Phase 1 actually working first.
+- [x] **Phase 3: Prefer mesh services over local tools.** Implemented
+      2026-09-06: `internal/meshservices` discovers procedure
+      advertisements live via `mesh_find_records_by_type` and exposes
+      real mesh RPC procedures as tools, on by default (no config flag --
+      unlike Phase 2's local tools, this is the plan's actual thesis, not
+      an opt-in extra). Built directly on a teammate's live mesh survey
+      (io.macula realm), not designed in the abstract: `Curated` in
+      `catalog.go` lists 17 procedures across `hecate-rag` (9 read-only
+      methods), `hecate_agora` (all 4), and `hecate_graph` (4 read-only,
+      excluding the ownership-gated `learn_link`) -- every mutating,
+      gated, or unverified-safe procedure the survey found (`hecate-llm`,
+      `hecate_mail`, `hecate_citizens`, `warden`/`sentinel`, realm-bootstrap
+      and per-session DHT noise) is deliberately excluded, not just
+      unimplemented.
+
+      Never exposes a generic "call any mesh procedure" tool -- only
+      individually named, curated, currently-discovered procedures ever
+      become tools (`mesh_service_<domain>_<method>`), which is what keeps
+      this from reopening the exact risk Fable's finding #1 exists to
+      close (see "Security review findings"). Discovery is cached 60s
+      (the raw DHT dump is large and Loop re-lists tools every
+      conversation turn) but stays genuinely dynamic: an undiscovered
+      curated procedure just isn't listed that round, not a fixed catalog
+      standing in for real discovery. A retry-once policy and a
+      hex-encoded-ASCII decode pass (both directly from the survey's own
+      findings -- transient QUIC flakiness that resolves on retry, and
+      `hecate-llm.check_health`'s status strings arriving as raw hex) sit
+      between the raw `mesh_call` result and what the model sees.
+
+      Live-verified 2026-09-06: real discovery against the live mesh found
+      real curated procedures currently advertised; a real call to
+      `hecate_agora.get_posts_page` round-tripped successfully
+      (`internal/meshservices`'s own `//go:build live` test); the full
+      production wiring (`cmd/lazymesh`'s `buildToolSource`, exactly as
+      the real binary builds it) lists at least one `mesh_service_*` tool
+      by default alongside `mesh_hello`, with no config changes needed.
 
 ## Security review findings (2026-09-06)
 
