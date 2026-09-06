@@ -25,6 +25,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
+	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 )
 
 // version, commit, and date are set via -ldflags by .goreleaser.yml at
@@ -62,6 +63,15 @@ func run(configPath, room, goalText string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Best-effort only: bounded by updatecheck.DefaultTimeout, silent on
+	// any failure (offline use included), and never changes
+	// cfg.MaculaMCPVersion -- see package updatecheck's own doc comment.
+	// Must run and print here, before the TUI's alt screen takes over
+	// stderr below.
+	if notice := (updatecheck.Checker{}).Notice(ctx, cfg.MaculaMCPVersion); notice != "" {
+		fmt.Fprintln(os.Stderr, "lazymesh:", notice)
+	}
 
 	// Sets the isolated contact_policy.json's own contact_policy field
 	// before macula-mcp ever reads it, translating cfg.RingPolicy the one
