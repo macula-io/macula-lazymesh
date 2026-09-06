@@ -124,6 +124,16 @@ type Config struct {
 	// the pop-up) -- "accept-everyone"/"do-not-disturb" do map directly,
 	// onto "open"/"closed", since those need no per-peer judgment at all.
 	RingPolicy string `yaml:"ring_policy,omitempty"`
+	// ExpressiveStyle permits the agent's buildSystemPrompt tone guidance
+	// to encourage emoji/expressive conversational style in room text
+	// (mesh_say), the way goose's own mesh conversation does -- an
+	// operator preference, per Raf's own steer 2026-09-06
+	// (macula-io/macula-lazymesh#5), not a hardcoded persona. Off by
+	// default, same conservative posture as LocalTools/ToolAllowlist: an
+	// operator who wants the drier existing tone is never stuck with a
+	// style change they didn't ask for; one who wants it sets this true
+	// in their own config.yaml.
+	ExpressiveStyle bool `yaml:"expressive_style,omitempty"`
 }
 
 // RingPolicyContactPolicyFileValue translates p into the value written
@@ -173,6 +183,7 @@ func Default() Config {
 		MaculaMCPVersion:  "0.24.2",
 		ContactPolicyFile: filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:        "always-ask",
+		ExpressiveStyle:   false,
 	}
 }
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -124,7 +126,7 @@ func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
 
 func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 	for _, room := range []string{"", "agents.room.deadbeef"} {
-		got := buildSystemPrompt(room, "", false)
+		got := buildSystemPrompt(room, "", false, false)
 		if !strings.Contains(got, "mesh_rooms") {
 			t.Fatalf("room=%q: expected system prompt to instruct calling mesh_rooms, got: %s", room, got)
 		}
@@ -135,14 +137,14 @@ func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyRoomHasNoPriorityHint(t *testing.T) {
-	got := buildSystemPrompt("", "", false)
+	got := buildSystemPrompt("", "", false, false)
 	if strings.Contains(got, "prioritize this room") {
 		t.Fatalf("expected no room-specific priority hint when room is empty, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false)
 	if !strings.Contains(got, "prioritize this room: agents.room.deadbeef") {
 		t.Fatalf("expected the given room to appear as a priority hint, got: %s", got)
 	}
@@ -156,18 +158,18 @@ func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *
 }
 
 func TestBuildSystemPrompt_IncludesGoalWhenSet(t *testing.T) {
-	got := buildSystemPrompt("", "find the best pun on the mesh", false)
+	got := buildSystemPrompt("", "find the best pun on the mesh", false, false)
 	if !strings.Contains(got, "Additional objective: find the best pun on the mesh") {
 		t.Fatalf("expected goal text to appear verbatim, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
-	without := buildSystemPrompt("", "", false)
+	without := buildSystemPrompt("", "", false, false)
 	if strings.Contains(without, "shell_exec") {
 		t.Fatalf("expected no mention of shell_exec when local tools aren't reachable, got: %s", without)
 	}
-	with := buildSystemPrompt("", "", true)
+	with := buildSystemPrompt("", "", true, false)
 	if !strings.Contains(with, "shell_exec") {
 		t.Fatalf("expected shell_exec to be mentioned when local tools are reachable, got: %s", with)
 	}
@@ -181,5 +183,84 @@ func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
 		if !strings.Contains(p, "mesh_rooms") {
 			t.Fatalf("%s: expected the per-cycle prompt to call mesh_rooms so scope isn't pinned to one room, got: %s", name, p)
 		}
+	}
+}
+
+// Covers macula-io/macula-lazymesh#3: the system prompt must tell the model
+// to check mesh_rooms's own joined list before calling mesh_join_room again,
+// rather than assuming it will remember joining from earlier in the
+// conversation -- history gets trimmed, so that memory isn't reliable.
+func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false)
+	if !strings.Contains(got, "joined list") {
+		t.Fatalf("expected system prompt to reference mesh_rooms's joined list, got: %s", got)
+	}
+	if !strings.Contains(got, "never call mesh_join_room for a room_topic already") {
+		t.Fatalf("expected system prompt to instruct against re-joining an already-joined room, got: %s", got)
+	}
+}
+
+func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false)
+	if !strings.Contains(got, "check mesh_rooms's own joined list first") {
+		t.Fatalf("expected the priority-room hint to check the joined list before joining, got: %s", got)
+	}
+}
+
+// Covers macula-io/macula-lazymesh#5: expressiveStyle is off by default
+// (existing dry tone unchanged) and, when enabled, adds explicit
+// permission to use emoji/expressive tone in room conversation -- never a
+// hardcoded persona forced on every operator.
+func TestBuildSystemPrompt_ExpressiveStyleOffByDefault(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false)
+	if strings.Contains(got, "emoji") {
+		t.Fatalf("expected no emoji guidance when expressiveStyle is false, got: %s", got)
+	}
+}
+
+func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
+	got := buildSystemPrompt("", "", false, true)
+	if !strings.Contains(got, "emoji") {
+		t.Fatalf("expected emoji guidance when expressiveStyle is true, got: %s", got)
+	}
+	if !strings.Contains(got, "mesh_say") {
+		t.Fatalf("expected the guidance to scope expressiveness to room conversation text, got: %s", got)
+	}
+}
+
+// Covers macula-io/macula-lazymesh#6: mesh_goodbye must be called with a
+// bounded context (never run()'s own ctx, already cancelled by the time
+// every exit path reaches this point) and must never propagate a failure
+// -- shutdown has to complete regardless of whether the mesh got the
+// message.
+
+type fakeGoodbyeCaller struct {
+	calledName  string
+	gotDeadline bool
+	err         error
+}
+
+func (f *fakeGoodbyeCaller) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	f.calledName = name
+	_, f.gotDeadline = ctx.Deadline()
+	return "", f.err
+}
+
+func TestSayGoodbye_CallsMeshGoodbyeWithBoundedTimeout(t *testing.T) {
+	f := &fakeGoodbyeCaller{}
+	sayGoodbye(f, time.Second)
+	if f.calledName != "mesh_goodbye" {
+		t.Fatalf("expected mesh_goodbye to be called, got %q", f.calledName)
+	}
+	if !f.gotDeadline {
+		t.Fatalf("expected sayGoodbye to bound the call with a deadline, got none")
+	}
+}
+
+func TestSayGoodbye_ToleratesFailureWithoutPropagatingIt(t *testing.T) {
+	f := &fakeGoodbyeCaller{err: errors.New("macula-mcp unreachable")}
+	sayGoodbye(f, time.Second) // must not panic and has nothing to return
+	if f.calledName != "mesh_goodbye" {
+		t.Fatalf("expected mesh_goodbye to still have been attempted, got %q", f.calledName)
 	}
 }

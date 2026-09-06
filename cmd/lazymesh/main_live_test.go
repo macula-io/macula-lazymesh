@@ -164,3 +164,33 @@ func TestLiveBuildToolSource_ExplicitAllowlistOverrideExposesShellExec(t *testin
 		t.Fatalf("expected non-empty shell_exec result")
 	}
 }
+
+// TestLiveSayGoodbye_CallsRealMeshGoodbye confirms sayGoodbye's wiring
+// against a real macula-mcp spawn, not just the fake in main_test.go
+// (macula-io/macula-lazymesh#6): mesh_hello establishes presence, then
+// sayGoodbye's mesh_goodbye call must succeed against the live mesh.
+func TestLiveSayGoodbye_CallsRealMeshGoodbye(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.CallTool(ctx, "mesh_hello", nil); err != nil {
+		t.Fatalf("mesh_hello: %v", err)
+	}
+
+	// sayGoodbye takes its own bounded context internally (never ctx above),
+	// exactly as run() calls it after program.Run() returns.
+	sayGoodbye(client, goodbyeTimeout)
+
+	// A second mesh_hello confirms the session is still usable afterward --
+	// sayGoodbye must not tear down the MCP connection itself, only tell
+	// the mesh this agent is leaving.
+	if _, err := client.CallTool(ctx, "mesh_hello", nil); err != nil {
+		t.Fatalf("mesh_hello after sayGoodbye: %v", err)
+	}
+}

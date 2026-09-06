@@ -131,7 +131,7 @@ func run(configPath, room, goalText string) error {
 	agentLog := log.New(logFile, "", log.LstdFlags)
 	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog, tuiEvents, userInputCh)
+	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, agentLog, tuiEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -145,7 +145,54 @@ func run(configPath, room, goalText string) error {
 	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	_, err = program.Run()
 	cancel()
+
+	// Every deliberate exit path converges here: the TUI's own Quit ("q")
+	// and ForceQuit (ctrl+c) key bindings both return tea.Quit, and an
+	// external SIGINT/SIGTERM is caught by bubbletea's own signal handling
+	// (see handleSignals in its source), which also ends program.Run() --
+	// independently of this function's own signal.NotifyContext above,
+	// which only governs ctx. So a single call here, after program.Run()
+	// returns and before the deferred client.Close() below runs, covers
+	// mesh_goodbye for all of them; ctx itself must not be reused since
+	// it's already cancelled by now on every path (see sayGoodbye's doc).
+	sayGoodbye(client, goodbyeTimeout)
+
 	return err
+}
+
+// goodbyeTimeout bounds the deliberate mesh_goodbye call at shutdown --
+// same posture as every other bounded operation in this codebase
+// (maxConsecutiveErrors, maxHistoryMessages): a slow or unresponsive
+// macula-mcp must never hang shutdown indefinitely. 20s matches
+// meshservices' own callTimeoutMS convention for a bounded mesh
+// operation -- verified live: mesh_goodbye does real work (leaves every
+// room, publishes agent.goodbye, tears down every subscription), and an
+// initial 5s bound was measured too short against the real mesh, timing
+// out instead of completing cleanly.
+const goodbyeTimeout = 20 * time.Second
+
+// goodbyeCaller is the minimal subset of *mcpclient.Client sayGoodbye
+// needs, so its ordering/timeout/error-tolerance behavior has a direct
+// unit test against a fake, independent of spawning a real macula-mcp
+// subprocess (see main_live_test.go for the real-spawn version).
+type goodbyeCaller interface {
+	CallTool(ctx context.Context, name string, args map[string]any) (string, error)
+}
+
+// sayGoodbye calls mesh_goodbye directly against client -- a deterministic
+// shutdown step, not an LLM tool-call decision, so it deliberately bypasses
+// the agent loop and DefaultToolAllowlist entirely (macula-io/macula-
+// lazymesh#6). Uses a fresh context.Background()-derived timeout rather
+// than run()'s own ctx, which is already cancelled by the time every
+// caller reaches this point. Best-effort: a failure is logged, never
+// returned -- shutdown must complete regardless of whether the mesh got
+// the message.
+func sayGoodbye(client goodbyeCaller, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if _, err := client.CallTool(ctx, "mesh_goodbye", nil); err != nil {
+		fmt.Fprintln(os.Stderr, "lazymesh: mesh_goodbye failed:", err)
+	}
 }
 
 func buildProvider(cfg config.Config) (provider.Provider, error) {
@@ -252,7 +299,7 @@ func agentLogPath() (string, error) {
 // model is told to discover its actual participation scope live via
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
-func buildSystemPrompt(room, goalText string, localToolsReachable bool) string {
+func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle bool) string {
 	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
 		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
 		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
@@ -266,9 +313,10 @@ func buildSystemPrompt(room, goalText string, localToolsReachable bool) string {
 	roomHint := ""
 	if room != "" {
 		roomHint = fmt.Sprintf(
-			" In particular, prioritize this room: %s -- join it if you have not "+
-				"already, introduce yourself briefly, and participate naturally: read "+
-				"what others say, respond when it makes sense.",
+			" In particular, prioritize this room: %s -- check mesh_rooms's own "+
+				"joined list first and only call mesh_join_room if that room_topic is "+
+				"not already there, introduce yourself briefly, and participate "+
+				"naturally: read what others say, respond when it makes sense.",
 			room,
 		)
 	}
@@ -277,7 +325,11 @@ func buildSystemPrompt(room, goalText string, localToolsReachable bool) string {
 			"%s%s "+
 			"Your participation scope is every room you are currently a member of, not "+
 			"just one you were pointed at -- call mesh_rooms (no arguments) to find out "+
-			"which rooms that is. "+
+			"which rooms that is. Its joined list is the definitive record of what you "+
+			"have already joined -- never call mesh_join_room for a room_topic already "+
+			"in that list, even if you don't recall joining it earlier in this "+
+			"conversation; check mesh_rooms fresh each time instead of relying on "+
+			"conversation memory, which gets trimmed. "+
 			"IMPORTANT, every single time you are prompted (not just when told to): call "+
 			"mesh_read_inbox with no room_topic argument (so it covers every room) and "+
 			"check its rings.pending list for anything addressed to you from ANY peer, not "+
@@ -289,6 +341,12 @@ func buildSystemPrompt(room, goalText string, localToolsReachable bool) string {
 			"mesh_say with a long wait_reply_seconds to listen efficiently instead of "+
 			"returning immediately.",
 		toolsLine, roomHint)
+	if expressiveStyle {
+		systemPrompt += " Feel free to be expressive in room conversation (mesh_say text) when " +
+			"talking to other agents -- emoji and status markers like ❌/⏳/✅ are welcome where " +
+			"they fit naturally. Don't force it into every message, and keep it to conversation " +
+			"text, not tool arguments."
+	}
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
 	}
@@ -303,8 +361,8 @@ func buildSystemPrompt(room, goalText string, localToolsReachable bool) string {
 // wait on mesh_say's own wait_reply_seconds) -- this function only
 // supplies the cadence of asking it to keep going, not any of the mesh
 // actions themselves.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable)
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle bool, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle)
 
 	loop := agent.NewLoop(p, tools, systemPrompt)
 	events := make(chan agent.Event, 16)
@@ -405,9 +463,9 @@ const (
 		"every room you are currently a member of for anything new since your last check, " +
 		"responding if warranted -- not just the room you were originally pointed at, if any."
 	agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
-		"addressed to you via mesh_answer_ring. Then call mesh_rooms, join any room you were " +
-		"pointed at that you are not already in, and start participating in every room you are " +
-		"a member of."
+		"addressed to you via mesh_answer_ring. Then call mesh_rooms; join any room you were " +
+		"pointed at only if its room_topic is not already in mesh_rooms's own joined list, and " +
+		"start participating in every room you are a member of."
 )
 
 // nextBackoff doubles d, capped at maxBackoff -- pulled out as a pure

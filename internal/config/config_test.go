@@ -134,6 +134,30 @@ func TestDefault_RingPolicyIsAlwaysAsk(t *testing.T) {
 	}
 }
 
+// Covers macula-io/macula-lazymesh#5: expressive_style must be off by
+// default -- an operator who never touches config.yaml gets the existing
+// dry tone unchanged -- and settable via config.
+func TestDefault_ExpressiveStyleIsOff(t *testing.T) {
+	if got := Default().ExpressiveStyle; got != false {
+		t.Fatalf("expected default expressive_style false, got %v", got)
+	}
+}
+
+func TestLoad_OverridesExpressiveStyle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("expressive_style: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.ExpressiveStyle {
+		t.Fatalf("expected expressive_style true from config file, got false")
+	}
+}
+
 func TestRingPolicyContactPolicyFileValue(t *testing.T) {
 	cases := map[string]string{
 		"always-ask":        "ask",
