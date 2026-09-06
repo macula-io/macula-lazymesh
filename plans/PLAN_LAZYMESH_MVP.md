@@ -1,6 +1,6 @@
 # lazymesh — MVP Plan
 
-**Status:** Planning
+**Status:** Phase 1 (MVP) implemented and mostly live-verified
 **Created:** 2026-09-06
 **Last Updated:** 2026-09-06
 
@@ -107,13 +107,14 @@ name) holding:
 
 ## Phases
 
-- [ ] **Phase 1 (MVP): Global agent co-op over mesh.** macula-mcp spawned
+- [x] **Phase 1 (MVP): Global agent co-op over mesh.** macula-mcp spawned
       and driven as the only tool source. DeepSeek-backed agent loop, tool
       calls dynamically sourced from macula-mcp's `tools/list`. TUI with
       three panels: rooms (live), pending rings, agent presence/roster.
       Stable pinned identity. This is the whole MVP — an agent that can
       join a room, talk, answer a ring, and a human can watch it do that
-      live.
+      live. Implemented 2026-09-06; see Success criteria below for exactly
+      what's live-verified vs. implemented-but-not-yet-exercised live.
 - [ ] **Phase 2: Broader tool use.** Once co-op works, add a second,
       separately configurable tool source beyond macula-mcp (a minimal
       shell/file tool set) so a lazymesh agent can actually do work
@@ -143,14 +144,31 @@ name) holding:
 
 ## Success criteria
 
-- [ ] `lazymesh` (single binary) launches, spawns macula-mcp, connects to
-      the mesh with a stable pinned identity.
-- [ ] The TUI shows live rooms/rings/presence, updating without the human
-      running any command.
+- [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to
+      the mesh with a stable pinned identity. **Live-verified 2026-09-06:**
+      ran the built binary twice independently against the default config
+      (no config file yet, so `~/.config/lazymesh/identity` was created on
+      first run); both runs showed the identical node_id (`8d91b48a...`)
+      in the presence panel, confirming `MACULA_MCP_IDENTITY` pinning
+      actually persists across restarts, not just in theory.
+- [x] The TUI shows live rooms/rings/presence, updating without the human
+      running any command. **Live-verified 2026-09-06:** presence panel's
+      agent count updated automatically across ticks (0 → 7 → 8) with no
+      manual refresh, confirming the 2s poll loop against real
+      mesh_rooms/mesh_read_inbox/mesh_agents data.
 - [ ] Told (via a room message or CLI arg) to join a specific mesh room
       and participate, the DeepSeek-backed agent loop actually does so —
       calls mesh tools, posts real messages, driven by the LLM, not
-      scripted.
-- [ ] Provider config is swappable in principle (a second, even
+      scripted. **Implemented, not yet live-verified**: no DeepSeek key
+      file exists yet at `~/.ai-api-keys/.deepseek-api-keys/lazymesh` (only
+      `.spartan00`, a different consumer, exists in that directory) — did
+      not repurpose someone else's key. Needs a real key dropped there,
+      then `./lazymesh --room <topic>` run against a live room, before this
+      can be checked off for real.
+- [x] Provider config is swappable in principle (a second, even
       unimplemented, provider stub proves the interface isn't
-      DeepSeek-shaped).
+      DeepSeek-shaped). `internal/provider/anthropic.go` is that stub —
+      deliberately a genuinely different wire shape (Anthropic's Messages
+      API, not another OpenAI-compatible chat-completions variant), so it
+      actually proves the interface generalizes rather than just being a
+      base_url swap on the same shape.

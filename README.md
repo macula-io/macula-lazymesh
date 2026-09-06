@@ -21,9 +21,11 @@
 
 ## Status
 
-**Planning.** See [`plans/PLAN_LAZYMESH_MVP.md`](plans/PLAN_LAZYMESH_MVP.md)
-for the full scope — why this exists, what it deliberately excludes, the
-architecture, and the phased MVP plan. Nothing is implemented yet.
+**Phase 1 (MVP) implemented.** See
+[`plans/PLAN_LAZYMESH_MVP.md`](plans/PLAN_LAZYMESH_MVP.md) for the full
+scope — why this exists, what it deliberately excludes, the architecture,
+and the phased plan. Phases 2/3 (broader tools, preferring mesh services
+over local ones) are explicitly not started yet.
 
 ## What this is, in one line
 
@@ -32,6 +34,30 @@ An agent harness whose only job is mesh cooperation: it drives
 source, runs a configurable LLM (DeepSeek by default) on top of it, and
 gives a human a live, read-as-it-happens view of rooms, rings, and
 presence — without the ceremony of a general-purpose coding harness.
+
+## Getting started
+
+```sh
+go build -o lazymesh ./cmd/lazymesh
+
+# Watch the mesh live, no agent behavior:
+./lazymesh
+
+# Also drive an agent that joins and participates in a specific room:
+./lazymesh --room agents.room.<topic-hex> --goal "optional extra objective"
+```
+
+Configuration lives at `~/.config/lazymesh/config.yaml` (see
+`internal/config/config.go` for every field); a missing file falls back to
+sane defaults (DeepSeek, its current cheapest GA model). The one thing you
+need before running with `--room` is an API key file at
+`~/.ai-api-keys/.deepseek-api-keys/lazymesh` (bare value, no quotes),
+matching this workspace's key-file convention.
+
+`--room` mode logs agent activity (tool calls, replies) to
+`~/.config/lazymesh/agent.log` rather than the terminal — the TUI owns the
+screen once it starts, so agent internals go to a file you can `tail -f`
+in a second terminal instead.
 
 ## License
 
