@@ -98,18 +98,31 @@ Vim-style modal input — **normal mode by default**:
 | `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
 | `m` | expand/collapse the full mesh view (rooms/rings/presence) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
+| `v` | toggle verbose mode (tool calls inline in chat vs. the status line) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
 | `i` | enter insert mode to compose a message | — |
+| `ctrl+e` | compose in `$EDITOR` (falls back to `vi`), lands in insert mode with the result | compose in `$EDITOR`, same as normal mode |
 | `Esc` | — | return to normal mode |
 | `Enter` | — | send the composed message to the agent |
 | `q` | quit | (typed as text — never steals a "q" while you're composing) |
 | `ctrl+c` | quit | quit (works in either mode) |
 
-A persistent one-line status strip (`3 rooms · 2 pending rings · 8 agents
-seen`, position configurable via `status_bar_position: top\|bottom` in
-config, default bottom) is always visible whether the chat pane or the
-full mesh view is showing — collapsing the mesh view never loses that
-ambient awareness.
+The compose line is always visible, in either mode — a draft you start
+composing and step away from with `Esc` stays there, dimmed but not lost,
+until you press `i` again.
+
+A status block (position configurable via `status_bar_position:
+top\|bottom` in config, default bottom) is always visible whether the chat
+pane or the full mesh view is showing — collapsing the mesh view never
+loses that ambient awareness. It grows from a minimum of two lines:
+
+- a vim-style mode indicator (`-- NORMAL --` / `-- INSERT --`)
+- once the agent's made its first tool call, a line with the most recent
+  one (`mesh_call`, `mesh_say`, ...) — this is where routine tool-call
+  "chatter" goes by default, keeping the conversation pane to actual
+  dialogue; `v` toggles it back inline into the chat pane instead
+- the summary line (`3 rooms · 2 pending rings · 8 agents seen`) plus the
+  current key hints
 
 **Audio cues**, plain terminal bell only (no audio library, no sound
 files): single bell for an ordinary room message from someone else,

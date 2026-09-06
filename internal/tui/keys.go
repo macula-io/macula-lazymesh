@@ -16,6 +16,8 @@ type KeyMap struct {
 	Quit          key.Binding // "q" -- normal mode only, never steals a "q" typed while composing
 	ForceQuit     key.Binding // ctrl+c -- works in either mode, the universal escape hatch
 	Submit        key.Binding
+	ToggleChatter key.Binding // routine tool-call activity: status line (default) vs inline in chat
+	OpenEditor    key.Binding // ctrl+e -- works in either mode, always lands back in insert mode
 
 	// Ring pop-up only, phone-metaphor: Answer/Decline/Answer+Trust.
 	Answer  key.Binding
@@ -34,6 +36,8 @@ var DefaultKeyMap = KeyMap{
 	Quit:          key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 	ForceQuit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 	Submit:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+	ToggleChatter: key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "verbose (show tool activity in chat)")),
+	OpenEditor:    key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "compose in $EDITOR")),
 	Answer:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "answer")),
 	Decline:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "decline")),
 	Trust:         key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "answer + trust")),

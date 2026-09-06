@@ -8,6 +8,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -94,6 +96,16 @@ type Model struct {
 	statusBarPosition string // "top" or "bottom"
 	agentModel        string // see Options.AgentModel
 
+	// showChatter controls where routine tool-call activity (mesh
+	// operations) is shown. Off by default: it goes to lastChatter, a
+	// single ambient line in the status block, keeping the conversation
+	// pane to actual dialogue (you/agent/error/system). Toggling it on
+	// (the 'v' key) restores the old behavior of every tool call/result
+	// also landing as its own line in chatEntries -- for anyone who wants
+	// the full blow-by-blow inline rather than the ambient summary.
+	showChatter bool
+	lastChatter string // most recent tool call/result, rendered collapsed-form; empty until the first one
+
 	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
 
 	chatEntries  []chatEntry
@@ -171,6 +183,47 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 	}
 }
 
+// editorFinishedMsg reports the outcome of an $EDITOR round-trip started
+// by openEditorCmd. path is always the temp file's name (even on error) so
+// handleEditorFinished can clean it up unconditionally.
+type editorFinishedMsg struct {
+	path string
+	err  error
+}
+
+// openEditorCmd is issue #2's "editor-based composition": write the
+// current draft to a temp file, suspend the TUI (tea.ExecProcess) to run
+// $EDITOR against it, and read the result back on return. Falls back to
+// "vi" when $EDITOR is unset -- something must run, and vi is the one
+// editor a POSIX system is guaranteed to have.
+func openEditorCmd(current string) tea.Cmd {
+	f, err := os.CreateTemp("", "lazymesh-compose-*.md")
+	if err != nil {
+		return func() tea.Msg { return editorFinishedMsg{err: err} }
+	}
+	path := f.Name()
+	_, writeErr := f.WriteString(current)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return func() tea.Msg { return editorFinishedMsg{path: path, err: writeErr} }
+	}
+	if closeErr != nil {
+		return func() tea.Msg { return editorFinishedMsg{path: path, err: closeErr} }
+	}
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	c := exec.Command(editor, path)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{path: path, err: err}
+	})
+}
+
 func sendUserInput(ch chan<- string, text string) tea.Cmd {
 	return func() tea.Msg {
 		if ch != nil {
@@ -201,6 +254,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ringAnsweredMsg:
 		return m.handleRingAnswered(msg)
+
+	case editorFinishedMsg:
+		return m.handleEditorFinished(msg)
 	}
 	return m, nil
 }
@@ -212,6 +268,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.mode == ModeRingPopup {
 		return m.handleRingPopupKey(msg)
+	}
+
+	// Works from either Normal or Insert -- composing in $EDITOR is useful
+	// as a way INTO a message (from Normal) just as much as a way to
+	// finish one already started (from Insert), and always lands in
+	// Insert with the edited text loaded either way.
+	if key.Matches(msg, DefaultKeyMap.OpenEditor) {
+		return m, openEditorCmd(m.input.Value())
 	}
 
 	if m.mode == ModeInsert {
@@ -254,6 +318,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, DefaultKeyMap.ToggleDetails):
 		m.detailsExpanded = !m.detailsExpanded
 		m.syncViewport()
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
+		m.showChatter = !m.showChatter
+		m.resizeComponents()
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Up):
 		if !m.meshExpanded {
@@ -336,19 +404,68 @@ func (m *Model) processPendingRings() []tea.Cmd {
 	return cmds
 }
 
+// isChatter reports whether ev is routine tool-call activity (mesh
+// operations) rather than dialogue -- the "technical chatter" issue #2
+// relocates out of the conversation pane by default. Assistant messages,
+// errors, and system notices (backoff, max-failures) always stay in the
+// chat pane regardless of showChatter -- they're not routine, an operator
+// needs to see them there.
+func isChatter(kind agent.EventKind) bool {
+	return kind == agent.EventToolCall || kind == agent.EventToolResult
+}
+
 func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	pattern := bellNone
 	switch ev.Kind {
 	case agent.EventBackoff, agent.EventMaxFailuresReached:
 		pattern = bellTriple
 	}
-	m.chatEntries = append(m.chatEntries, chatEntryFromAgentEvent(agent.Event(ev)))
-	m.syncViewport()
+
+	entry := chatEntryFromAgentEvent(agent.Event(ev))
+	if isChatter(ev.Kind) && !m.showChatter {
+		m.lastChatter = entry.render(false)
+		m.resizeComponents() // the chatter line may be appearing for the first time
+	} else {
+		m.chatEntries = append(m.chatEntries, entry)
+		m.syncViewport()
+	}
 	return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
 }
 
+// resizeComponents fits the chat viewport to whatever's left after the
+// status block, the input line, and one blank line of slack. The status
+// block's own height isn't fixed any more (issue #2's auto-grow: a mode
+// indicator line always, a chatter line once any tool activity has
+// happened), so this has to be called again whenever statusLines' length
+// can change -- not just on tea.WindowSizeMsg -- or the viewport would
+// either overflow the terminal or leave a stale gap.
+// handleEditorFinished loads the $EDITOR round-trip's result into the
+// compose line and always lands in Insert -- whether openEditorCmd was
+// triggered from Normal or Insert, the natural next step is reviewing/
+// sending what was just written, not going back to navigation.
+func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
+	if msg.path != "" {
+		defer os.Remove(msg.path)
+	}
+	if msg.err != nil {
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("$EDITOR composition failed: %s", msg.err)})
+		m.syncViewport()
+		return m, nil
+	}
+	content, err := os.ReadFile(msg.path)
+	if err != nil {
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not read composed message: %s", err)})
+		m.syncViewport()
+		return m, nil
+	}
+	m.input.SetValue(strings.TrimRight(string(content), "\n"))
+	m.input.CursorEnd()
+	m.mode = ModeInsert
+	return m, m.input.Focus()
+}
+
 func (m *Model) resizeComponents() {
-	const reserved = 3 // status strip + input line + one blank line of slack
+	reserved := len(m.statusLines()) + 2 // input line + one blank line of slack
 	h := m.height - reserved
 	if h < 3 {
 		h = 3
@@ -412,7 +529,52 @@ func (m Model) View() string {
 	return strings.Join([]string{body, input, status}, "\n")
 }
 
-func (m Model) renderStatusStrip() string {
+// statusLines is the status block's content, one entry per rendered line.
+// resizeComponents' reserved-height math counts this slice directly, so
+// any new line kind that can appear/disappear at runtime (the chatter
+// line here) must go through this, not be appended ad hoc in
+// renderStatusStrip -- otherwise the viewport height and what's actually
+// on screen drift apart.
+func (m Model) statusLines() []string {
+	lines := []string{m.renderModeIndicator()}
+	if chatter := m.renderChatterLine(); chatter != "" {
+		lines = append(lines, chatter)
+	}
+	lines = append(lines, m.renderSummaryLine())
+	return lines
+}
+
+// renderModeIndicator follows vim's own bottom-of-screen convention
+// (`-- INSERT --` etc.) -- issue #2's "mode indicator" ask, made its own
+// line rather than folded into the summary line so it's legible at a
+// glance rather than buried mid-sentence.
+func (m Model) renderModeIndicator() string {
+	switch m.mode {
+	case ModeInsert:
+		return statusStripStyle.Render("-- INSERT --")
+	case ModeRingPopup:
+		return statusStripStyle.Render("-- RING --")
+	default:
+		return dimStyle.Render("-- NORMAL --")
+	}
+}
+
+// renderChatterLine is the ambient stand-in for tool-call activity that
+// isChatter routed out of the chat pane. Empty (rendered as no line at
+// all, see statusLines) until the first one arrives, and suppressed
+// entirely once showChatter is on -- that activity is already inline in
+// the chat pane at that point, so this would just be the same line twice.
+func (m Model) renderChatterLine() string {
+	if m.showChatter || m.lastChatter == "" {
+		return ""
+	}
+	// m.lastChatter is already a rendered chatEntry line (its own
+	// time/tool styling) -- prefix only, don't re-wrap it in dimStyle,
+	// which would fight the ANSI codes already embedded in it.
+	return dimStyle.Render("last: ") + m.lastChatter
+}
+
+func (m Model) renderSummaryLine() string {
 	line := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
 		len(m.state.joined), len(m.state.pending), len(m.state.agents))
 	if m.agentModel != "" {
@@ -422,9 +584,9 @@ func (m Model) renderStatusStrip() string {
 		line += "  [muted]"
 	}
 
-	hint := "m: mesh view  i: compose  e: expand  b: mute  q: quit"
+	hint := "m: mesh view  i: compose  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit"
 	if m.mode == ModeInsert {
-		hint = "esc: normal mode  enter: send"
+		hint = "esc: normal mode  enter: send  ctrl+e: edit in $EDITOR"
 	}
 
 	out := statusStripStyle.Render(line) + "  " + dimStyle.Render(hint)
@@ -434,11 +596,18 @@ func (m Model) renderStatusStrip() string {
 	return out
 }
 
+func (m Model) renderStatusStrip() string {
+	return strings.Join(m.statusLines(), "\n")
+}
+
+// renderInputLine always shows the compose line, in either mode (issue
+// #4: "always visible", vim-modal input model unchanged) -- a draft
+// started in Insert and left with Esc stays visible, just unfocused,
+// rather than disappearing behind a static hint as before. What actually
+// differs between modes is whether keystrokes route into it at all,
+// handled entirely in handleKey; there's nothing mode-specific to do here.
 func (m Model) renderInputLine() string {
-	if m.mode == ModeInsert {
-		return m.input.View()
-	}
-	return dimStyle.Render("-- normal mode -- press i to compose a message --")
+	return m.input.View()
 }
 
 func (m Model) renderExpandedMesh() string {

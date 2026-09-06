@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -233,6 +235,158 @@ func TestHandleAgentEvent_AppendsChatEntryAndReArms(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatalf("expected handleAgentEvent to return a command (bell + re-arm listen)")
+	}
+}
+
+// Issue #2: mode indicator, vim's own "-- MODE --" convention.
+func TestRenderStatusStrip_ShowsModeIndicator(t *testing.T) {
+	m := newTestModel(t)
+	if !strings.Contains(m.renderStatusStrip(), "-- NORMAL --") {
+		t.Fatalf("expected a NORMAL mode indicator, got %q", m.renderStatusStrip())
+	}
+	updated, _ := m.Update(runeKey('i'))
+	m = updated.(Model)
+	if !strings.Contains(m.renderStatusStrip(), "-- INSERT --") {
+		t.Fatalf("expected an INSERT mode indicator after 'i', got %q", m.renderStatusStrip())
+	}
+}
+
+// Issue #4: the compose line stays visible (and keeps its draft) after
+// Esc back to Normal mode, instead of being replaced by a static hint.
+func TestRenderInputLine_AlwaysVisibleWithRetainedDraft(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('i'))
+	m = updated.(Model)
+	for _, r := range "draft" {
+		updated, _ = m.Update(runeKey(r))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	if m.mode != ModeNormal {
+		t.Fatalf("expected normal mode after Esc, got %v", m.mode)
+	}
+	if !strings.Contains(m.renderInputLine(), "draft") {
+		t.Fatalf("expected the retained draft still visible in normal mode, got %q", m.renderInputLine())
+	}
+}
+
+// Issue #2: routine tool-call activity is relocated out of the
+// conversation pane by default.
+func TestHandleAgentEvent_ToolCallRoutedToChatterLineByDefault(t *testing.T) {
+	m := newTestModel(t)
+	m.agentEvents = make(chan agent.Event)
+
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventToolCall, ToolName: "mesh_call", Text: "{}"}))
+	m = updated.(Model)
+	if len(m.chatEntries) != 0 {
+		t.Fatalf("expected no chat entry for a tool call by default, got %+v", m.chatEntries)
+	}
+	if !strings.Contains(m.lastChatter, "mesh_call") {
+		t.Fatalf("expected the tool call to land in lastChatter, got %q", m.lastChatter)
+	}
+	if !strings.Contains(m.renderStatusStrip(), "mesh_call") {
+		t.Fatalf("expected the status strip to surface the last tool call, got %q", m.renderStatusStrip())
+	}
+}
+
+// Errors and system notices are never "chatter" -- they stay in the chat
+// pane regardless of showChatter.
+func TestHandleAgentEvent_ErrorsNeverRelocated(t *testing.T) {
+	m := newTestModel(t)
+	m.agentEvents = make(chan agent.Event)
+
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventError, ToolName: "mesh_call", Err: fmt.Errorf("boom")}))
+	m = updated.(Model)
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatError {
+		t.Fatalf("expected the error inline in chat, got %+v", m.chatEntries)
+	}
+}
+
+func TestHandleAgentEvent_ToolCallInlineWhenVerbose(t *testing.T) {
+	m := newTestModel(t)
+	m.agentEvents = make(chan agent.Event)
+	m.showChatter = true
+
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventToolCall, ToolName: "mesh_call", Text: "{}"}))
+	m = updated.(Model)
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatToolCall {
+		t.Fatalf("expected the tool call inline in chat when verbose, got %+v", m.chatEntries)
+	}
+}
+
+func TestNormalMode_VTogglesChatter(t *testing.T) {
+	m := newTestModel(t)
+	if m.showChatter {
+		t.Fatalf("expected chatter relocated by default")
+	}
+	updated, _ := m.Update(runeKey('v'))
+	m = updated.(Model)
+	if !m.showChatter {
+		t.Fatalf("expected 'v' to enable verbose chatter")
+	}
+}
+
+func TestInsertMode_VDoesNotToggleChatter_TypesInstead(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('i'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('v'))
+	m = updated.(Model)
+	if m.showChatter {
+		t.Fatalf("'v' while composing must not toggle chatter mode")
+	}
+	if m.input.Value() != "v" {
+		t.Fatalf("expected 'v' to be typed into the input, got %q", m.input.Value())
+	}
+}
+
+// Issue #2: editor-based composition, from either mode.
+func TestOpenEditor_WorksFromNormalAndInsertMode(t *testing.T) {
+	for _, start := range []Mode{ModeNormal, ModeInsert} {
+		m := newTestModel(t)
+		m.mode = start
+		_, cmd := m.Update(typeKey(tea.KeyCtrlE))
+		if cmd == nil {
+			t.Fatalf("expected ctrl+e to return a command from mode %v", start)
+		}
+	}
+}
+
+func TestHandleEditorFinished_LoadsContentAndEntersInsert(t *testing.T) {
+	m := newTestModel(t)
+	f, err := os.CreateTemp("", "lazymesh-test-*.md")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString("composed in $EDITOR"); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+
+	updated, cmd := m.Update(editorFinishedMsg{path: f.Name()})
+	m = updated.(Model)
+	if m.mode != ModeInsert {
+		t.Fatalf("expected insert mode after the editor round-trip, got %v", m.mode)
+	}
+	if m.input.Value() != "composed in $EDITOR" {
+		t.Fatalf("expected the edited content loaded into input, got %q", m.input.Value())
+	}
+	if cmd == nil {
+		t.Fatalf("expected a focus command")
+	}
+	if _, err := os.Stat(f.Name()); !os.IsNotExist(err) {
+		t.Fatalf("expected the temp file to be cleaned up, stat err: %v", err)
+	}
+}
+
+func TestHandleEditorFinished_ErrorSurfacesAsChatEntry(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(editorFinishedMsg{err: fmt.Errorf("boom")})
+	m = updated.(Model)
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatError {
+		t.Fatalf("expected a chatError entry on editor failure, got %+v", m.chatEntries)
 	}
 }
 
