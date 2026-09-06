@@ -699,6 +699,51 @@ regression test to compare each row's *leading padding* against the
 header's (never `Selected`-styled) -- confirmed RED (fails with the bug
 reintroduced) then GREEN (passes with the real fix), not just asserted.
 
+## macula-mcp 0.24.1 bump: cold-start race confirmed fixed, pop-up still blocked (2026-09-06)
+
+`macula-mcp` 0.24.1 (`ceaa13f`, single commit, published to npm) fixes the
+cold-start race this repo found and reported: `presence.currentNodeId()`
+now falls back to the local identity file's `node_id` instead of reading
+`undefined` on a fresh identity's very first call, in both
+`mesh_read_inbox` and `mesh_rooms`. Read the actual diff before trusting
+it (both files gain the same one-line fallback, `mesh_agents.ts`'s
+self-detection use is deliberately left alone, a real RED/GREEN
+regression test ships with it) -- confirmed additive, same discipline as
+every other version bump in this file. `config.Default()`'s
+`MaculaMCPVersion` and `mcpclient.DefaultMaculaMCPVersion` both bumped to
+`"0.24.1"`.
+
+**Live-reconfirmed, not just read:** spawned a genuinely fresh identity
+(new temp path, never used) and called `mesh_read_inbox` as its very
+first tool call -- `rings: {pending: [], recent: []}` present from call
+one, the exact repro that found the bug against 0.24.0. The race is real
+and really fixed.
+
+**The live visual pop-up confirmation is still blocked, but by a
+different, more precisely characterized bug now:** launched a real
+`lazymesh` binary in a detached tmux session (isolated identity/contact-
+policy/config, `ring_policy: always-ask`), found its `node_id` via this
+session's own `mesh_agents` roster (`connected_via: "lazymesh 0.1.0"`),
+and rang it from this session with `mesh_ring`. The ring was genuinely
+delivered and deferred -- `mesh_ring` returned `answer: 3` (deferred), and
+this session's own `mesh_rooms` correctly lists it under
+`rings_awaiting_answer` (the 0.24.1 fix's other half, on the caller side,
+working as intended). But `lazymesh`'s status strip never showed the
+pending ring across 5+ refresh cycles, and a direct probe (a second
+`macula-mcp` process spawned against the identical identity file, calling
+`mesh_read_inbox` directly) also saw `rings: {pending: [], recent: []}` --
+empty, not the deferred ring. This is the SAME "ring disappears from
+pending/recent" mystery ab is already investigating from before this
+session's compaction, now with a cleaner repro: the ring isn't observed
+to disappear over time so much as it appears to never reach the callee's
+own pending query at all, despite the caller-side confirmation that it
+was delivered and deferred. Handed this specific repro to ab rather than
+digging into `rings.ts`/`ring_service.ts` internals myself -- per the
+explicit steer to not let this become a rabbit hole, and because ab
+already owns the investigation and has more context on what's already
+been ruled out. Cleaned up the tmux session, scratch config, and
+throwaway probe test afterward; nothing left running.
+
 ## Success criteria
 
 - [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to
