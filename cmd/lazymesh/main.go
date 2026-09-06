@@ -524,10 +524,15 @@ func roomArrivalPrompt(room string) string {
 // immediately pending does this block on a real select across both
 // channels -- in the rare case a human message and a room arrival become
 // ready at the exact same instant during that block, Go's own
-// select-among-ready-cases randomization decides, not a strict priority
-// (documented here rather than silently assumed correct; see the spike
-// report for why this was judged an acceptable tradeoff for a 1-2 day
-// timebox rather than building a second non-blocking re-check loop).
+// select-among-ready-cases randomization decides, not a strict priority.
+// Documented here rather than silently assumed correct: closing this gap
+// fully would mean a second, always-running non-blocking check loop
+// (spin on userInputCh between every select wakeup instead of trusting
+// the select itself), trading a rare, microsecond-scale tie for a
+// permanently more complex loop -- judged not worth it for a spike (see
+// plans/SPIKE_LAZYMESH_ROOM_WAITERS.md for the fuller writeup), but a
+// real implementation should make that same call deliberately, not by
+// inheriting this one.
 // Room-arrival fairness AMONG rooms is roomwaiter.Manager's own job (see
 // its doc comment): this function just consumes whatever it hands back.
 //
