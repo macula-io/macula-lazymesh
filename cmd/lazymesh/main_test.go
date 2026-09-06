@@ -10,6 +10,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 )
 
 func TestNextBackoff_DoublesUntilCap(t *testing.T) {
@@ -126,7 +127,7 @@ func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
 
 func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 	for _, room := range []string{"", "agents.room.deadbeef"} {
-		got := buildSystemPrompt(room, "", false, false)
+		got := buildSystemPrompt(room, "", false, false, false)
 		if !strings.Contains(got, "mesh_rooms") {
 			t.Fatalf("room=%q: expected system prompt to instruct calling mesh_rooms, got: %s", room, got)
 		}
@@ -137,14 +138,14 @@ func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyRoomHasNoPriorityHint(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(got, "prioritize this room") {
 		t.Fatalf("expected no room-specific priority hint when room is empty, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false)
 	if !strings.Contains(got, "prioritize this room: agents.room.deadbeef") {
 		t.Fatalf("expected the given room to appear as a priority hint, got: %s", got)
 	}
@@ -158,18 +159,18 @@ func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *
 }
 
 func TestBuildSystemPrompt_IncludesGoalWhenSet(t *testing.T) {
-	got := buildSystemPrompt("", "find the best pun on the mesh", false, false)
+	got := buildSystemPrompt("", "find the best pun on the mesh", false, false, false)
 	if !strings.Contains(got, "Additional objective: find the best pun on the mesh") {
 		t.Fatalf("expected goal text to appear verbatim, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
-	without := buildSystemPrompt("", "", false, false)
+	without := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(without, "shell_exec") {
 		t.Fatalf("expected no mention of shell_exec when local tools aren't reachable, got: %s", without)
 	}
-	with := buildSystemPrompt("", "", true, false)
+	with := buildSystemPrompt("", "", true, false, false)
 	if !strings.Contains(with, "shell_exec") {
 		t.Fatalf("expected shell_exec to be mentioned when local tools are reachable, got: %s", with)
 	}
@@ -191,7 +192,7 @@ func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
 // rather than assuming it will remember joining from earlier in the
 // conversation -- history gets trimmed, so that memory isn't reliable.
 func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if !strings.Contains(got, "joined list") {
 		t.Fatalf("expected system prompt to reference mesh_rooms's joined list, got: %s", got)
 	}
@@ -201,7 +202,7 @@ func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing
 }
 
 func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false)
 	if !strings.Contains(got, "check mesh_rooms's own joined list first") {
 		t.Fatalf("expected the priority-room hint to check the joined list before joining, got: %s", got)
 	}
@@ -212,14 +213,14 @@ func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
 // permission to use emoji/expressive tone in room conversation -- never a
 // hardcoded persona forced on every operator.
 func TestBuildSystemPrompt_ExpressiveStyleOffByDefault(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(got, "emoji") {
 		t.Fatalf("expected no emoji guidance when expressiveStyle is false, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
-	got := buildSystemPrompt("", "", false, true)
+	got := buildSystemPrompt("", "", false, true, false)
 	if !strings.Contains(got, "emoji") {
 		t.Fatalf("expected emoji guidance when expressiveStyle is true, got: %s", got)
 	}
@@ -262,5 +263,69 @@ func TestSayGoodbye_ToleratesFailureWithoutPropagatingIt(t *testing.T) {
 	sayGoodbye(f, time.Second) // must not panic and has nothing to return
 	if f.calledName != "mesh_goodbye" {
 		t.Fatalf("expected mesh_goodbye to still have been attempted, got %q", f.calledName)
+	}
+}
+
+// Covers macula-io/macula-lazymesh#14 (the concurrency spike): the
+// spike-mode system prompt must stop instructing the model to reach for
+// mesh_say's long wait_reply_seconds itself, and say what to do instead.
+func TestBuildSystemPrompt_SpikeRoomWaitersDropsModelDrivenWait(t *testing.T) {
+	baseline := buildSystemPrompt("", "", false, false, false)
+	if !strings.Contains(baseline, "call mesh_say with a long") {
+		t.Fatalf("expected the baseline (non-spike) prompt to keep today's wording unchanged, got: %s", baseline)
+	}
+
+	spike := buildSystemPrompt("", "", false, false, true)
+	if strings.Contains(spike, "call mesh_say with a long") {
+		t.Fatalf("expected the spike prompt to drop the model-driven long-wait instruction, got: %s", spike)
+	}
+	if !strings.Contains(spike, "do not need to wait for messages yourself") {
+		t.Fatalf("expected the spike prompt to explain the harness now handles waiting, got: %s", spike)
+	}
+}
+
+func TestParseJoinedRooms_ExtractsTopics(t *testing.T) {
+	got := parseJoinedRooms(`{"joined":[{"room_topic":"agents.room.a"},{"room_topic":"agents.room.b"}],"seen_on_central":[]}`)
+	want := []string{"agents.room.a", "agents.room.b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestParseJoinedRooms_MalformedResultReturnsNil(t *testing.T) {
+	if got := parseJoinedRooms("not json"); got != nil {
+		t.Fatalf("expected nil for a malformed result, got %v", got)
+	}
+}
+
+func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
+	ch := make(chan string, 1)
+	ch <- "from the human"
+	got, ok := nextEvent(context.Background(), ch, nil)
+	if !ok || got != "from the human" {
+		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
+	}
+}
+
+func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
+	mgr := roomwaiter.New(nil, "")
+	ch := make(chan string, 1)
+	ch <- "human message"
+
+	got, ok := nextEvent(context.Background(), ch, mgr)
+	if !ok || got != "human message" {
+		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
+	}
+}
+
+func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
+	mgr := roomwaiter.New(nil, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ch := make(chan string)
+
+	_, ok := nextEvent(ctx, ch, mgr)
+	if ok {
+		t.Fatalf("expected nextEvent to report !ok once ctx is done")
 	}
 }

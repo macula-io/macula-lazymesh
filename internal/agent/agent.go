@@ -64,6 +64,17 @@ type Loop struct {
 	Tools    ToolSource
 
 	messages []provider.Message
+	usage    provider.Usage
+}
+
+// Usage returns the cumulative token usage this Loop has consumed across
+// every ChatCompletion call so far, for backends that report it (zero
+// otherwise -- see provider.Usage's own doc comment). Added for the
+// concurrency spike (macula-io/macula-lazymesh#14) to measure real token
+// cost under the loop-owned-waiter design against today's baseline,
+// rather than estimating it.
+func (l *Loop) Usage() provider.Usage {
+	return l.usage
 }
 
 // NewLoop starts a loop with the given system prompt as its first message.
@@ -122,6 +133,9 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 			return err
 		}
 		l.messages = append(l.messages, resp.Message)
+		l.usage.PromptTokens += resp.Usage.PromptTokens
+		l.usage.CompletionTokens += resp.Usage.CompletionTokens
+		l.usage.TotalTokens += resp.Usage.TotalTokens
 
 		if resp.Message.Content != "" {
 			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})

@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 )
@@ -42,6 +44,11 @@ func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
 	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs)")
 	goalText := flag.String("goal", "", "additional objective for the agent, beyond ordinary mesh participation (optional)")
+	spikeRoomWaiters := flag.Bool("spike-room-waiters", false,
+		"EXPERIMENTAL, macula-io/macula-lazymesh#14 spike: move room-listening out of the model's own "+
+			"tool calls into loop-owned per-room goroutines blocked in mesh_wait_room, instead of the "+
+			"model calling mesh_say/mesh_wait_room with a long wait itself. Off by default -- today's "+
+			"behavior is the baseline this flag measures against.")
 	flag.Parse()
 
 	if *showVersion {
@@ -49,13 +56,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *room, *goalText); err != nil {
+	if err := run(*configPath, *room, *goalText, *spikeRoomWaiters); err != nil {
 		fmt.Fprintln(os.Stderr, "lazymesh:", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, room, goalText string) error {
+func run(configPath, room, goalText string, spikeRoomWaiters bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -113,6 +120,24 @@ func run(configPath, room, goalText string) error {
 	if err != nil {
 		return fmt.Errorf("build tool source: %w", err)
 	}
+
+	// #14 spike only, below this point: everything above is the
+	// unmodified production path. waiterMgr stays nil in the default
+	// (non-spike) run, and every spike-specific call site checks that
+	// before doing anything -- this is what keeps today's behavior
+	// available as the actual measurement baseline from the same binary.
+	var waiterMgr *roomwaiter.Manager
+	if spikeRoomWaiters {
+		tools = agent.NewNoBlockingWaitSource(tools)
+		waiterMgr = roomwaiter.New(client, "")
+		defer waiterMgr.StopAll() // before client.Close() below, same ordering #6 already established
+		initial, err := seedInitialRooms(ctx, client)
+		if err != nil {
+			return fmt.Errorf("seed initial rooms for room-waiter spike: %w", err)
+		}
+		waiterMgr.Sync(ctx, initial)
+	}
+
 	logPath, err := agentLogPath()
 	if err != nil {
 		return fmt.Errorf("resolve agent log path: %w", err)
@@ -131,7 +156,7 @@ func run(configPath, room, goalText string) error {
 	agentLog := log.New(logFile, "", log.LstdFlags)
 	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, agentLog, tuiEvents, userInputCh)
+	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, waiterMgr, agentLog, tuiEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -299,7 +324,7 @@ func agentLogPath() (string, error) {
 // model is told to discover its actual participation scope live via
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
-func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle bool) string {
+func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, spikeRoomWaiters bool) string {
 	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
 		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
 		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
@@ -320,6 +345,22 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			room,
 		)
 	}
+	waitingLine := "When there is nothing to do right now, call mesh_say with a long " +
+		"wait_reply_seconds to listen efficiently instead of returning immediately."
+	if spikeRoomWaiters {
+		// macula-io/macula-lazymesh#14 spike: waiting is now the harness's
+		// job, not the model's own tool call -- see roomwaiter.Manager.
+		// Telling the model to still reach for a long wait_reply_seconds
+		// would recreate the exact blocking bug this spike exists to
+		// measure a fix for; NoBlockingWaitSource also clamps it as
+		// defense in depth, but the prompt has to say the new thing too,
+		// not just stop saying the old one.
+		waitingLine = "You do not need to wait for messages yourself: the harness is watching " +
+			"every room you are in and will prompt you the moment something new arrives there, " +
+			"or when a human sends you a message directly. Do not call mesh_say/mesh_wait_room " +
+			"just to wait for a reply -- when you genuinely have nothing to add right now, reply " +
+			"briefly (or with nothing) and your turn simply ends until the harness wakes you again."
+	}
 	systemPrompt := fmt.Sprintf(
 		"You are a lazymesh agent cooperating with other agents on the Macula mesh. "+
 			"%s%s "+
@@ -337,10 +378,8 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"accept or decline based on its stated purpose and call mesh_answer_ring -- "+
 			"never leave a ring sitting there unanswered just because it's not about a room "+
 			"you were already in; accepting one puts you in a new room, which becomes part "+
-			"of your scope from then on too. When there is nothing to do right now, call "+
-			"mesh_say with a long wait_reply_seconds to listen efficiently instead of "+
-			"returning immediately.",
-		toolsLine, roomHint)
+			"of your scope from then on too. %s",
+		toolsLine, roomHint, waitingLine)
 	if expressiveStyle {
 		systemPrompt += " Feel free to be expressive in room conversation (mesh_say text) when " +
 			"talking to other agents -- emoji and status markers like ❌/⏳/✅ are welcome where " +
@@ -361,14 +400,22 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // wait on mesh_say's own wait_reply_seconds) -- this function only
 // supplies the cadence of asking it to keep going, not any of the mesh
 // actions themselves.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle bool, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle)
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle bool, waiterMgr *roomwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+	spikeRoomWaiters := waiterMgr != nil
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle, spikeRoomWaiters)
 
 	loop := agent.NewLoop(p, tools, systemPrompt)
 	events := make(chan agent.Event, 16)
 	go func() {
 		for ev := range events {
 			logEvent(agentLog, ev)
+			// #14 spike: reactive room-churn detection (never a poll loop
+			// of its own) -- piggyback on the mesh_rooms result the model
+			// already produces via its own normal cadence, rather than
+			// waiterMgr ever calling mesh_rooms on a timer.
+			if waiterMgr != nil && ev.Kind == agent.EventToolResult && ev.ToolName == "mesh_rooms" {
+				waiterMgr.Sync(ctx, parseJoinedRooms(ev.Text))
+			}
 			// Non-blocking: the TUI is a slow, human-paced consumer and
 			// must never be able to stall the agent loop by not reading
 			// fast enough (or not running at all -- tuiEvents always
@@ -413,12 +460,20 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 			case <-time.After(backoff):
 			}
 			backoff = nextBackoff(backoff)
-			prompt = nextPrompt(userInputCh, agentDefaultPrompt)
+			var ok bool
+			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr)
+			if !ok {
+				return
+			}
 			continue
 		}
 		consecutiveErrors = 0
 		backoff = initialBackoff
-		prompt = nextPrompt(userInputCh, agentDefaultPrompt)
+		var ok bool
+		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr)
+		if !ok {
+			return
+		}
 	}
 }
 
@@ -436,6 +491,101 @@ func nextPrompt(userInputCh <-chan string, defaultPrompt string) string {
 	default:
 		return defaultPrompt
 	}
+}
+
+// roomArrivalPrompt is what a room's Arrival becomes as the next Say()
+// prompt -- reuses the model's existing, already-allowlisted
+// mesh_read_inbox tool-use pattern rather than carrying raw envelope
+// content through roomwaiter.Arrival itself.
+func roomArrivalPrompt(room string) string {
+	return fmt.Sprintf(
+		"New activity in room %s. Call mesh_read_inbox for that room_topic and respond if "+
+			"warranted, same as you would on any other cycle.",
+		room,
+	)
+}
+
+// nextEvent is #14's replacement for nextPrompt when waiterMgr is
+// non-nil: BLOCKS until there is an actual reason to run another Say()
+// round, rather than nextPrompt's instant fallback to a synthetic
+// "check for anything new" prompt every cycle. That instant fallback is
+// exactly right for TODAY's design (the model's own long mesh_say wait
+// IS the pacing), but would busy-loop the provider for free once that
+// wait is taken away from the model -- something has to supply the
+// pacing, and it's this select instead.
+//
+// waiterMgr == nil (the default, non-spike run) preserves nextPrompt's
+// existing behavior byte-for-byte -- this is what keeps today's design
+// available unchanged as the actual A/B baseline, from the same binary.
+//
+// Fairness/priority policy (macula-io/macula-lazymesh#14, Atlas's flagged
+// gap): human input is checked non-blockingly FIRST, so an already-
+// pending human message always wins outright. Only once nothing is
+// immediately pending does this block on a real select across both
+// channels -- in the rare case a human message and a room arrival become
+// ready at the exact same instant during that block, Go's own
+// select-among-ready-cases randomization decides, not a strict priority
+// (documented here rather than silently assumed correct; see the spike
+// report for why this was judged an acceptable tradeoff for a 1-2 day
+// timebox rather than building a second non-blocking re-check loop).
+// Room-arrival fairness AMONG rooms is roomwaiter.Manager's own job (see
+// its doc comment): this function just consumes whatever it hands back.
+//
+// Returns ok=false only when ctx is done -- the caller should stop the
+// loop, not call Say with an empty prompt.
+func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager) (string, bool) {
+	if waiterMgr == nil {
+		return nextPrompt(userInputCh, agentDefaultPrompt), true
+	}
+
+	select {
+	case msg := <-userInputCh:
+		return msg, true
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+		return "", false
+	case msg := <-userInputCh:
+		return msg, true
+	case arrival := <-waiterMgr.Arrivals():
+		waiterMgr.Ack(arrival.RoomTopic)
+		return roomArrivalPrompt(arrival.RoomTopic), true
+	}
+}
+
+// parseJoinedRooms extracts room_topic values from mesh_rooms's own
+// {"joined": [{"room_topic": ...}, ...], ...} result shape -- the single
+// place that shape is depended on, so a future mesh_rooms change only
+// needs updating here.
+func parseJoinedRooms(resultJSON string) []string {
+	var parsed struct {
+		Joined []struct {
+			RoomTopic string `json:"room_topic"`
+		} `json:"joined"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil {
+		return nil
+	}
+	rooms := make([]string, 0, len(parsed.Joined))
+	for _, j := range parsed.Joined {
+		rooms = append(rooms, j.RoomTopic)
+	}
+	return rooms
+}
+
+// seedInitialRooms calls mesh_rooms directly (bypassing the model, same
+// deterministic-harness-plumbing posture as sayGoodbye/#6) so
+// roomwaiter.Manager has a starting room set before the agent loop's own
+// first cycle -- otherwise the spike would wait for the model to
+// spontaneously call mesh_rooms before watching anything.
+func seedInitialRooms(ctx context.Context, client *mcpclient.Client) ([]string, error) {
+	result, err := client.CallTool(ctx, "mesh_rooms", nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseJoinedRooms(result), nil
 }
 
 const (
