@@ -47,7 +47,11 @@ type Config struct {
 	// yourself, including adding local_tools' own tool names
 	// (shell_exec/read_file/write_file), is an explicit, conscious choice
 	// on your own machine -- never a side effect of local_tools.enabled
-	// alone.
+	// alone. Adding shell_exec/read_file/write_file here re-exposes the
+	// mesh-content-to-arbitrary-execution risk the default allowlist
+	// exists to prevent: this removes the capability from the default,
+	// it does not mark peer-authored room text as untrusted. Only do this
+	// in a trusted/private mesh context.
 	ToolAllowlist []string `yaml:"tool_allowlist,omitempty"`
 }
 

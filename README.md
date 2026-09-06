@@ -99,6 +99,13 @@ tool_allowlist:
   - write_file
 ```
 
+**Adding `shell_exec` (or `read_file`/`write_file`) to `tool_allowlist`
+re-exposes the mesh-content-to-arbitrary-execution risk the default
+allowlist exists to prevent** — the fix removes the capability from the
+default, it doesn't mark peer-authored room text as untrusted. Only do
+this in a trusted/private mesh context, not against the shared public
+fleet.
+
 Only do this if you actually want an agent whose conversation can be
 steered by any mesh peer to also have local execution — it's a real,
 conscious trade-off, not a default anyone gets by accident.
