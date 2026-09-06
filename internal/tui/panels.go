@@ -23,17 +23,41 @@ func (m Model) panelInnerWidth() int {
 	return w
 }
 
-// columnWidths distributes width across len(spec) table columns. Each
-// entry in spec is either a fixed content width, or -1 for the one column
-// that should absorb whatever's left. Accounts for bubbles/table's own
-// Padding(0,1) per cell (an extra 2 columns of rendered width beyond each
-// column's declared Width, added by table.DefaultStyles' Header/Cell
-// styles) so the columns' rendered widths always sum to exactly width,
-// never wider or narrower than the panel actually is -- including when
-// width is too narrow for every fixed column at full size plus a
-// reasonably-sized flex column (see the shrink branch below): the sum
-// invariant holds unconditionally, not just in the comfortable case.
+// columnWidths distributes width across len(spec) bubbles/table columns.
+// Each entry in spec is either a fixed content width, or -1 for the one
+// column that should absorb whatever's left. Accounts for bubbles/table's
+// own Padding(0,1) per cell (an extra 2 columns of rendered width BEYOND
+// each column's declared Width, added by table.DefaultStyles' Header/Cell
+// styles) so the columns' rendered widths always sum to exactly width.
+// The presence panel (its own hand-rolled lipgloss cells, not
+// bubbles/table) needs a different overhead -- see presenceColumnWidths.
 func columnWidths(width int, spec []int) []int {
+	return distributeColumnWidths(width, spec, 2)
+}
+
+// presenceColumnWidths is columnWidths' counterpart for the presence
+// panel's own presenceCol cells. Found live 2026-09-06 (issue #11):
+// renderPresence originally reused columnWidths directly, which silently
+// under-budgeted every row by 2*n columns. columnWidths' -2*n
+// compensation exists because bubbles/table's Padding(0,1) adds 2 columns
+// of rendered width BEYOND each column's declared Width -- confirmed
+// empirically that presenceCol's plain lipgloss cells work the opposite
+// way: Width(20).Padding(0,1).Render(...) measures to exactly 20, not 22,
+// because lipgloss's Width sets the TOTAL rendered width and Padding is
+// absorbed inside it. Reusing columnWidths' bubbles/table-shaped
+// compensation here made every presence row render 2*n columns narrower
+// than panelInnerWidth() actually allows.
+func presenceColumnWidths(width int, spec []int) []int {
+	return distributeColumnWidths(width, spec, 0)
+}
+
+// distributeColumnWidths is the shared "one flex column absorbs the
+// remainder" algorithm; overhead is how many columns of rendered width
+// per cell exist BEYOND its declared Width (2 for bubbles/table's
+// Padding(0,1), 0 for a lipgloss cell whose Width already includes its
+// own padding) -- see columnWidths and presenceColumnWidths above for
+// which is which and why they differ.
+func distributeColumnWidths(width int, spec []int, overhead int) []int {
 	n := len(spec)
 	widths := make([]int, n)
 	fixedSum := 0
@@ -51,7 +75,7 @@ func columnWidths(width int, spec []int) []int {
 	}
 
 	const minFlex = 8
-	budget := width - 2*n
+	budget := width - overhead*n
 	if flexWant := budget - fixedSum; flexWant >= minFlex {
 		widths[flexIdx] = flexWant
 		return widths
@@ -243,9 +267,11 @@ func (m Model) renderPresence() string {
 
 	inner := m.panelInnerWidth()
 	// badge is a fixed 4-column slot (Padding(0,1) + 2-char initials);
-	// the rest split the remaining width the same way columnWidths
-	// already distributes bubbles/table columns in the sibling panels.
-	widths := columnWidths(inner, []int{4, -1, 20, 12})
+	// the rest split the remaining width the same "one flex column"
+	// shape as the sibling panels -- via presenceColumnWidths, NOT
+	// columnWidths (see its own doc comment: reusing columnWidths here
+	// under-budgeted every row by 2*n columns, issue #11).
+	widths := presenceColumnWidths(inner, []int{4, -1, 20, 12})
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		presenceCol("", widths[0], true),
 		presenceCol("Name", widths[1], true),

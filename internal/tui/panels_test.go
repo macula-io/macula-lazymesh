@@ -188,6 +188,38 @@ func TestRenderPresence_TableContainsAgentFields(t *testing.T) {
 	}
 }
 
+// Issue #11: renderPresence originally reused columnWidths, which was
+// written for bubbles/table's padding model (Padding(0,1) adds 2 columns
+// of rendered width BEYOND declared Width). presenceCol's plain lipgloss
+// cells work the opposite way (Width already includes Padding), so
+// reusing that compensation silently rendered every row 2*n columns
+// narrower than panelInnerWidth(). Measures ACTUAL lipgloss.Width(), not
+// just content presence -- the previous presence tests would have passed
+// unchanged even with this bug present.
+func TestRenderPresence_RowsFillPanelInnerWidth(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.resizeComponents()
+	m.state.agents = []agentPresence{
+		{NodeID: "deadbeef", Petname: "swift-otter", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 5},
+	}
+	got := m.renderPresence()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected title + header + at least one row, got %d lines: %q", len(lines), lines)
+	}
+	want := m.panelInnerWidth()
+	// lines[0] is the title (titleStyle text, not width-constrained by
+	// design -- Rooms/Pending rings' titles aren't either); header and
+	// data rows are the ones presenceColumnWidths actually budgets.
+	if got := lipgloss.Width(lines[1]); got != want {
+		t.Fatalf("header row: expected width %d (panelInnerWidth), got %d: %q", want, got, lines[1])
+	}
+	if got := lipgloss.Width(lines[2]); got != want {
+		t.Fatalf("data row: expected width %d (panelInnerWidth), got %d: %q", want, got, lines[2])
+	}
+}
+
 // Issue #7: each presence row gets a colored initials badge, deterministic
 // from identity, distinct from the plain-uncolored badge state before.
 func TestRenderPresence_ShowsAvatarBadge(t *testing.T) {

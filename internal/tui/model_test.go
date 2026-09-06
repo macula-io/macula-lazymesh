@@ -415,6 +415,56 @@ func TestStatusLines_ChatterLineNeverContainsEmbeddedNewlines(t *testing.T) {
 	}
 }
 
+// Issue #12: the mesh-expanded view's body (renderExpandedMesh) had no
+// height accounting at all, so the status block landed wherever the panel
+// stack's natural height happened to end rather than anchored to the
+// screen edge -- for a taller terminal than the panel content, that meant
+// empty space below the status bar instead of the status bar actually
+// reaching the last row. Measures the ACTUAL total line count and where
+// the status block lands, not just that its content is present somewhere.
+func TestView_MeshExpanded_StatusAnchorsToBottomEdge(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 100, 30
+	m.resizeComponents()
+	m.meshExpanded = true
+	// A short panel stack (no rooms/rings/agents) is exactly the case
+	// where natural-height stacking left empty space below the status
+	// bar instead of the bar reaching the real bottom row.
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	wantTotal := m.height - 1 // same "-2 reserved, -1 slack" convention the chat view already uses
+	if len(lines) != wantTotal {
+		t.Fatalf("expected %d total rendered lines for a %d-tall terminal, got %d:\n%s", wantTotal, m.height, len(lines), view)
+	}
+
+	statusLineCount := len(m.statusLines())
+	gotTail := strings.Join(lines[len(lines)-statusLineCount:], "\n")
+	wantTail := m.renderStatusStrip()
+	if gotTail != wantTail {
+		t.Fatalf("expected the status block anchored to the last %d lines (bottom position), got:\n%q\nwant:\n%q", statusLineCount, gotTail, wantTail)
+	}
+}
+
+func TestView_MeshExpanded_StatusAnchorsToTopEdge(t *testing.T) {
+	userInputCh := make(chan string, 8)
+	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "top"})
+	m.width, m.height = 100, 30
+	m.resizeComponents()
+	m.meshExpanded = true
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	statusLineCount := len(m.statusLines())
+	gotHead := strings.Join(lines[:statusLineCount], "\n")
+	wantHead := m.renderStatusStrip()
+	if gotHead != wantHead {
+		t.Fatalf("expected the status block anchored to the first %d lines (top position), got:\n%q\nwant:\n%q", statusLineCount, gotHead, wantHead)
+	}
+}
+
 func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 	m := newTestModel(t)
 	m.agentEvents = make(chan agent.Event) // never fires again, fine for this assertion

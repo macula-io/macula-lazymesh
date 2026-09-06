@@ -517,7 +517,7 @@ func (m Model) View() string {
 
 	var body string
 	if m.meshExpanded {
-		body = m.renderExpandedMesh()
+		body = m.padToBodyHeight(m.renderExpandedMesh())
 	} else {
 		body = m.chatViewport.View()
 	}
@@ -616,6 +616,29 @@ func (m Model) renderExpandedMesh() string {
 	b.WriteString(panelStyle.Render(m.renderPendingRings()) + "\n")
 	b.WriteString(panelStyle.Render(m.renderPresence()))
 	return b.String()
+}
+
+// padToBodyHeight fills content with trailing blank lines up to the same
+// body height resizeComponents already targets for the chat viewport
+// (m.height - len(statusLines()) - 2, the "-2" being the input line plus
+// one line of slack) -- without this, the mesh-expanded view's status bar
+// landed wherever the panel stack's natural height happened to end,
+// rather than anchored to the screen edge, for either statusBarPosition
+// setting (issue #12: View()'s meshExpanded branch was a plain
+// strings.Join with no height accounting at all, unlike the normal chat
+// view). Never truncates -- a panel stack taller than the available body
+// height is left as-is; the mesh view has no scroll of its own, a
+// separate, pre-existing limitation this doesn't attempt to fix.
+func (m Model) padToBodyHeight(content string) string {
+	target := m.height - len(m.statusLines()) - 2
+	if target < 1 {
+		return content
+	}
+	lines := strings.Count(content, "\n") + 1
+	if lines >= target {
+		return content
+	}
+	return content + strings.Repeat("\n", target-lines)
 }
 
 func shortID(id string) string {
