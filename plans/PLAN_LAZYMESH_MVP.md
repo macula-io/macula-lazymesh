@@ -819,6 +819,59 @@ New `providerLabel(cfg)` resolves `cfg.Provider`'s own empty-means-
 so the label is never blank just because an operator left `provider`
 unset in `config.yaml`.
 
+## Two panel-width bugs from the table polish, found live (2026-09-06)
+
+cf diagnosed both by reading `panels.go` directly plus a throwaway probe
+test, not a guess -- confirmed by RED/GREEN-testing both fixes here too.
+
+**Bug 1: empty-state placeholders ignored `panelInnerWidth()` entirely.**
+`renderRooms`/`renderPendingRings`'s early-return for zero rows wrote a
+bare `dimStyle.Render("no rooms joined yet")`/`"none"` with no width
+applied at all; `renderPresence`'s empty branch didn't even have
+placeholder text, just the title. `panelStyle` has no explicit `.Width()`
+of its own -- it sizes to its widest line -- so a populated table (whose
+own rows already sum to exactly `panelInnerWidth()`, per the column-width
+invariant) renders full-width correctly, but an empty panel shrank
+tightly around its short placeholder string and stayed that way
+regardless of `m.width`, which is exactly why resizing did nothing to it.
+Fixed with a shared `panelPlaceholder(text)` helper that wraps the
+message in `lipgloss.NewStyle().Width(panelInnerWidth())` before
+rendering, used by all three panels' empty branches (Presence's empty
+case never had placeholder text before at all -- added `"no agents seen
+yet"` for parity, since it shares the identical bug shape even though
+Raf never hit it live: "you" is always in the roster in practice).
+`TestEmptyPanels_PlaceholderFillsPanelWidth` checks the placeholder's
+actual rendered width against `panelInnerWidth()` at two different
+`m.width` values, RED-confirmed against the bug (19 vs 76) then GREEN.
+
+**Bug 2: `columnWidths`' flex-column floor broke its own sum invariant
+under real, reachable widths.** The original floor (`if remaining < 8 {
+remaining = 8 }`) left every FIXED column at full declared size while
+capping only the flex column, so once a panel's fixed columns were wide
+enough relative to the available width (Rooms' `20+12+10=42` is the
+worst case of the three panels), the table's total rendered width
+exceeded `width` outright -- the panel got visibly "stuck" at whatever
+width the floor first triggered (cf measured ~62 for Rooms) instead of
+continuing to shrink with the terminal. Fixed by shrinking EVERY column
+proportionally (fixed ones included) once the comfortable case doesn't
+fit, down to a hard floor of 1 per column (bubbles/table still truncates
+any cell with an ellipsis at any positive width) -- the sum-equals-width
+invariant now holds unconditionally, not just in the cases the original
+property test happened to cover. Extended
+`TestColumnWidths_FlexColumnAbsorbsRemainder`'s own table with Rooms'
+real spec at two narrow widths plus a pathological case, RED-confirmed
+(58/58/54 instead of 40/20/10) then GREEN. The old, narrower
+`TestColumnWidths_FloorsFlexColumnOnNarrowWidth` (which had asserted the
+buggy fixed-8 floor as if it were correct behavior) was folded into this
+same table rather than left contradicting it.
+
+**Verified visually too**, not just via unit tests, given this exact bug
+class was originally caught by eye: rendered all three panels at 80/55/40
+width with sample data (populated Rooms) and again with everything empty
+at 80/55 -- every panel's border tracks the terminal exactly at every
+width now, Rooms' columns shrink and truncate with ellipsis at narrow
+widths instead of overflowing.
+
 ## Success criteria
 
 - [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to

@@ -29,25 +29,60 @@ func (m Model) panelInnerWidth() int {
 // Padding(0,1) per cell (an extra 2 columns of rendered width beyond each
 // column's declared Width, added by table.DefaultStyles' Header/Cell
 // styles) so the columns' rendered widths always sum to exactly width,
-// never wider or narrower than the panel actually is.
+// never wider or narrower than the panel actually is -- including when
+// width is too narrow for every fixed column at full size plus a
+// reasonably-sized flex column (see the shrink branch below): the sum
+// invariant holds unconditionally, not just in the comfortable case.
 func columnWidths(width int, spec []int) []int {
-	widths := make([]int, len(spec))
-	sum := 0
-	flex := -1
+	n := len(spec)
+	widths := make([]int, n)
+	fixedSum := 0
+	flexIdx := -1
 	for i, w := range spec {
 		if w < 0 {
-			flex = i
+			flexIdx = i
 			continue
 		}
 		widths[i] = w
-		sum += w
+		fixedSum += w
 	}
-	if flex >= 0 {
-		remaining := width - 2*len(spec) - sum
-		if remaining < 8 {
-			remaining = 8
+	if flexIdx < 0 {
+		return widths
+	}
+
+	const minFlex = 8
+	budget := width - 2*n
+	if flexWant := budget - fixedSum; flexWant >= minFlex {
+		widths[flexIdx] = flexWant
+		return widths
+	}
+
+	// Not enough room for every fixed column at full size AND a
+	// reasonably-sized flex column. Found live 2026-09-06: the old
+	// version floored the flex column at a fixed 8 unconditionally, while
+	// leaving every fixed column at full size -- so the table (and the
+	// panel wrapping it, which has no explicit .Width() of its own and
+	// just sizes to its widest line) rendered WIDER than `width` below
+	// whatever point this floor first triggered, visibly "stuck" instead
+	// of continuing to shrink with the terminal. Shrink every column
+	// (fixed ones included) proportionally so the total still matches
+	// `width` exactly, down to a hard floor of 1 per column -- bubbles/
+	// table truncates any cell with an ellipsis regardless of width, so 1
+	// is tight but never broken, just as narrow as it gets.
+	widths[flexIdx] = minFlex
+	total := fixedSum + minFlex
+	assigned := 0
+	for i, w := range widths {
+		scaled := w * budget / total
+		if scaled < 1 {
+			scaled = 1
 		}
-		widths[flex] = remaining
+		widths[i] = scaled
+		assigned += scaled
+	}
+	widths[flexIdx] += budget - assigned // remainder from integer division, keeps the sum exact
+	if widths[flexIdx] < 1 {
+		widths[flexIdx] = 1
 	}
 	return widths
 }
@@ -75,11 +110,22 @@ func tableStyles() table.Styles {
 	return s
 }
 
+// panelPlaceholder pads an empty-state message out to the panel's full
+// inner width, matching how a populated table's own rows already do.
+// Found live 2026-09-06: panelStyle has no explicit .Width() of its own,
+// so without this it shrinks tightly around whatever short placeholder
+// string it's given -- the panel visibly stopped tracking m.width
+// whenever a list was empty (resizing/zooming did nothing to it), because
+// nothing about the bare string depended on m.width at all.
+func (m Model) panelPlaceholder(text string) string {
+	return lipgloss.NewStyle().Width(m.panelInnerWidth()).Render(dimStyle.Render(text))
+}
+
 func (m Model) renderRooms() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Rooms (%d joined)", len(m.state.joined))) + "\n")
 	if len(m.state.joined) == 0 {
-		b.WriteString(dimStyle.Render("no rooms joined yet"))
+		b.WriteString(m.panelPlaceholder("no rooms joined yet"))
 		return b.String()
 	}
 
@@ -130,7 +176,7 @@ func (m Model) renderPendingRings() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Pending rings (%d)", len(m.state.pending))) + "\n")
 	if len(m.state.pending) == 0 {
-		b.WriteString(dimStyle.Render("none"))
+		b.WriteString(m.panelPlaceholder("none"))
 		return b.String()
 	}
 
@@ -163,7 +209,12 @@ func (m Model) renderPresence() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Presence (%d agents)", len(m.state.agents))) + "\n")
 	if len(m.state.agents) == 0 {
-		return strings.TrimRight(b.String(), "\n")
+		// Same latent shape as Rooms/Pending rings' empty states above --
+		// unconfirmed live so far since "you" is always in the roster in
+		// practice, but the panel would be just as stuck-narrow here if
+		// it were ever hit without this.
+		b.WriteString(m.panelPlaceholder("no agents seen yet"))
+		return b.String()
 	}
 
 	inner := m.panelInnerWidth()

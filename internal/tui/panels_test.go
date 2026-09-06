@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestColumnWidths_FlexColumnAbsorbsRemainder(t *testing.T) {
@@ -16,6 +17,19 @@ func TestColumnWidths_FlexColumnAbsorbsRemainder(t *testing.T) {
 		{"flex first", 76, []int{-1, 20, 12, 10}},
 		{"flex last", 76, []int{10, 20, -1}},
 		{"flex middle", 76, []int{10, -1, 20, 12}},
+		// Regression coverage for a real bug found live 2026-09-06: Rooms'
+		// own spec (fixed columns summing to 42) has more fixed-column
+		// weight than Rings/Presence, so it hits the shrink path at a
+		// width well within what a real, if narrow, terminal produces --
+		// the panel was visibly "stuck" below here instead of continuing
+		// to track m.width, because the old flex-only floor broke the sum
+		// invariant instead of preserving it.
+		{"rooms spec, narrow terminal", 40, []int{-1, 20, 12, 10}},
+		{"rooms spec, very narrow", 20, []int{-1, 20, 12, 10}},
+		// Pathologically narrow: even the shrink-everything path bottoms
+		// out at 1 per column. The invariant still holds; individual
+		// columns are simply as narrow as they can meaningfully get.
+		{"pathological", 10, []int{20, 20, -1}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -26,25 +40,19 @@ func TestColumnWidths_FlexColumnAbsorbsRemainder(t *testing.T) {
 			// Every column costs its declared Width plus 2 (bubbles/table's
 			// own Padding(0,1) per cell) -- the columns should always sum
 			// to exactly the requested width, matching a full-width panel
-			// rather than one sized to its content.
+			// rather than one sized to its content, in EVERY case -- tight
+			// or comfortable, not just the comfortable ones.
 			sum := 0
-			for _, w := range widths {
+			for i, w := range widths {
+				if w < 1 {
+					t.Fatalf("column %d has non-positive width %d -- bubbles/table skips it entirely", i, w)
+				}
 				sum += w + 2
 			}
 			if sum != c.width {
 				t.Fatalf("expected rendered widths to sum to %d, got %d (widths=%v)", c.width, sum, widths)
 			}
 		})
-	}
-}
-
-func TestColumnWidths_FloorsFlexColumnOnNarrowWidth(t *testing.T) {
-	// A pathologically narrow width would otherwise drive the flex
-	// column negative -- floors at 8 instead of producing a column that
-	// can't even hold an ellipsis.
-	widths := columnWidths(10, []int{20, 20, -1})
-	if widths[2] != 8 {
-		t.Fatalf("expected flex column to floor at 8, got %d", widths[2])
 	}
 }
 
@@ -88,6 +96,40 @@ func TestRenderPresence_EmptyShowsNoTable(t *testing.T) {
 	got := m.renderPresence()
 	if strings.Contains(got, "Name") {
 		t.Fatalf("expected no table header for zero agents, got %q", got)
+	}
+}
+
+// Regression coverage for a real bug found live 2026-09-06: panelStyle has
+// no explicit .Width() of its own, so an empty-state placeholder that was
+// just a bare string made the panel shrink tightly around it -- stuck
+// narrow regardless of m.width, unlike the populated-table case (whose
+// own rows already fill panelInnerWidth()). Checked at two different
+// m.width values specifically to prove the placeholder actually tracks
+// the terminal rather than happening to match one fixed width by
+// coincidence.
+func TestEmptyPanels_PlaceholderFillsPanelWidth(t *testing.T) {
+	for _, width := range []int{80, 50} {
+		m := newTestModel(t)
+		m.width = width
+		m.resizeComponents()
+		wantWidth := m.panelInnerWidth()
+
+		for _, tc := range []struct {
+			name   string
+			render func() string
+		}{
+			{"Rooms", m.renderRooms},
+			{"Pending rings", m.renderPendingRings},
+			{"Presence", m.renderPresence},
+		} {
+			got := tc.render()
+			lines := strings.Split(got, "\n")
+			placeholder := lines[len(lines)-1] // title is line 0, placeholder is the last line
+			if gotWidth := lipgloss.Width(placeholder); gotWidth != wantWidth {
+				t.Fatalf("%s at m.width=%d: expected placeholder width %d, got %d (line=%q)",
+					tc.name, width, wantWidth, gotWidth, placeholder)
+			}
+		}
 	}
 }
 
