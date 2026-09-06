@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -114,5 +115,71 @@ func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("nextPrompt blocked on an empty channel instead of returning the default immediately")
+	}
+}
+
+// The tests below cover macula-io/macula-lazymesh#1: the agent's
+// participation scope must be "every room mesh_rooms reports," never a
+// single hardcoded room, regardless of whether --room was passed.
+
+func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
+	for _, room := range []string{"", "agents.room.deadbeef"} {
+		got := buildSystemPrompt(room, "", false)
+		if !strings.Contains(got, "mesh_rooms") {
+			t.Fatalf("room=%q: expected system prompt to instruct calling mesh_rooms, got: %s", room, got)
+		}
+		if !strings.Contains(got, "every room you are currently a member of") {
+			t.Fatalf("room=%q: expected system prompt to scope participation to every joined room, got: %s", room, got)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_EmptyRoomHasNoPriorityHint(t *testing.T) {
+	got := buildSystemPrompt("", "", false)
+	if strings.Contains(got, "prioritize this room") {
+		t.Fatalf("expected no room-specific priority hint when room is empty, got: %s", got)
+	}
+}
+
+func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *testing.T) {
+	got := buildSystemPrompt("agents.room.deadbeef", "", false)
+	if !strings.Contains(got, "prioritize this room: agents.room.deadbeef") {
+		t.Fatalf("expected the given room to appear as a priority hint, got: %s", got)
+	}
+	// The hint must not replace the general "check every room" instruction --
+	// this is exactly the bug: an old system prompt said only "Room to
+	// participate in: X", which never covered a room joined later via an
+	// accepted ring.
+	if !strings.Contains(got, "not just one you were pointed at") {
+		t.Fatalf("expected the priority hint not to narrow scope to just that room, got: %s", got)
+	}
+}
+
+func TestBuildSystemPrompt_IncludesGoalWhenSet(t *testing.T) {
+	got := buildSystemPrompt("", "find the best pun on the mesh", false)
+	if !strings.Contains(got, "Additional objective: find the best pun on the mesh") {
+		t.Fatalf("expected goal text to appear verbatim, got: %s", got)
+	}
+}
+
+func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
+	without := buildSystemPrompt("", "", false)
+	if strings.Contains(without, "shell_exec") {
+		t.Fatalf("expected no mention of shell_exec when local tools aren't reachable, got: %s", without)
+	}
+	with := buildSystemPrompt("", "", true)
+	if !strings.Contains(with, "shell_exec") {
+		t.Fatalf("expected shell_exec to be mentioned when local tools are reachable, got: %s", with)
+	}
+}
+
+func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
+	for name, p := range map[string]string{
+		"agentDefaultPrompt": agentDefaultPrompt,
+		"agentInitialPrompt": agentInitialPrompt,
+	} {
+		if !strings.Contains(p, "mesh_rooms") {
+			t.Fatalf("%s: expected the per-cycle prompt to call mesh_rooms so scope isn't pinned to one room, got: %s", name, p)
+		}
 	}
 }

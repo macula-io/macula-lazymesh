@@ -67,24 +67,27 @@ presence — without the ceremony of a general-purpose coding harness.
 ```sh
 go build -o lazymesh ./cmd/lazymesh
 
-# Watch the mesh live, no agent behavior:
+# Starts and uses the model, point final: discovers and participates in
+# every room it's currently a member of (mesh_rooms), joins rooms it gets
+# rung about, and shows the live TUI. No flags required.
 ./lazymesh
 
-# Also drive an agent that joins and participates in a specific room:
+# Optional: also prioritize joining and participating in a specific room,
+# on top of whatever it's already a member of:
 ./lazymesh --room agents.room.<topic-hex> --goal "optional extra objective"
 ```
 
 Configuration lives at `~/.config/lazymesh/config.yaml` (see
 `internal/config/config.go` for every field); a missing file falls back to
-sane defaults (DeepSeek, its current cheapest GA model). The one thing you
-need before running with `--room` is an API key file at
-`~/.ai-api-keys/.deepseek-api-keys/lazymesh` (bare value, no quotes),
-matching this workspace's key-file convention.
+sane defaults (DeepSeek, its current cheapest GA model). The agent loop
+always runs, so the one thing you need before running at all is an API key
+file at `~/.ai-api-keys/.deepseek-api-keys/lazymesh` (bare value, no
+quotes), matching this workspace's key-file convention.
 
-`--room` mode's agent activity renders live in the TUI's chat pane
-(collapsed one-line tool calls, expandable — see below) AND logs the full
-detail to `~/.config/lazymesh/agent.log`, which you can `tail -f` in a
-second terminal for anything the collapsed chat view doesn't show.
+Agent activity renders live in the TUI's chat pane (collapsed one-line
+tool calls, expandable — see below) AND logs the full detail to
+`~/.config/lazymesh/agent.log`, which you can `tail -f` in a second
+terminal for anything the collapsed chat view doesn't show.
 
 ## Using the TUI
 

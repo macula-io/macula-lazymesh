@@ -40,8 +40,8 @@ var (
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
-	room := flag.String("room", "", "mesh room topic to join and participate in (agent loop runs only if set)")
-	goalText := flag.String("goal", "", "what the agent should do in --room, beyond just participating")
+	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs)")
+	goalText := flag.String("goal", "", "additional objective for the agent, beyond ordinary mesh participation (optional)")
 	flag.Parse()
 
 	if *showVersion {
@@ -95,48 +95,44 @@ func run(configPath, room, goalText string) error {
 	}
 	defer client.Close()
 
-	// tuiEvents/userInputCh exist even with no --room agent running --
-	// the TUI's chat pane and compose key just have nothing to show/send
-	// to in that case. Buffered generously since the TUI side is the slow
-	// consumer (a human reading, not a tight loop) and the agent side
-	// must never block on it.
+	// Buffered generously since the TUI side is the slow consumer (a human
+	// reading, not a tight loop) and the agent side must never block on it.
 	tuiEvents := make(chan agent.Event, 64)
 	userInputCh := make(chan string, 8)
 
-	// Empty only when no --room agent runs -- see tui.Options.AgentModel's
-	// own doc comment for why it's not shown at all in that case.
-	var agentModelLabel string
-
-	if room != "" {
-		p, err := buildProvider(cfg)
-		if err != nil {
-			return fmt.Errorf("build provider: %w", err)
-		}
-		tools, err := buildToolSource(cfg, client)
-		if err != nil {
-			return fmt.Errorf("build tool source: %w", err)
-		}
-		logPath, err := agentLogPath()
-		if err != nil {
-			return fmt.Errorf("resolve agent log path: %w", err)
-		}
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return fmt.Errorf("open agent log %s: %w", logPath, err)
-		}
-		defer logFile.Close()
-		// Never write agent activity to stderr/stdout once the TUI's alt
-		// screen takes over the terminal -- interleaved log lines would
-		// corrupt the display. A separate file the operator can tail
-		// (fmt.Fprintln below, before the TUI starts) is the live view
-		// for agent internals; the chat pane shows a collapsed line per
-		// event live, but agent.log keeps the full verbose detail.
-		agentLog := log.New(logFile, "", log.LstdFlags)
-		fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
-		localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-		go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog, tuiEvents, userInputCh)
-		agentModelLabel = providerLabel(cfg) + "/" + cfg.Model
+	// The agent loop always runs -- Raf's explicit product decision
+	// (macula-io/macula-lazymesh#1, 2026-09-06): "lazymesh should run
+	// without that arguments ceremony. lazymesh starts and uses the
+	// model, point final." --room/--goal are optional hints passed to
+	// runAgent, never a switch for whether the model runs at all.
+	p, err := buildProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("build provider: %w", err)
 	}
+	tools, err := buildToolSource(cfg, client)
+	if err != nil {
+		return fmt.Errorf("build tool source: %w", err)
+	}
+	logPath, err := agentLogPath()
+	if err != nil {
+		return fmt.Errorf("resolve agent log path: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open agent log %s: %w", logPath, err)
+	}
+	defer logFile.Close()
+	// Never write agent activity to stderr/stdout once the TUI's alt
+	// screen takes over the terminal -- interleaved log lines would
+	// corrupt the display. A separate file the operator can tail
+	// (fmt.Fprintln below, before the TUI starts) is the live view
+	// for agent internals; the chat pane shows a collapsed line per
+	// event live, but agent.log keeps the full verbose detail.
+	agentLog := log.New(logFile, "", log.LstdFlags)
+	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
+	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
+	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog, tuiEvents, userInputCh)
+	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
 		AgentEvents:       tuiEvents,
@@ -249,12 +245,14 @@ func agentLogPath() (string, error) {
 	return filepath.Join(dir, "agent.log"), nil
 }
 
-// runAgent drives the agent loop against room in the background, for as
-// long as the program runs. Every round the LLM decides what to do
-// (join, talk, answer rings, wait on mesh_say's own wait_reply_seconds) --
-// this function only supplies the cadence of asking it to keep going, not
-// any of the mesh actions themselves.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+// buildSystemPrompt is the agent's fixed opening instruction, pulled out of
+// runAgent as its own pure function so the room-scoping behavior (macula-
+// io/macula-lazymesh#1) has a direct unit test independent of the loop's
+// I/O. room and goalText are both optional hints, never a restriction: the
+// model is told to discover its actual participation scope live via
+// mesh_rooms, since a room joined later via an accepted ring must be
+// covered too, not just whatever room this function was called with.
+func buildSystemPrompt(room, goalText string, localToolsReachable bool) string {
 	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
 		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
 		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
@@ -265,24 +263,48 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 			"directory -- use those only when actual local work (not just mesh conversation or " +
 			"a mesh service) is genuinely called for."
 	}
+	roomHint := ""
+	if room != "" {
+		roomHint = fmt.Sprintf(
+			" In particular, prioritize this room: %s -- join it if you have not "+
+				"already, introduce yourself briefly, and participate naturally: read "+
+				"what others say, respond when it makes sense.",
+			room,
+		)
+	}
 	systemPrompt := fmt.Sprintf(
 		"You are a lazymesh agent cooperating with other agents on the Macula mesh. "+
-			"%s Room to participate in: %s. "+
-			"Join it if you have not already, introduce yourself briefly, and participate "+
-			"naturally: read what others say, respond when it makes sense. "+
+			"%s%s "+
+			"Your participation scope is every room you are currently a member of, not "+
+			"just one you were pointed at -- call mesh_rooms (no arguments) to find out "+
+			"which rooms that is. "+
 			"IMPORTANT, every single time you are prompted (not just when told to): call "+
-			"mesh_read_inbox with no room_topic argument (so it covers every room, not just "+
-			"the one above) and check its rings.pending list for anything addressed to you "+
-			"from ANY peer, not just people already in your room. If one is pending, decide "+
-			"whether to accept or decline based on its stated purpose and call "+
-			"mesh_answer_ring -- never leave a ring sitting there unanswered just because it's "+
-			"not about the room you were told to participate in. When there is nothing to do "+
-			"right now, call mesh_say with a long wait_reply_seconds to listen efficiently "+
-			"instead of returning immediately.",
-		toolsLine, room)
+			"mesh_read_inbox with no room_topic argument (so it covers every room) and "+
+			"check its rings.pending list for anything addressed to you from ANY peer, not "+
+			"just people already in a room you're in. If one is pending, decide whether to "+
+			"accept or decline based on its stated purpose and call mesh_answer_ring -- "+
+			"never leave a ring sitting there unanswered just because it's not about a room "+
+			"you were already in; accepting one puts you in a new room, which becomes part "+
+			"of your scope from then on too. When there is nothing to do right now, call "+
+			"mesh_say with a long wait_reply_seconds to listen efficiently instead of "+
+			"returning immediately.",
+		toolsLine, roomHint)
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
 	}
+	return systemPrompt
+}
+
+// runAgent drives the agent loop in the background, for as long as the
+// program runs; room and goalText are optional hints, not a scope
+// restriction -- the model discovers and participates in every room it is
+// currently a member of via mesh_rooms, regardless of whether either is
+// set. Every round the LLM decides what to do (join, talk, answer rings,
+// wait on mesh_say's own wait_reply_seconds) -- this function only
+// supplies the cadence of asking it to keep going, not any of the mesh
+// actions themselves.
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable)
 
 	loop := agent.NewLoop(p, tools, systemPrompt)
 	events := make(chan agent.Event, 16)
@@ -313,19 +335,7 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	consecutiveErrors := 0
 	backoff := initialBackoff
 
-	// Investigated 2026-09-06 after a live "ring stuck deferred" report --
-	// that specific incident turned out to be an instance Raf stopped
-	// himself mid-test, not this bug, but the underlying gap is real
-	// regardless: the system prompt alone saying "answer any ring
-	// addressed to you" wasn't reliably driving the model to actually
-	// check for one, since every per-turn prompt only ever mentioned "the
-	// room." Both prompts below now say it explicitly, every cycle, not
-	// just once at the start of the conversation.
-	const defaultPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
-		"addressed to you via mesh_answer_ring, from any peer, not just this room. Then check " +
-		"the room for anything new since your last check, and respond if warranted."
-	prompt := "First, call mesh_read_inbox (no room_topic) and answer any pending ring addressed " +
-		"to you via mesh_answer_ring. Then join the room and start participating."
+	prompt := agentInitialPrompt
 	for {
 		if ctx.Err() != nil {
 			return
@@ -345,12 +355,12 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 			case <-time.After(backoff):
 			}
 			backoff = nextBackoff(backoff)
-			prompt = nextPrompt(userInputCh, defaultPrompt)
+			prompt = nextPrompt(userInputCh, agentDefaultPrompt)
 			continue
 		}
 		consecutiveErrors = 0
 		backoff = initialBackoff
-		prompt = nextPrompt(userInputCh, defaultPrompt)
+		prompt = nextPrompt(userInputCh, agentDefaultPrompt)
 	}
 }
 
@@ -373,6 +383,31 @@ func nextPrompt(userInputCh <-chan string, defaultPrompt string) string {
 const (
 	initialBackoff = 5 * time.Second
 	maxBackoff     = 2 * time.Minute
+)
+
+// agentDefaultPrompt/agentInitialPrompt are runAgent's per-cycle nudges,
+// hoisted to package level (rather than local consts inside runAgent) so
+// their room-scoping content has a direct unit test.
+//
+// Investigated 2026-09-06 after a live "ring stuck deferred" report -- that
+// specific incident turned out to be an instance Raf stopped himself
+// mid-test, not a bug, but the underlying gap is real regardless: the
+// system prompt alone saying "answer any ring addressed to you" wasn't
+// reliably driving the model to actually check for one, since every
+// per-turn prompt only ever mentioned "the room." Both prompts say it
+// explicitly, every cycle, not just once at the start of the conversation.
+// Extended macula-io/macula-lazymesh#1 (2026-09-06): "the room" is now
+// "every room mesh_rooms reports," not one hardcoded topic -- a room
+// joined later via an accepted ring must stay in scope too.
+const (
+	agentDefaultPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+		"addressed to you via mesh_answer_ring, from any peer. Then call mesh_rooms and check " +
+		"every room you are currently a member of for anything new since your last check, " +
+		"responding if warranted -- not just the room you were originally pointed at, if any."
+	agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+		"addressed to you via mesh_answer_ring. Then call mesh_rooms, join any room you were " +
+		"pointed at that you are not already in, and start participating in every room you are " +
+		"a member of."
 )
 
 // nextBackoff doubles d, capped at maxBackoff -- pulled out as a pure

@@ -886,15 +886,18 @@ widths instead of overflowing.
       agent count updated automatically across ticks (0 → 7 → 8) with no
       manual refresh, confirming the 2s poll loop against real
       mesh_rooms/mesh_read_inbox/mesh_agents data.
-- [ ] Told (via a room message or CLI arg) to join a specific mesh room
-      and participate, the DeepSeek-backed agent loop actually does so —
-      calls mesh tools, posts real messages, driven by the LLM, not
-      scripted. **Implemented, not yet live-verified**: no DeepSeek key
-      file exists yet at `~/.ai-api-keys/.deepseek-api-keys/lazymesh` (only
-      `.spartan00`, a different consumer, exists in that directory) — did
-      not repurpose someone else's key. Needs a real key dropped there,
-      then `./lazymesh --room <topic>` run against a live room, before this
-      can be checked off for real.
+- [x] The DeepSeek-backed agent loop actually joins and participates in
+      mesh rooms — calls mesh tools, posts real messages, driven by the
+      LLM, not scripted. Superseded by macula-io/macula-lazymesh#1 (see
+      "Agent loop runs unconditionally" below): no room/CLI arg is
+      required any more, scope is discovered live via `mesh_rooms`.
+      **Live-verified 2026-09-06** with the real key now present at
+      `~/.ai-api-keys/.deepseek-api-keys/lazymesh`: ran the built binary
+      with zero flags, `agent.log` showed it calling `mesh_read_inbox`,
+      finding no current room membership, then `mesh_rooms` surfacing an
+      already-accepted ring's room plus 4 public rooms seen on central,
+      and joining all 5 on its own initiative before the verification
+      window ended.
 - [x] Provider config is swappable in principle (a second, even
       unimplemented, provider stub proves the interface isn't
       DeepSeek-shaped). `internal/provider/anthropic.go` is that stub —
@@ -902,3 +905,58 @@ widths instead of overflowing.
       API, not another OpenAI-compatible chat-completions variant), so it
       actually proves the interface generalizes rather than just being a
       base_url swap on the same shape.
+
+## Agent loop runs unconditionally, scope discovered live (2026-09-06, implemented)
+
+Raf's decision, filed as macula-io/macula-lazymesh#1:
+
+> lazymesh should run without that arguments ceremony. lazymesh starts and
+> uses the model, point final.
+
+**The bug:** `cmd/lazymesh/main.go:110` gated the entire agent loop
+(provider, tool source, `runAgent`) behind `if room != ""`. Running
+`./lazymesh` with no flags gave a read-only TUI and never wrote
+`agent.log` at all — confirmed empirically before the fix (the file
+didn't exist on a machine that had built and run lazymesh, only
+`--room`-gated files did). Reported live by Raf via a goose-driven mesh
+session: a ring got accepted (so something was alive) but zero chat
+replies followed across 5+ minutes.
+
+**Related gap, fixed together:** even with `--room` passed, `runAgent`'s
+system prompt hardcoded that one room as "the room to participate in."
+Ring-answering already covered every peer (`mesh_read_inbox` with no
+`room_topic`), but the ongoing "check the room, respond" instruction only
+ever named the single configured room — a room joined later via an
+accepted ring never got read or replied to again.
+
+**Fix:** removed the `if room != ""` gate in `run()` — provider, tool
+source, and `runAgent` now start on every run. `--room`/`--goal` became
+optional hints (`buildSystemPrompt`, extracted as its own pure function
+for testability) rather than the on/off switch for whether the model runs
+at all: the system prompt and both per-cycle prompts (`agentDefaultPrompt`
+hoisted to a package-level const, likewise `agentInitialPrompt`) now tell
+the model to call `mesh_rooms` (already allowlisted, no arguments) to
+discover its actual room memberships and treat all of them as
+participation scope, joining any `--room` hint given on top of that. This
+means an API key is now required on every run, not just `--room` runs —
+an intentional consequence of "the agent loop always runs," not an
+oversight.
+
+7 new unit tests on `buildSystemPrompt`/`agentDefaultPrompt`/
+`agentInitialPrompt` (room-scoping content, priority-hint-without-
+narrowing, goal text, local-tools line) plus the existing suite, all
+green; `go vet` clean.
+
+**Live-verified 2026-09-06**, not just unit-tested: built the binary, ran
+it with zero flags under a `script`-allocated pty (no real terminal
+available in the verification environment) for 25s against the real
+mesh with the real key at `~/.ai-api-keys/.deepseek-api-keys/lazymesh`.
+`agent.log` confirmed the exact intended behavior: `mesh_read_inbox` →
+`mesh_rooms` (found zero current room membership, one already-accepted
+ring pointing at a room, and 4 public rooms seen on central) → the model
+decided on its own initiative to join all 5, then began reading each to
+catch up — never told which room via any flag. Run was killed by the
+verification timeout before any `mesh_say`, so no chat noise was left in
+any real room; the room-join events themselves are the only trace left
+on the mesh, an inherent and harmless side effect of correctly joining as
+designed.
