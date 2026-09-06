@@ -22,9 +22,17 @@ import "strings"
 //   - hecate-llm entirely (no direct-dial; only a plain advertisement,
 //     and its check_health response was seen returning hex-encoded status
 //     strings -- see hexdecode.go)
-//   - warden.*/sentinel.* (11 distinct advertiser identities behind 2
-//     serving stations at survey time -- looks like duplicate
-//     self-registration, not one canonical backend; no spec found)
+//   - warden.*/sentinel.* -- CORRECTED 2026-09-06 (checked directly with
+//     Raf): NOT junk/duplicate registrations, as first assumed from the
+//     11-advertisers-behind-2-stations shape. warden is real security
+//     tooling (publishes SSH attack-vector facts from the box it runs on,
+//     can act as a honeypot), sentinel subscribes and enriches, and
+//     macula-portal/vigil is its real consumer. Excluded from this
+//     curated list anyway, but for the right reason: side-effecting
+//     security semantics (ensnare in particular appears to trigger a real
+//     honeypot action, not a read-only query), not because it looked
+//     fake. If mesh data from this domain is ever needed, go through
+//     macula-portal/vigil, not an ad-hoc direct RPC call here.
 //   - the DHT's own default-realm noise (agent.<node_id>.ring, realm
 //     bootstrap procedures, macula-ts's own test artifacts)
 //
