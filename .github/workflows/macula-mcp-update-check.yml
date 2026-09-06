@@ -1,0 +1,24 @@
+name: Check macula-mcp update
+
+on:
+  schedule:
+    # Once daily, off the top of the hour to avoid GitHub's cron pile-up.
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    name: check for a newer @macula-io/mcp release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # See scripts/check-macula-mcp-update.sh's own header for what this
+      # does and does not do -- it opens a review-only PR, it never merges.
+      - name: Check npm and open a PR if the pin is behind
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/check-macula-mcp-update.sh
