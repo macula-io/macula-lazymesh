@@ -427,60 +427,6 @@ func (m Model) renderExpandedMesh() string {
 	return b.String()
 }
 
-func (m Model) renderRooms() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Rooms (%d joined)", len(m.state.joined))) + "\n")
-	if len(m.state.joined) == 0 {
-		b.WriteString(dimStyle.Render("no rooms joined yet") + "\n")
-	}
-	for _, r := range m.state.joined {
-		b.WriteString(fmt.Sprintf("%s  %s  %d participants, %d messages\n",
-			roomLabel(r.RoomTopic, r.Purpose), dimStyle.Render("opened by "+displayName(r.OpenedBy, r.OpenedByPetname)),
-			len(r.ParticipantsSeen), r.MessagesReceived))
-		for _, msg := range lastN(m.state.recent[r.RoomTopic], 3) {
-			b.WriteString(dimStyle.Render(fmt.Sprintf("    %s: %s\n", displayName(msg.From, msg.FromPetname), truncate(msg.Text, 80))))
-		}
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func (m Model) renderPendingRings() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Pending rings (%d)", len(m.state.pending))) + "\n")
-	if len(m.state.pending) == 0 {
-		b.WriteString(dimStyle.Render("none") + "\n")
-	}
-	for _, r := range m.state.pending {
-		b.WriteString(fmt.Sprintf("%s from %s: %s\n", r.Direction, displayName(r.Peer, r.PeerPetname), truncate(r.Purpose, 80)))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func (m Model) renderPresence() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Presence (%d agents)", len(m.state.agents))) + "\n")
-	for _, a := range m.state.agents {
-		self := ""
-		if a.IsSelf {
-			self = dimStyle.Render(" (you)")
-		}
-		// operator_name (a human-chosen self-description) wins when set;
-		// petname (a deterministic, human-legible stand-in for the raw
-		// node_id, never self-asserted) is next; the hex id is the last
-		// resort, not the default -- per the same "don't make a human
-		// read raw hex" principle driving the ring pop-up design.
-		name := a.OperatorName
-		if name == "" {
-			name = a.Petname
-		}
-		if name == "" {
-			name = shortID(a.NodeID)
-		}
-		b.WriteString(fmt.Sprintf("%s%s  %s  last seen %ds ago\n", name, self, dimStyle.Render(a.ConnectedVia), a.SecondsSinceSeen))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
 func shortID(id string) string {
 	if len(id) <= 8 {
 		return id

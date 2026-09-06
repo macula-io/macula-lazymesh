@@ -648,6 +648,57 @@ is deferred to CI (low risk — the scripts are structural adaptations of
 already-CI-passing `.ps1` files with only names/paths changed, not new
 PowerShell written from scratch).
 
+## Mesh-view table polish: full-width aligned columns (2026-09-06)
+
+The expanded mesh view's three panels (Rooms, Pending rings, Presence)
+moved from hand-formatted `fmt.Sprintf` single-line-per-row strings to
+real `charmbracelet/bubbles/table` (already in `go.mod`) instances,
+full-width to match how `chatViewport` already fills the panel exactly
+rather than sizing to content. New `internal/tui/panels.go` holds all
+three `render*` functions plus two small pure helpers:
+
+- `panelInnerWidth()` subtracts `panelStyle`'s own border+padding
+  overhead (4 columns total) from `m.width`, so the panel's OVERALL
+  rendered width comes out equal to `m.width` -- the same full-width goal
+  `chatViewport` gets directly, just accounted for through a wrapper here.
+- `columnWidths(width, spec)` distributes `width` across a panel's
+  columns, where `spec` marks exactly one column `-1` (flexible, absorbs
+  whatever's left) and gives the rest fixed content widths -- accounting
+  for `bubbles/table`'s own `Padding(0,1)` per cell (each column costs its
+  declared `Width` plus 2 on screen), so the columns' rendered widths
+  always sum to exactly `width`, verified by a property test across three
+  flex-column positions.
+
+Columns per panel, per the request: Rooms is Room (flex) | Opened by (20)
+| Participants (12) | Messages (10); Pending rings is Direction (10) |
+From (20) | Purpose (flex); Presence is Name (flex) | Connected via (20)
+| Last seen (12). Rooms' existing recent-message-preview feature (last 3
+messages per joined room) is preserved, just moved below the aligned
+table instead of interleaved under each room's own now-tabular row --
+dropping it to fit the new layout would have been a real feature loss,
+not a simplification.
+
+**A real bug found by actually rendering sample data, not just reading
+the diff:** `bubbles/table`'s `Model.cursor` starts at `0` regardless of
+whether the table is ever focused (none of these three are -- read-only
+display, no `.Focus()` call anywhere), and `renderRow` applies the
+`Selected` style to whichever row equals `cursor` unconditionally. Naively
+setting `Selected` to a copy of `Cell` (reasonable-looking first attempt,
+since both should look the same for an unfocused table) actually
+re-applies `Cell`'s own `Padding(0,1)` a second time at the whole-row
+level on top of the per-cell padding already baked into each column --
+this doesn't change the row's total rendered width (one style just
+redistributes a space from the right edge to the left, it doesn't add
+one), so a first regression-test draft asserting equal total width across
+rows passed even with the bug still present. Caught only by literally
+printing `renderExpandedMesh()` with realistic multi-row fixture data at
+two terminal widths and eyeballing it: row 0 of every panel was visibly
+shifted one column right of every other row. Fixed by making `Selected` a
+true no-op `lipgloss.NewStyle()` instead of a `Cell` copy, and rewrote the
+regression test to compare each row's *leading padding* against the
+header's (never `Selected`-styled) -- confirmed RED (fails with the bug
+reintroduced) then GREEN (passes with the real fix), not just asserted.
+
 ## Success criteria
 
 - [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to
