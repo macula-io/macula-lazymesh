@@ -78,9 +78,22 @@ type Config struct {
 	// silently omitting/hiding pending rings -- exactly the failure mode
 	// blocking this repo's own ring pop-up from ever being seen live.
 	// Confirmed additive (two files touched, both gain a fallback, nothing
-	// removed) and RED/GREEN tested upstream. Whoever next edits this
-	// default should do the same before bumping it, never bump just to
-	// "pick up whatever's newest." Kept in sync with (but not imported from, to
+	// removed) and RED/GREEN tested upstream. 0.24.2 (96dee2a, single commit)
+	// fixes a related but distinct bug: serve()'s teardown-then-serve
+	// ordering could leave ring_service.ts's own direct-dial registration
+	// completely torn down (not degraded) if a periodic 20-minute renewal's
+	// connect/serve() call failed, until the next renewal happened to
+	// succeed -- serve() now connects and serves the replacement FIRST,
+	// only retiring the previous still-working registration once that
+	// succeeds, plus backoff on a failed renewal instead of waiting the
+	// full interval again. Confirmed additive (both changed functions keep
+	// their existing happy path, only reorder/add retry logic) and
+	// RED/GREEN tested upstream (30 files, 433 tests). Explicitly does NOT
+	// claim to fix the separate, still-open "ring recorded then vanished"
+	// mystery -- left open on its own terms, not force-unified. Whoever
+	// next edits this default should do the same before bumping it, never
+	// bump just to "pick up whatever's newest." Kept in sync with (but not
+	// imported from, to
 	// keep this package a leaf with no cross-package awareness, matching
 	// how ToolAllowlist's own default is resolved in main.go instead of
 	// here) mcpclient.DefaultMaculaMCPVersion.
@@ -157,7 +170,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition: "bottom",
-		MaculaMCPVersion:  "0.24.1",
+		MaculaMCPVersion:  "0.24.2",
 		ContactPolicyFile: filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:        "always-ask",
 	}

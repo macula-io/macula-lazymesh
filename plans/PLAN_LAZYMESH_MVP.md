@@ -744,6 +744,35 @@ already owns the investigation and has more context on what's already
 been ruled out. Cleaned up the tmux session, scratch config, and
 throwaway probe test afterward; nothing left running.
 
+## macula-mcp 0.24.2 bump: renewal-teardown hypothesis ruled out for this repro (2026-09-06)
+
+`macula-mcp` 0.24.2 (`96dee2a`, single commit, published to npm) fixes a
+real but different bug: `serve()`'s teardown-then-serve ordering could
+leave `ring_service.ts`'s direct-dial registration completely torn down
+(not degraded) if a periodic 20-minute renewal's connect/`serve()` call
+failed, until the next renewal happened to succeed -- `serve()` now
+connects and serves the replacement first, only retiring the previous
+still-working registration once that succeeds, plus retry backoff on a
+failed renewal. Read the diff, confirmed additive (both changed functions
+keep their happy path, only reorder/add retry logic), RED/GREEN tested
+upstream (30 files, 433 tests). Bumped both version constants again.
+
+**Re-ran the exact same live repro from the section above, with an
+honest negative result:** fresh identity, rang from this session,
+`answer: 3` deferred again -- lazymesh's own status strip still never
+showed the pending ring, same as under 0.24.1. But this time a direct
+`mesh_hello` probe against the same identity file could rule the renewal
+hypothesis out cleanly rather than just failing to confirm it:
+`ring.serving: 1`, no `error` field, `registered_at` was ~7 seconds
+before the ring was sent, `next_renewal_at` was still ~5 minutes out. No
+renewal had occurred -- this was the identity's FIRST registration, and
+`serve()`'s teardown-then-serve bug (0.24.2's whole fix) only ever fires
+on a RE-registration. The mechanism cf/ab hypothesized cannot explain
+this specific case; reported back as a clean negative result (narrows
+the remaining "ring vanished" mystery rather than leaving it a maybe),
+not a shrug. Not digging into `rings.ts` myself -- still ab's
+investigation to own. Cleaned up the same way as before.
+
 ## Success criteria
 
 - [x] `lazymesh` (single binary) launches, spawns macula-mcp, connects to
