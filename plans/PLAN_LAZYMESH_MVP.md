@@ -134,6 +134,10 @@ name) holding:
       enabled localtools source, confirmed both `mesh_hello` and
       `shell_exec` show up with no name collision, and a real `shell_exec`
       call round-trips correctly (`cmd/lazymesh`'s `//go:build live` test).
+      **Superseded by the security review below**: as of that review,
+      `shell_exec` is no longer reachable by default even with
+      `local_tools.enabled` — see "Security review findings" for why and
+      what changed.
 - [ ] **Phase 3: Prefer mesh services over local tools.** When a task can
       be done by calling a real mesh RPC procedure (discovered via
       `mesh_find_records_by_type("procedure_advertisement")`) instead of
@@ -143,6 +147,73 @@ name) holding:
       one for this project's actual thesis (decentralized capability
       discovery, not another app with a fixed integration list) but it
       depends on Phase 1 actually working first.
+
+## Security review findings (2026-09-06)
+
+An adversarial review (Fable, run by a teammate against a fresh clone,
+budgeted to 3 required findings ranked plus observations) landed right
+after Phase 2 shipped and changed the priority order — the allowlist below
+became the critical-path item ahead of any further Phase 2 polish or
+starting Phase 3. All three required findings are fixed as of this
+section's own commit:
+
+1. **(most severe) No tool allowlist — any mesh peer's room text could
+   escalate to arbitrary local execution.** Every tool a ToolSource
+   advertised went straight to the model, and every tool result (room
+   messages, ring purposes, inbox contents — all peer-authored) came back
+   into context with nothing marking it untrusted. Concrete paths that
+   existed even in Phase 1 alone: macula-mcp's `mesh_serve` lets a peer ask
+   the agent to register a local shell command as an RPC handler (a
+   persistent backdoor, no re-registration per call);
+   `mesh_remember_directory` reads an attacker-picked local directory.
+   Phase 2's `shell_exec` was the sharpest version of the same risk —
+   immediate arbitrary execution, no pre-registration step at all.
+   **Fix:** `internal/agent/allowlist.go`'s `AllowlistSource`, a
+   deny-by-default wrapper enforced at BOTH the tools-offered-to-the-model
+   step (`ListTools` filters) and the execute step (`CallToolRaw` refuses
+   anything not on the list, defense in depth against some other code path
+   handing the model a tool spec). `DefaultToolAllowlist` covers exactly
+   the conversational mesh primitives (`mesh_hello`/`join_room`/
+   `leave_room`/`say`/`read_inbox`/`answer_ring`/`rooms`/`agents`) and
+   deliberately excludes `shell_exec`/`read_file`/`write_file` — even when
+   `local_tools.enabled` is true. Reaching local tools now needs a second,
+   separate, explicit `config.ToolAllowlist` override the operator writes
+   themselves; it's never a side effect of the one flag. Live-verified:
+   both the safe-default path (shell_exec absent and refused despite
+   `local_tools.enabled: true`) and the explicit-override path (shell_exec
+   genuinely reachable once added to `tool_allowlist`) — two separate
+   `//go:build live` tests in `cmd/lazymesh`.
+2. **macula-mcp spawned via unpinned `npx -y` with the full parent
+   environment.** Re-resolved npm's `latest` tag fresh on every launch,
+   and `cmd.Env = os.Environ()` handed the subprocess the whole shell
+   environment (API keys, tokens, everything) for no reason. **Fix:**
+   `internal/mcpclient`'s `maculaMCPVersion` pins to the exact published
+   version (`0.23.0` as of this fix — bump deliberately, never just to
+   "pick up whatever's newest"); `envAllowlist` forwards only
+   `PATH`/`HOME`/`TMPDIR` plus `MACULA_MCP_IDENTITY` when set, not the
+   full environment. Live-verified: real spawn still works correctly
+   under the pinned version and restricted environment.
+3. **Unbounded conversation history + infinite silent retry.** History
+   only ever grew by appending; once a request got too large for the
+   provider's context limit, the outer loop retried the same oversized
+   request every 5s forever with the TUI still looking healthy — a peer
+   could trigger this on purpose just by keeping a room busy (cheap DoS).
+   **Fix:** `agent.Loop.trimHistory` windows history to
+   `maxHistoryMessages` (200), cutting only at user-message turn
+   boundaries so a tool-calling assistant message is never separated from
+   its own tool-result messages (its own regression test, not just a
+   size-based trim). `cmd/lazymesh`'s retry loop now stops after 8
+   consecutive failures instead of retrying forever, with exponential
+   backoff (5s doubling to a 2min cap) between attempts.
+
+Secondary finding, not required but noted: `localtools.resolveInSandbox`
+is path/string-based only, no symlink resolution — a symlink planted
+inside `working_dir` (which `shell_exec`, being unsandboxed, can already
+create) pointing outside the sandbox would let `read_file`/`write_file`
+follow it. Not additive risk today since `shell_exec` already dominates
+it, but worth an `EvalSymlinks` check or an explicit doc note if
+file-tools are ever split from `shell_exec` later. Not fixed in this pass
+— tracked here rather than silently dropped.
 
 ## Repo conventions (matching this org's other Go SDKs)
 

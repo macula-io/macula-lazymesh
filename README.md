@@ -59,16 +59,49 @@ matching this workspace's key-file convention.
 screen once it starts, so agent internals go to a file you can `tail -f`
 in a second terminal instead.
 
-### Local tools (opt-in, off by default)
+### Tool allowlist
 
-By default the agent has NO tools beyond the mesh. Setting
-`local_tools.enabled: true` in `config.yaml` adds `shell_exec`/
-`read_file`/`write_file`, scoped to `local_tools.working_dir`
-(read/write confined there; `shell_exec` runs with that as its starting
-directory only, not a real sandbox — treat it as exactly as trusted as
-the operator running commands themselves). This is genuinely optional:
-Phase 1's whole value is a mesh-only agent, and this stays off unless you
-ask for it.
+By default the agent can only see and call the conversational mesh
+primitives (`mesh_hello`, `join_room`, `leave_room`, `say`, `read_inbox`,
+`answer_ring`, `rooms`, `agents`) — deny-by-default, enforced both in what
+gets offered to the model and at execution time. This exists because the
+agent's entire conversation can be steered by arbitrary mesh peers (room
+messages, ring purposes are all peer-authored text that flows straight
+back into the model's context); a wider default tool set would mean any
+peer's room post could potentially trigger local execution.
+
+### Local tools (opt-in, off by default, allowlist-gated separately)
+
+Setting `local_tools.enabled: true` in `config.yaml` wires up `shell_exec`/
+`read_file`/`write_file`, scoped to `local_tools.working_dir` (read/write
+confined there; `shell_exec` runs with that as its starting directory
+only, not a real sandbox — treat it as exactly as trusted as the operator
+running commands themselves). **This flag alone does not make them
+reachable by the agent** — the tool allowlist above still excludes them.
+Reaching them needs a second, separate step: explicitly listing them in
+`tool_allowlist` in your own config, e.g.:
+
+```yaml
+local_tools:
+  enabled: true
+  working_dir: ~/.config/lazymesh/workspace
+tool_allowlist:
+  - mesh_hello
+  - mesh_join_room
+  - mesh_leave_room
+  - mesh_say
+  - mesh_read_inbox
+  - mesh_answer_ring
+  - mesh_rooms
+  - mesh_agents
+  - shell_exec
+  - read_file
+  - write_file
+```
+
+Only do this if you actually want an agent whose conversation can be
+steered by any mesh peer to also have local execution — it's a real,
+conscious trade-off, not a default anyone gets by accident.
 
 ## License
 

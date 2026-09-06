@@ -78,7 +78,8 @@ func run(configPath, room, goalText string) error {
 		// agent's actual room messages/presence as they land.
 		agentLog := log.New(logFile, "", log.LstdFlags)
 		fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
-		go runAgent(ctx, p, tools, room, goalText, cfg.LocalTools.Enabled, agentLog)
+		localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
+		go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog)
 	}
 
 	program := tea.NewProgram(tui.New(client), tea.WithAltScreen())
@@ -107,22 +108,49 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 }
 
 // buildToolSource returns macula-mcp alone, or macula-mcp combined with
-// Phase 2's local shell/file tools when explicitly enabled in config.
-// Local tools are opt-in -- the whole point of the default is having NO
-// extra tools beyond the mesh.
+// Phase 2's local shell/file tools when explicitly enabled in config --
+// then wraps whatever that is in an AllowlistSource. The allowlist is the
+// actual gate: an agent's entire conversation can be steered by arbitrary
+// mesh peers (room messages, ring purposes), so what the model is ALLOWED
+// to see or call matters independently of what sources merely exist.
+// cfg.LocalTools.Enabled controls whether shell_exec/read_file/write_file
+// are wired up at all; it does NOT put them on the allowlist by itself --
+// see config.ToolAllowlist and internal/agent/allowlist.go.
 func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSource, error) {
-	if !cfg.LocalTools.Enabled {
-		return client, nil
+	var combined agent.ToolSource = client
+	if cfg.LocalTools.Enabled {
+		local, err := localtools.New(localtools.Config{
+			Enabled:      cfg.LocalTools.Enabled,
+			WorkingDir:   cfg.LocalTools.WorkingDir,
+			ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("local tools: %w", err)
+		}
+		combined = agent.NewMultiSource(client, local)
 	}
-	local, err := localtools.New(localtools.Config{
-		Enabled:      cfg.LocalTools.Enabled,
-		WorkingDir:   cfg.LocalTools.WorkingDir,
-		ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("local tools: %w", err)
+
+	return agent.NewAllowlistSource(combined, resolveAllowlist(cfg)), nil
+}
+
+// resolveAllowlist is the single place cfg.ToolAllowlist gets defaulted,
+// so buildToolSource's actual enforcement and runAgent's system-prompt
+// claim about available tools can never drift apart -- telling the model
+// it has a tool the allowlist then refuses is worse than not mentioning it.
+func resolveAllowlist(cfg config.Config) []string {
+	if len(cfg.ToolAllowlist) > 0 {
+		return cfg.ToolAllowlist
 	}
-	return agent.NewMultiSource(client, local), nil
+	return agent.DefaultToolAllowlist
+}
+
+func allowlistIncludes(allowlist []string, name string) bool {
+	for _, n := range allowlist {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // agentLogPath is where agent activity is logged instead of stderr, since
@@ -144,9 +172,9 @@ func agentLogPath() (string, error) {
 // (join, talk, answer rings, wait on mesh_say's own wait_reply_seconds) --
 // this function only supplies the cadence of asking it to keep going, not
 // any of the mesh actions themselves.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsEnabled bool, agentLog *log.Logger) {
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger) {
 	toolsLine := "Your only tools are macula-mcp's mesh_* tools."
-	if localToolsEnabled {
+	if localToolsReachable {
 		toolsLine = "You have macula-mcp's mesh_* tools, plus shell_exec/read_file/write_file " +
 			"scoped to a local working directory -- use those only when actual local work " +
 			"(not just mesh conversation) is genuinely called for."
@@ -172,21 +200,59 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	}()
 	defer close(events)
 
+	// maxConsecutiveErrors bounds how long this keeps retrying after
+	// repeated provider failures (found by an adversarial review,
+	// 2026-09-06): unbounded retries meant a wedged provider -- or a peer
+	// deliberately flooding the room to force context-overflow errors --
+	// left this loop silently spinning forever while the TUI still looked
+	// healthy. backoff grows between attempts instead of a fixed delay, so
+	// a transient blip recovers fast but a persistent failure doesn't
+	// hammer the provider every 5s for no reason.
+	const maxConsecutiveErrors = 8
+	consecutiveErrors := 0
+	backoff := initialBackoff
+
 	prompt := "Join the room and start participating."
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		if err := loop.Say(ctx, prompt, events); err != nil {
-			agentLog.Printf("lazymesh agent: %s", err)
+			consecutiveErrors++
+			agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, consecutiveErrors, maxConsecutiveErrors)
+			if consecutiveErrors >= maxConsecutiveErrors {
+				agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", consecutiveErrors)
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(5 * time.Second):
+			case <-time.After(backoff):
 			}
+			backoff = nextBackoff(backoff)
+			prompt = "Check the room for anything new since your last check, and respond if warranted."
+			continue
 		}
+		consecutiveErrors = 0
+		backoff = initialBackoff
 		prompt = "Check the room for anything new since your last check, and respond if warranted."
 	}
+}
+
+const (
+	initialBackoff = 5 * time.Second
+	maxBackoff     = 2 * time.Minute
+)
+
+// nextBackoff doubles d, capped at maxBackoff -- pulled out as a pure
+// function so the growth/cap behavior has its own test independent of the
+// retry loop's I/O.
+func nextBackoff(d time.Duration) time.Duration {
+	d *= 2
+	if d > maxBackoff {
+		return maxBackoff
+	}
+	return d
 }
 
 func logEvent(agentLog *log.Logger, ev agent.Event) {

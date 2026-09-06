@@ -69,6 +69,13 @@ func NewLoop(p provider.Provider, tools ToolSource, systemPrompt string) *Loop {
 	return l
 }
 
+// maxHistoryMessages bounds how much conversation Say ever sends to the
+// provider. Without this, a long-running --room session's history grows
+// forever -- cheap for a peer to force by just keeping a room active, and
+// eventually the request itself starts failing outright once it exceeds
+// the provider's own context limit (see trimHistory).
+const maxHistoryMessages = 200
+
 // Say adds a user message to the conversation and runs the loop until the
 // model produces a plain assistant reply with no further tool calls,
 // emitting an Event for every intermediate step along the way.
@@ -77,6 +84,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		Role:    provider.RoleUser,
 		Content: userText,
 	})
+	l.trimHistory()
 
 	tools, err := l.Tools.ListTools(ctx)
 	if err != nil {
@@ -134,6 +142,38 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		}
 	}
 	return fmt.Errorf("agent loop: exceeded %d tool-calling rounds without a final reply", maxRounds)
+}
+
+// trimHistory drops the oldest complete "turns" (a user message and
+// everything up to but not including the next user message) once
+// l.messages exceeds maxHistoryMessages, keeping any leading system
+// message intact. Cutting at user-message boundaries specifically is what
+// keeps a tool_calls assistant message and its tool-result messages
+// together -- splitting those would send a provider a tool result with no
+// matching call, which most OpenAI-compatible APIs reject outright.
+func (l *Loop) trimHistory() {
+	if len(l.messages) <= maxHistoryMessages {
+		return
+	}
+	systemOffset := 0
+	if len(l.messages) > 0 && l.messages[0].Role == provider.RoleSystem {
+		systemOffset = 1
+	}
+	rest := l.messages[systemOffset:]
+	for systemOffset+len(rest) > maxHistoryMessages {
+		cut := 1
+		for cut < len(rest) && rest[cut].Role != provider.RoleUser {
+			cut++
+		}
+		if cut >= len(rest) {
+			break // nothing left we can safely cut at a turn boundary
+		}
+		rest = rest[cut:]
+	}
+	trimmed := make([]provider.Message, 0, systemOffset+len(rest))
+	trimmed = append(trimmed, l.messages[:systemOffset]...)
+	trimmed = append(trimmed, rest...)
+	l.messages = trimmed
 }
 
 func emit(events chan<- Event, e Event) {

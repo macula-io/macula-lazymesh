@@ -37,6 +37,18 @@ type Config struct {
 	// (shell_exec/read_file/write_file). Off by default -- the MVP's whole
 	// value proposition is having NO extra tools unless explicitly enabled.
 	LocalTools LocalTools `yaml:"local_tools,omitempty"`
+	// ToolAllowlist, if set, overrides agent.DefaultToolAllowlist -- the
+	// deny-by-default set of tool names an agent driven by untrusted mesh
+	// content is permitted to see or call at all (see
+	// internal/agent/allowlist.go for why this exists). Left empty by
+	// Default() deliberately: main.go falls back to
+	// agent.DefaultToolAllowlist rather than this package hardcoding or
+	// importing that list, keeping config a leaf package. Setting this
+	// yourself, including adding local_tools' own tool names
+	// (shell_exec/read_file/write_file), is an explicit, conscious choice
+	// on your own machine -- never a side effect of local_tools.enabled
+	// alone.
+	ToolAllowlist []string `yaml:"tool_allowlist,omitempty"`
 }
 
 // LocalTools configures internal/localtools. Disabled by default; a

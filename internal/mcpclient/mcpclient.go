@@ -16,11 +16,30 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// LaunchCommand is the exact command every other MCP config in this
-// workspace already uses to start macula-mcp. Do not change this to a
-// locally-built binary path or a different invocation -- the whole point
-// is that lazymesh starts macula-mcp the same way Claude Code/Goose do.
-var LaunchCommand = []string{"npx", "-y", "-p", "@macula-io/mcp", "macula-mcp"}
+// maculaMCPVersion is pinned deliberately (found by an adversarial review,
+// 2026-09-06): the workspace-wide convention this used to copy verbatim
+// was `npx -y -p @macula-io/mcp macula-mcp`, unpinned, which re-resolves
+// npm's "latest" tag on every single launch. A bad or compromised
+// @macula-io/mcp release would then run unattended, with whatever
+// environment Spawn hands it (see envAllowlist below). Bump this only
+// deliberately, after checking what changed -- never just to "pick up
+// whatever's newest."
+const maculaMCPVersion = "0.23.0"
+
+// LaunchCommand starts macula-mcp the same way every other MCP config in
+// this workspace does (npx -p @macula-io/mcp macula-mcp), except pinned to
+// maculaMCPVersion instead of npm's floating latest tag. Do not change
+// this to a locally-built binary path or a different invocation otherwise.
+var LaunchCommand = []string{"npx", "-y", "-p", "@macula-io/mcp@" + maculaMCPVersion, "macula-mcp"}
+
+// envAllowlist is what Spawn forwards to the macula-mcp subprocess instead
+// of the full parent environment (found by the same review): PATH so
+// node/npx can find their own binaries, HOME so npm has a cache/config
+// directory, TMPDIR for npm's temp extraction. Nothing else -- macula-mcp
+// has no business seeing the rest of this process's environment (API
+// keys, tokens, unrelated config) just because it happens to be spawned
+// from it.
+var envAllowlist = []string{"PATH", "HOME", "TMPDIR"}
 
 // Tool is a provider-agnostic view of one macula-mcp tool: just enough to
 // build an LLM's tool-call spec and to invoke it later by name.
@@ -41,7 +60,7 @@ type Client struct {
 // default fresh-identity-per-launch behavior.
 func Spawn(ctx context.Context, identityFile string) (*Client, error) {
 	cmd := exec.Command(LaunchCommand[0], LaunchCommand[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = filteredEnv(envAllowlist)
 	if identityFile != "" {
 		cmd.Env = append(cmd.Env, "MACULA_MCP_IDENTITY="+identityFile)
 	}
@@ -54,6 +73,18 @@ func Spawn(ctx context.Context, identityFile string) (*Client, error) {
 		return nil, fmt.Errorf("connect to macula-mcp (%s): %w", strings.Join(LaunchCommand, " "), err)
 	}
 	return &Client{session: session}, nil
+}
+
+// filteredEnv builds a subprocess environment containing only the given
+// variable names, each taken from this process's own environment if set.
+func filteredEnv(allowlist []string) []string {
+	env := make([]string, 0, len(allowlist))
+	for _, name := range allowlist {
+		if val, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+val)
+		}
+	}
+	return env
 }
 
 // Close ends the MCP session and terminates the macula-mcp subprocess.
