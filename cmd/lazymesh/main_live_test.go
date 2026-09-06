@@ -22,7 +22,7 @@ func TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := mcpclient.Spawn(ctx, "")
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalTools
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := mcpclient.Spawn(ctx, "")
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestLiveBuildToolSource_ExplicitAllowlistOverrideExposesShellExec(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := mcpclient.Spawn(ctx, "")
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}

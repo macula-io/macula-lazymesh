@@ -4,6 +4,9 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,7 +19,7 @@ func TestLiveSpawn_ListsRealMaculaMCPTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := Spawn(ctx, "")
+	client, err := Spawn(ctx, SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -49,7 +52,7 @@ func TestLiveSpawn_CallToolWorks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := Spawn(ctx, "")
+	client, err := Spawn(ctx, SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -61,5 +64,44 @@ func TestLiveSpawn_CallToolWorks(t *testing.T) {
 	}
 	if result == "" {
 		t.Fatalf("expected non-empty result from mesh_rooms")
+	}
+}
+
+// TestLiveSpawn_ContactPolicyFileIsolation confirms the actual isolation
+// property (found investigating the ring-answering UX, 2026-09-06), not
+// just that the env var gets constructed correctly: a real macula-mcp
+// spawned with a custom ContactPolicyFile reports THAT path back (via
+// mesh_hello's own ring.policy_file field), not the shared
+// ~/.config/macula-mcp/contact_policy.json default every other macula-mcp
+// instance on this machine uses.
+func TestLiveSpawn_ContactPolicyFileIsolation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	customPath := filepath.Join(t.TempDir(), "contact_policy.json")
+	client, err := Spawn(ctx, SpawnOptions{ContactPolicyFile: customPath})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer client.Close()
+
+	result, err := client.CallTool(ctx, "mesh_hello", map[string]any{})
+	if err != nil {
+		t.Fatalf("CallTool(mesh_hello): %v", err)
+	}
+
+	var parsed struct {
+		Ring struct {
+			PolicyFile string `json:"policy_file"`
+		} `json:"ring"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("decode mesh_hello result: %v (raw: %s)", err, result)
+	}
+	if parsed.Ring.PolicyFile != customPath {
+		t.Fatalf("expected policy_file %q, got %q -- isolation is not actually working", customPath, parsed.Ring.PolicyFile)
+	}
+	if strings.Contains(parsed.Ring.PolicyFile, "macula-mcp") {
+		t.Fatalf("policy_file %q looks like the shared default, not the isolated path", parsed.Ring.PolicyFile)
 	}
 }

@@ -16,21 +16,28 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// maculaMCPVersion is pinned deliberately (found by an adversarial review,
-// 2026-09-06): the workspace-wide convention this used to copy verbatim
-// was `npx -y -p @macula-io/mcp macula-mcp`, unpinned, which re-resolves
-// npm's "latest" tag on every single launch. A bad or compromised
-// @macula-io/mcp release would then run unattended, with whatever
-// environment Spawn hands it (see envAllowlist below). Bump this only
-// deliberately, after checking what changed -- never just to "pick up
-// whatever's newest."
-const maculaMCPVersion = "0.23.0"
+// DefaultMaculaMCPVersion is launchCommand's fallback when SpawnOptions
+// carries no version -- a defensive floor for direct callers of this
+// package, not the primary place an operator interacts with this value.
+// That's config.Config.MaculaMCPVersion (config.Default() sets it, kept
+// in sync with this constant); see that field's own doc comment for the
+// actual "verify the diff before bumping" methodology and history. Not
+// imported from here into config on purpose -- config stays a leaf
+// package with no cross-package awareness, matching how every other
+// cross-cutting default in this codebase is resolved at the call site
+// rather than via an import.
+const DefaultMaculaMCPVersion = "0.24.0"
 
-// LaunchCommand starts macula-mcp the same way every other MCP config in
-// this workspace does (npx -p @macula-io/mcp macula-mcp), except pinned to
-// maculaMCPVersion instead of npm's floating latest tag. Do not change
-// this to a locally-built binary path or a different invocation otherwise.
-var LaunchCommand = []string{"npx", "-y", "-p", "@macula-io/mcp@" + maculaMCPVersion, "macula-mcp"}
+// launchCommand starts macula-mcp the same way every other MCP config in
+// this workspace does (npx -p @macula-io/mcp macula-mcp), pinned to the
+// given version instead of npm's floating latest tag. Do not change this
+// to a locally-built binary path or a different invocation otherwise.
+func launchCommand(version string) []string {
+	if version == "" {
+		version = DefaultMaculaMCPVersion
+	}
+	return []string{"npx", "-y", "-p", "@macula-io/mcp@" + version, "macula-mcp"}
+}
 
 // envAllowlist is what Spawn forwards to the macula-mcp subprocess instead
 // of the full parent environment (found by the same review): PATH so
@@ -54,23 +61,55 @@ type Client struct {
 	session *mcp.ClientSession
 }
 
-// Spawn starts macula-mcp as a subprocess and completes the MCP handshake.
-// If identityFile is non-empty, it's passed through as MACULA_MCP_IDENTITY
-// so macula-mcp keeps a stable node_id across restarts instead of its
-// default fresh-identity-per-launch behavior.
-func Spawn(ctx context.Context, identityFile string) (*Client, error) {
-	cmd := exec.Command(LaunchCommand[0], LaunchCommand[1:]...)
-	cmd.Env = filteredEnv(envAllowlist)
-	if identityFile != "" {
-		cmd.Env = append(cmd.Env, "MACULA_MCP_IDENTITY="+identityFile)
+// SpawnOptions configures how Spawn launches macula-mcp.
+type SpawnOptions struct {
+	// Version pins the exact @macula-io/mcp release to run. Empty uses
+	// DefaultMaculaMCPVersion.
+	Version string
+	// IdentityFile, if non-empty, is passed through as MACULA_MCP_IDENTITY
+	// so macula-mcp keeps a stable node_id across restarts instead of its
+	// default fresh-identity-per-launch behavior.
+	IdentityFile string
+	// ContactPolicyFile, if non-empty, is passed through as
+	// MACULA_MCP_CONTACT_POLICY_FILE. Without this, macula-mcp reads
+	// ~/.config/macula-mcp/contact_policy.json -- ONE shared path used by
+	// every macula-mcp instance on a machine regardless of identity, found
+	// while investigating the ring-answering UX, 2026-09-06: any other
+	// harness's macula-mcp on the same box (another Claude Code session,
+	// Goose) reads and writes that identical file. Pointing this at a
+	// lazymesh-specific path keeps its own contact policy and allowlist
+	// (mesh_trust_agent) isolated from every other session sharing the
+	// machine, the same way IdentityFile already isolates node identity.
+	ContactPolicyFile string
+}
+
+// spawnEnv builds the subprocess environment: the fixed allowlist plus
+// whatever opts adds, pulled out as its own pure function so the actual
+// env-var-name/value pairing has a test independent of spawning a real
+// process.
+func spawnEnv(opts SpawnOptions) []string {
+	env := filteredEnv(envAllowlist)
+	if opts.IdentityFile != "" {
+		env = append(env, "MACULA_MCP_IDENTITY="+opts.IdentityFile)
 	}
+	if opts.ContactPolicyFile != "" {
+		env = append(env, "MACULA_MCP_CONTACT_POLICY_FILE="+opts.ContactPolicyFile)
+	}
+	return env
+}
+
+// Spawn starts macula-mcp as a subprocess and completes the MCP handshake.
+func Spawn(ctx context.Context, opts SpawnOptions) (*Client, error) {
+	command := launchCommand(opts.Version)
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Env = spawnEnv(opts)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "lazymesh", Version: "0.1.0"}, nil)
 	transport := &mcp.CommandTransport{Command: cmd}
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("connect to macula-mcp (%s): %w", strings.Join(LaunchCommand, " "), err)
+		return nil, fmt.Errorf("connect to macula-mcp (%s): %w", strings.Join(command, " "), err)
 	}
 	return &Client{session: session}, nil
 }

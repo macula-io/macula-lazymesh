@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +94,36 @@ func TestLoad_OverridesStatusBarPosition(t *testing.T) {
 	}
 	if cfg.StatusBarPosition != "top" {
 		t.Fatalf("expected status_bar_position top, got %q", cfg.StatusBarPosition)
+	}
+}
+
+func TestDefault_MaculaMCPVersionIsSet(t *testing.T) {
+	if got := Default().MaculaMCPVersion; got == "" {
+		t.Fatalf("expected a non-empty default macula_mcp_version")
+	}
+}
+
+func TestLoad_OverridesMaculaMCPVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("macula_mcp_version: 9.9.9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.MaculaMCPVersion != "9.9.9" {
+		t.Fatalf("expected macula_mcp_version 9.9.9, got %q", cfg.MaculaMCPVersion)
+	}
+}
+
+func TestDefault_ContactPolicyFileIsIsolatedFromMaculaMCPDefault(t *testing.T) {
+	got := Default().ContactPolicyFile
+	if got == "" {
+		t.Fatalf("expected a non-empty default contact_policy_file")
+	}
+	if strings.Contains(got, "macula-mcp") {
+		t.Fatalf("expected a lazymesh-specific path, not macula-mcp's own shared default: %q", got)
 	}
 }

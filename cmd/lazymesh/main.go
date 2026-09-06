@@ -47,7 +47,11 @@ func run(configPath, room, goalText string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	client, err := mcpclient.Spawn(ctx, cfg.IdentityFile)
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{
+		Version:           cfg.MaculaMCPVersion,
+		IdentityFile:      cfg.IdentityFile,
+		ContactPolicyFile: cfg.ContactPolicyFile,
+	})
 	if err != nil {
 		return fmt.Errorf("spawn macula-mcp: %w", err)
 	}

@@ -58,6 +58,32 @@ type Config struct {
 	// is treated as "bottom" -- matching vim's statusline and tmux's
 	// status bar, both bottom by default.
 	StatusBarPosition string `yaml:"status_bar_position,omitempty"`
+	// MaculaMCPVersion pins the exact @macula-io/mcp release Spawn runs
+	// (config, not a Go const, per Raf's own steer 2026-09-06: the
+	// security property Fable's finding-2 fix actually needed was "not a
+	// floating tag, always an explicit deliberate value," not "compiled
+	// into the binary" -- a config-driven default gives an operator who
+	// never touches it the same verified value, and one who edits
+	// config.yaml is making their own equally deliberate choice, without
+	// needing a Go toolchain to do it). Default() sets this to the
+	// version actually verified here: read every commit between 0.23.0
+	// and 0.24.0 directly (petname fields, a real mesh_open_room
+	// ring-sequencing bugfix, mesh_trust_agent/mesh_wait_room) and
+	// confirmed all of it is additive -- nothing this codebase depends on
+	// was removed or restructured. Whoever next edits this default should
+	// do the same before bumping it, never bump just to "pick up
+	// whatever's newest." Kept in sync with (but not imported from, to
+	// keep this package a leaf with no cross-package awareness, matching
+	// how ToolAllowlist's own default is resolved in main.go instead of
+	// here) mcpclient.DefaultMaculaMCPVersion.
+	MaculaMCPVersion string `yaml:"macula_mcp_version,omitempty"`
+	// ContactPolicyFile, if set, is passed to macula-mcp as
+	// MACULA_MCP_CONTACT_POLICY_FILE so this lazymesh instance's contact
+	// policy and trust allowlist (mesh_trust_agent) are isolated from
+	// every other macula-mcp instance on the same machine, which
+	// otherwise all share ~/.config/macula-mcp/contact_policy.json by
+	// default regardless of identity.
+	ContactPolicyFile string `yaml:"contact_policy_file,omitempty"`
 }
 
 // LocalTools configures internal/localtools. Disabled by default; a
@@ -83,6 +109,8 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition: "bottom",
+		MaculaMCPVersion:  "0.24.0",
+		ContactPolicyFile: filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 	}
 }
 

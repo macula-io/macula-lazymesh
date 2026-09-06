@@ -20,7 +20,7 @@ func TestLiveSource_DiscoversAndCallsARealCuratedProcedure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := mcpclient.Spawn(ctx, "")
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
