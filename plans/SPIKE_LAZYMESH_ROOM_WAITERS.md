@@ -194,6 +194,20 @@ already created during earlier measurement runs are still sitting there
 (harmless: private topics, never announced anywhere a person would see them,
 and roster entries self-prune after 15 minutes regardless).
 
+## Public-reference-material review pass
+
+Per Raf's standing rule (all macula-io implementation work is public and read
+as reference material by outside developers), did a pass over this spike's
+own code for unexplained non-standard choices after the fact, since a spike
+branch is still public even though it isn't merged: strengthened
+`maxModelWaitSeconds`'s doc comment (10 was picked but not weighed on the
+page -- now explains the actual short-vs-long tradeoff and flags it as
+unmeasured, not settled) and `roomwaiter.errorBackoff`'s (now ties it
+explicitly to `cmd/lazymesh`'s existing `initialBackoff`, same value reused
+rather than picked independently). No other magic numbers found undocumented
+on this pass; the rest of the spike already inherited this codebase's own
+existing convention of explaining "why," not just "what."
+
 ## Suggested next steps if proceeding
 
 1. A longer real live session (many real cycles, not the scripted/mechanical

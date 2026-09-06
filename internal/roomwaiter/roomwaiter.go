@@ -44,7 +44,10 @@ const waitSeconds = 3600
 // errorBackoff bounds how fast watch retries after a real error (a
 // timeout is NOT an error -- mesh_wait_room returns normally with
 // timed_out=1 -- so this only guards against a persistent failure
-// spinning the goroutine hot).
+// spinning the goroutine hot). 5s matches cmd/lazymesh's own
+// initialBackoff for the main agent retry loop -- reused rather than
+// picked independently, so this codebase has one answer to "how fast do
+// we retry after an error," not two unexplained ones.
 const errorBackoff = 5 * time.Second
 
 // Manager runs one goroutine per joined room, each blocked in a real

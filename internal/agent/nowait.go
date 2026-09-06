@@ -16,6 +16,16 @@ import (
 // instruct ("listen efficiently instead of returning immediately"),
 // which is exactly the blocking behavior the spike moves out of the
 // model's own tool-calling turn.
+//
+// 10 specifically, not some other small number: the actual tradeoff is
+// between catching a genuinely-immediate reply (worth a short hold) and
+// re-opening the door to today's bug (worth guarding against) --
+// anything long enough to matter for the second concern is also long
+// enough to noticeably tie up the loop's single tool-execution slot, so
+// this stays on the short side deliberately. Not separately measured
+// against real reply latency in this spike; a real implementation
+// should revisit this number against actual data rather than inherit it
+// unquestioned.
 const maxModelWaitSeconds = 10
 
 // NoBlockingWaitSource wraps another ToolSource and clamps any
