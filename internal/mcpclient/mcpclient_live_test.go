@@ -105,3 +105,27 @@ func TestLiveSpawn_ContactPolicyFileIsolation(t *testing.T) {
 		t.Fatalf("policy_file %q looks like the shared default, not the isolated path", parsed.Ring.PolicyFile)
 	}
 }
+
+// TestLiveSpawn_MeshAgentsReturnsPetnames confirms 0.24.0's petname
+// support actually works against the real mesh: petname is computed
+// client-side from a peer's node_id, so this doesn't require the peer
+// itself to be on 0.24.0 -- verified against real currently-online peers,
+// not a synthetic fixture.
+func TestLiveSpawn_MeshAgentsReturnsPetnames(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client, err := Spawn(ctx, SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer client.Close()
+
+	result, err := client.CallTool(ctx, "mesh_agents", map[string]any{"page_size": 50})
+	if err != nil {
+		t.Fatalf("CallTool(mesh_agents): %v", err)
+	}
+	if !strings.Contains(result, `"petname"`) {
+		t.Fatalf("expected mesh_agents to return petname fields under 0.24.0, got: %s", result)
+	}
+}

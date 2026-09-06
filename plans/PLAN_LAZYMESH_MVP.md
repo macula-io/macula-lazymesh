@@ -480,6 +480,52 @@ bell-pattern detection and chat-entry rendering. Live-verified: built the
 real binary and ran it under a pty -- the status strip renders at the
 correct position with live presence counts updating, no crash.
 
+## Ring-answering UX, part 1: petnames, room purpose, config-driven version/isolation (2026-09-06)
+
+A live "ring stuck deferred, never answered" report from Raf turned into
+several real, separate fixes, landed before the ring pop-up itself
+(pop-up + the corrected layered trust policy is its own section below):
+
+- **macula-mcp version moved to config** (`config.MaculaMCPVersion`,
+  default `0.24.0`), not a Go const, per Raf's own steer: the security
+  property Fable's finding-2 fix needed was "not a floating tag, always
+  an explicit deliberate value," not "compiled into the binary." Verified
+  the 0.23.0 → 0.24.0 diff directly (all three commits: petname fields
+  throughout, a real `mesh_open_room` ring-sequencing bugfix,
+  `mesh_trust_agent`/`mesh_wait_room`/inbox `poll_hint`) before setting
+  this default — additive only, nothing this codebase depends on was
+  removed or restructured.
+- **`contact_policy.json` isolated per lazymesh instance**
+  (`config.ContactPolicyFile`, passed through as
+  `MACULA_MCP_CONTACT_POLICY_FILE`). Found while reading macula-mcp's own
+  `policy.ts`: this file defaults to ONE shared path
+  (`~/.config/macula-mcp/contact_policy.json`) regardless of identity —
+  every macula-mcp instance on a machine (this session's own, other
+  Claude Code sessions', Goose's) shares it. Necessary before the ring
+  pop-up's "Answer+Trust" can safely call `mesh_trust_agent` without
+  polluting or being polluted by unrelated sessions. Live-verified: a
+  real spawn with a custom path reports that exact path back via
+  `mesh_hello`'s own `ring.policy_file` field.
+- **Petnames** (`displayName` in `internal/tui/model.go`): 0.24.0's
+  deterministic, human-legible `petname`/`*_petname` fields now render
+  wherever a raw node_id would otherwise show — presence panel (behind
+  `operator_name`, which stays first when a peer sets one), rooms panel,
+  pending-rings panel. Live-verified: a fresh spawn's `mesh_agents` call
+  against the real mesh returns real petnames (`lively_copper_eagle` for
+  an actually-online peer), not a synthetic fixture only.
+- **Room purpose as label** (`roomLabel`): a room's `purpose` string
+  (present on `joined` rooms too, not just `seen_on_central` — verified
+  against `rooms.ts`'s own `RoomState`/`RoomListing` types) is now the
+  primary room label everywhere a raw topic hex would otherwise show;
+  falls back to the shortened topic when absent (older/purposeless
+  rooms). Same "don't make a human read raw hex" principle as petnames,
+  applied to rooms.
+
+`mcpclient.Spawn`'s signature changed from `(ctx, identityFile string)`
+to `(ctx, SpawnOptions)` to fit Version/IdentityFile/ContactPolicyFile
+cleanly — every call site updated, all live tests re-run against the
+real mesh under 0.24.0 to confirm nothing broke.
+
 ## Repo conventions (matching this org's other Go SDKs)
 
 - Go 1.27.0 (`.tool-versions`: `golang 1.27.0`, matching `macula-cli`).

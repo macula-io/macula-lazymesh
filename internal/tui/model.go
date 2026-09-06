@@ -345,10 +345,10 @@ func (m Model) renderRooms() string {
 	}
 	for _, r := range m.state.joined {
 		b.WriteString(fmt.Sprintf("%s  %s  %d participants, %d messages\n",
-			shortTopic(r.RoomTopic), dimStyle.Render("opened by "+shortID(r.OpenedBy)),
+			roomLabel(r.RoomTopic, r.Purpose), dimStyle.Render("opened by "+displayName(r.OpenedBy, r.OpenedByPetname)),
 			len(r.ParticipantsSeen), r.MessagesReceived))
 		for _, msg := range lastN(m.state.recent[r.RoomTopic], 3) {
-			b.WriteString(dimStyle.Render(fmt.Sprintf("    %s: %s\n", shortID(msg.From), truncate(msg.Text, 80))))
+			b.WriteString(dimStyle.Render(fmt.Sprintf("    %s: %s\n", displayName(msg.From, msg.FromPetname), truncate(msg.Text, 80))))
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -361,7 +361,7 @@ func (m Model) renderPendingRings() string {
 		b.WriteString(dimStyle.Render("none") + "\n")
 	}
 	for _, r := range m.state.pending {
-		b.WriteString(fmt.Sprintf("%s from %s: %s\n", r.Direction, shortID(r.Peer), truncate(r.Purpose, 80)))
+		b.WriteString(fmt.Sprintf("%s from %s: %s\n", r.Direction, displayName(r.Peer, r.PeerPetname), truncate(r.Purpose, 80)))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -374,7 +374,15 @@ func (m Model) renderPresence() string {
 		if a.IsSelf {
 			self = dimStyle.Render(" (you)")
 		}
+		// operator_name (a human-chosen self-description) wins when set;
+		// petname (a deterministic, human-legible stand-in for the raw
+		// node_id, never self-asserted) is next; the hex id is the last
+		// resort, not the default -- per the same "don't make a human
+		// read raw hex" principle driving the ring pop-up design.
 		name := a.OperatorName
+		if name == "" {
+			name = a.Petname
+		}
 		if name == "" {
 			name = shortID(a.NodeID)
 		}
@@ -396,6 +404,33 @@ func shortTopic(topic string) string {
 		return shortID(strings.TrimPrefix(topic, prefix))
 	}
 	return topic
+}
+
+// displayName prefers petname (a deterministic, human-legible label
+// macula-mcp derives from the node_id itself, never self-asserted) over
+// the raw hex id -- "don't make a human read raw hex" applied to agent
+// identity specifically. Requires macula-mcp >= 0.24.0; petname empty
+// (an older server, or the field genuinely absent) falls back to the
+// shortened id exactly as before.
+func displayName(nodeID, petname string) string {
+	if petname != "" {
+		return petname
+	}
+	return shortID(nodeID)
+}
+
+// roomLabel prefers a room's purpose (set when the room was opened with
+// one, e.g. via mesh_open_room's purpose arg) over its raw topic hex --
+// the same principle as displayName, applied to rooms: purpose is a
+// human-written sentence, the topic is a 32-hex-char identifier nobody
+// can be expected to recognize on sight. Purpose is often absent for
+// older/purposeless rooms, so this falls back to the shortened topic
+// exactly as before.
+func roomLabel(topic, purpose string) string {
+	if purpose != "" {
+		return purpose
+	}
+	return shortTopic(topic)
 }
 
 func truncate(s string, n int) string {

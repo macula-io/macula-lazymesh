@@ -180,6 +180,115 @@ func TestFetchMeshState_ParsesRealCapturedShapes(t *testing.T) {
 	}
 }
 
+// Fixtures below add the petname/purpose fields macula-mcp 0.24.0
+// introduced (verified against its own source, not guessed -- field names
+// confirmed in src/mesh_rooms.ts/mesh_read_inbox.ts/mesh_agents.ts:
+// opened_by_petname, peer_petname, from_petname, petname, and joined
+// rooms' pre-existing optional purpose). A separate fixture from the
+// pre-0.24.0 one above on purpose: that one stays as the real backward-
+// compatibility check (older data with no petname/purpose fields at all
+// must still parse and render via the shortID/shortTopic fallback).
+
+const fixtureMeshRoomsWithPetnames = `{
+  "joined": [
+    {
+      "room_topic": "agents.room.58022d60606c8cdb7d726ea42cf5a675",
+      "opened_by": "07a102208100325737efef7017a066c19c1c252b1ebcf919eb22f0f59cfb0e0d",
+      "opened_by_petname": "gentle_crimson_otter",
+      "purpose": "Form a 3-agent team",
+      "participants_seen": ["07a102208100325737efef7017a066c19c1c252b1ebcf919eb22f0f59cfb0e0d"],
+      "messages_received": 5,
+      "watched": 1
+    }
+  ],
+  "seen_on_central": [],
+  "rings_awaiting_answer": []
+}`
+
+const fixtureMeshReadInboxWithPetnames = `{
+  "rings": {
+    "pending": [
+      {
+        "ring_id": "a55654d5b00351db2a781e7a2d46bdbc",
+        "direction": "in",
+        "peer": "07a102208100325737efef7017a066c19c1c252b1ebcf919eb22f0f59cfb0e0d",
+        "peer_petname": "gentle_crimson_otter",
+        "purpose": "Let's talk",
+        "room_topic": "agents.room.33d8ff6513b4ba49fd07d558ee19bd0f",
+        "sent_at": 1788652444942
+      }
+    ],
+    "recent": []
+  },
+  "rooms": [
+    {
+      "room_topic": "agents.room.58022d60606c8cdb7d726ea42cf5a675",
+      "opened_by": "07a102208100325737efef7017a066c19c1c252b1ebcf919eb22f0f59cfb0e0d",
+      "participants_seen": [],
+      "total_received": 1,
+      "returned": 1,
+      "unparsed": 0,
+      "messages": [
+        {
+          "message_id": "d7916d7c820b2eb88542ec09cb0089e5",
+          "room_topic": "agents.room.58022d60606c8cdb7d726ea42cf5a675",
+          "sent_at": 1788652882209,
+          "from": "07a102208100325737efef7017a066c19c1c252b1ebcf919eb22f0f59cfb0e0d",
+          "from_petname": "gentle_crimson_otter",
+          "kind": "remark_made",
+          "text": "hello"
+        }
+      ]
+    }
+  ],
+  "central_broadcasts": []
+}`
+
+const fixtureMeshAgentsWithPetnames = `{
+  "total": 1,
+  "page": 1,
+  "page_size": 20,
+  "agents": [
+    {
+      "node_id": "07a102208100325737efef7017a066c19c1c252b1ebcf919eb22f0f59cfb0e0d",
+      "petname": "gentle_crimson_otter",
+      "connected_via": "goose-cli 1.48.0",
+      "seconds_since_seen": 0,
+      "is_self": false
+    }
+  ]
+}`
+
+func TestFetchMeshState_ParsesPetnameAndPurposeFields(t *testing.T) {
+	fake := &fakeToolCaller{responses: map[string]string{
+		"mesh_rooms":      fixtureMeshRoomsWithPetnames,
+		"mesh_read_inbox": fixtureMeshReadInboxWithPetnames,
+		"mesh_agents":     fixtureMeshAgentsWithPetnames,
+	}}
+
+	state, err := fetchMeshState(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("fetchMeshState returned error: %v", err)
+	}
+
+	if state.joined[0].OpenedByPetname != "gentle_crimson_otter" {
+		t.Fatalf("expected opened_by_petname to parse, got %+v", state.joined[0])
+	}
+	if state.joined[0].Purpose != "Form a 3-agent team" {
+		t.Fatalf("expected joined room purpose to parse, got %+v", state.joined[0])
+	}
+	if state.pending[0].PeerPetname != "gentle_crimson_otter" {
+		t.Fatalf("expected peer_petname to parse, got %+v", state.pending[0])
+	}
+	msgs := state.recent["agents.room.58022d60606c8cdb7d726ea42cf5a675"]
+	if len(msgs) != 1 || msgs[0].FromPetname != "gentle_crimson_otter" {
+		t.Fatalf("expected from_petname to parse, got %+v", msgs)
+	}
+	if state.agents[0].Petname != "gentle_crimson_otter" {
+		t.Fatalf("expected agent petname to parse, got %+v", state.agents[0])
+	}
+}
+
 func TestFetchMeshState_PropagatesToolError(t *testing.T) {
 	fake := &fakeToolCaller{
 		responses: map[string]string{},

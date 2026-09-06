@@ -22,6 +22,8 @@ type toolCaller interface {
 type joinedRoom struct {
 	RoomTopic        string   `json:"room_topic"`
 	OpenedBy         string   `json:"opened_by"`
+	OpenedByPetname  string   `json:"opened_by_petname"`
+	Purpose          string   `json:"purpose,omitempty"`
 	ParticipantsSeen []string `json:"participants_seen"`
 	MessagesReceived int      `json:"messages_received"`
 	Watched          int      `json:"watched"`
@@ -39,21 +41,23 @@ type meshRoomsResult struct {
 }
 
 type pendingRing struct {
-	RingID    string `json:"ring_id"`
-	Direction string `json:"direction"`
-	Peer      string `json:"peer"`
-	Purpose   string `json:"purpose"`
-	RoomTopic string `json:"room_topic"`
-	SentAt    int64  `json:"sent_at"`
+	RingID      string `json:"ring_id"`
+	Direction   string `json:"direction"`
+	Peer        string `json:"peer"`
+	PeerPetname string `json:"peer_petname"`
+	Purpose     string `json:"purpose"`
+	RoomTopic   string `json:"room_topic"`
+	SentAt      int64  `json:"sent_at"`
 }
 
 type roomMessage struct {
-	MessageID string `json:"message_id"`
-	RoomTopic string `json:"room_topic"`
-	From      string `json:"from"`
-	Kind      string `json:"kind"`
-	Text      string `json:"text"`
-	SentAt    int64  `json:"sent_at"`
+	MessageID   string `json:"message_id"`
+	RoomTopic   string `json:"room_topic"`
+	From        string `json:"from"`
+	FromPetname string `json:"from_petname"`
+	Kind        string `json:"kind"`
+	Text        string `json:"text"`
+	SentAt      int64  `json:"sent_at"`
 }
 
 type inboxRoom struct {
@@ -70,6 +74,7 @@ type meshReadInboxResult struct {
 
 type agentPresence struct {
 	NodeID           string `json:"node_id"`
+	Petname          string `json:"petname"`
 	OperatorName     string `json:"operator_name"`
 	Model            string `json:"model"`
 	ConnectedVia     string `json:"connected_via"`
