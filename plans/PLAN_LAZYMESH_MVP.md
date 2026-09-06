@@ -243,7 +243,7 @@ it, but worth an `EvalSymlinks` check or an explicit doc note if
 file-tools are ever split from `shell_exec` later. Not fixed in this pass
 — tracked here rather than silently dropped.
 
-## TUI / chat interface redesign (2026-09-06, not yet implemented)
+## TUI / chat interface redesign (2026-09-06, implemented)
 
 Raf's own steer, from a live design conversation after Phase 3 landed.
 Current state, checked directly against the code before writing this
@@ -332,8 +332,58 @@ separately.
     quietly balloon the dependency footprint of a project that's
     supposed to stay lean.
 
-Not yet delegated to a specific implementation session as of this
-write-up — see the coordinator for current assignment.
+**Implemented 2026-09-06**, largely as designed above, with two
+deliberate simplifications worth recording rather than letting readers
+assume the design doc is the literal spec:
+
+- **Tool-call detail expansion is a single global toggle (`e`), not
+  per-line.** The plan's "expandable on demand" didn't specify per-line
+  vs. global; per-line would need a focus cursor moving through chat
+  history (effectively a list-navigation component), real added
+  complexity for an MVP pass. Global expand/collapse satisfies "not the
+  full JSON dump inline, and not hidden either" without it. Worth
+  revisiting if a real conversation makes "some calls expanded, others
+  not" genuinely useful in practice.
+- **A message typed in insert mode is picked up on runAgent's next loop
+  iteration, not mid-call.** If the agent is in the middle of a `Say()`
+  (in particular a long `mesh_say` wait), a submitted message waits for
+  that call to return before it becomes the next prompt --
+  `cmd/lazymesh`'s `nextPrompt` drains it non-blocking at the top of each
+  iteration. No in-flight LLM call gets interrupted/canceled for it. This
+  is the "no theatre" lean-MVP scope holding, not an oversight -- true
+  mid-call interruption would need context-cancellation plumbing through
+  `agent.Loop.Say` that nothing in this pass otherwise needs.
+
+Architecture: `internal/tui/keys.go` (bubbles `key.Binding`, both vim and
+arrow/plain keys per binding), `chat.go` (chat entries + rendering,
+collapsed/expanded), `bell.go` (cadence-based `bellPattern` + a `tea.Cmd`
+that writes raw `\a` bytes -- never baked into `View()`'s return value,
+since a one-shot side effect re-firing on every re-render would be wrong).
+`cmd/lazymesh/main.go` fans agent events out to both `agent.log` (full
+detail, unchanged) and a buffered channel the TUI drains (best-effort,
+non-blocking send -- the agent loop must never stall waiting on a slow or
+absent TUI reader). Two new `agent.EventKind`s (`EventBackoff`,
+`EventMaxFailuresReached`) exist purely to give the TUI's bell a signal
+for Fable's finding #3 ("the TUI still looks healthy" while wedged) --
+`Loop` itself doesn't know about them, `runAgent`'s own retry/backoff
+logic emits them.
+
+Bell-cue detection is genuinely two different code paths, not one: an
+ordinary-message/ring bell comes from diffing consecutive mesh-state
+polls (`bell.go`'s `detectRoomMessageBell`/`detectRingBell`, comparing
+against the previous poll before it's overwritten); the backoff/
+max-failures triple-bell comes from the agent-event channel instead,
+since that's a fact about the agent loop's own retry state, not something
+visible in mesh state at all.
+
+Verified: 30 new unit tests in `internal/tui` covering exactly the
+modal-state bugs this kind of feature is prone to (`q` typed while
+composing must not quit; `m` typed while composing must not toggle the
+mesh view; `ctrl+c` quits from either mode; Enter submits, clears input,
+returns to normal, and actually delivers on the user-input channel) plus
+bell-pattern detection and chat-entry rendering. Live-verified: built the
+real binary and ran it under a pty -- the status strip renders at the
+correct position with live presence counts updating, no crash.
 
 ## Repo conventions (matching this org's other Go SDKs)
 

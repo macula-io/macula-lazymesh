@@ -74,3 +74,24 @@ func TestConfig_APIKey_MissingPathErrors(t *testing.T) {
 		t.Fatalf("expected an error when api_key_file is unset")
 	}
 }
+
+func TestDefault_StatusBarPositionIsBottom(t *testing.T) {
+	if got := Default().StatusBarPosition; got != "bottom" {
+		t.Fatalf("expected default status_bar_position bottom, got %q", got)
+	}
+}
+
+func TestLoad_OverridesStatusBarPosition(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("status_bar_position: top\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.StatusBarPosition != "top" {
+		t.Fatalf("expected status_bar_position top, got %q", cfg.StatusBarPosition)
+	}
+}

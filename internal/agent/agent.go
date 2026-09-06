@@ -35,6 +35,15 @@ const (
 	EventToolCall
 	EventToolResult
 	EventError
+	// EventBackoff and EventMaxFailuresReached are emitted by cmd/lazymesh's
+	// runAgent (not by Loop itself -- the retry/backoff policy lives at
+	// that level), not Say. They exist so a consumer like the TUI can
+	// surface "the agent is silently stuck" as something other than a
+	// visual-only cue -- this is directly Fable's finding #3 ("the TUI
+	// still looks healthy" while the agent is wedged), given its own
+	// signal instead of remaining indistinguishable from normal activity.
+	EventBackoff
+	EventMaxFailuresReached
 )
 
 // Event is one step the loop took, emitted as it happens so a caller (the

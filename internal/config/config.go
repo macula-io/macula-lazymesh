@@ -53,6 +53,11 @@ type Config struct {
 	// it does not mark peer-authored room text as untrusted. Only do this
 	// in a trusted/private mesh context.
 	ToolAllowlist []string `yaml:"tool_allowlist,omitempty"`
+	// StatusBarPosition is where the TUI's persistent one-line mesh-status
+	// strip renders: "top" or "bottom". Any other value (including empty)
+	// is treated as "bottom" -- matching vim's statusline and tmux's
+	// status bar, both bottom by default.
+	StatusBarPosition string `yaml:"status_bar_position,omitempty"`
 }
 
 // LocalTools configures internal/localtools. Disabled by default; a
@@ -77,6 +82,7 @@ func Default() Config {
 			Enabled:    false,
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
+		StatusBarPosition: "bottom",
 	}
 }
 

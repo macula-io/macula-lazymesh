@@ -53,6 +53,14 @@ func run(configPath, room, goalText string) error {
 	}
 	defer client.Close()
 
+	// tuiEvents/userInputCh exist even with no --room agent running --
+	// the TUI's chat pane and compose key just have nothing to show/send
+	// to in that case. Buffered generously since the TUI side is the slow
+	// consumer (a human reading, not a tight loop) and the agent side
+	// must never block on it.
+	tuiEvents := make(chan agent.Event, 64)
+	userInputCh := make(chan string, 8)
+
 	if room != "" {
 		p, err := buildProvider(cfg)
 		if err != nil {
@@ -75,15 +83,15 @@ func run(configPath, room, goalText string) error {
 		// screen takes over the terminal -- interleaved log lines would
 		// corrupt the display. A separate file the operator can tail
 		// (fmt.Fprintln below, before the TUI starts) is the live view
-		// for agent internals; the TUI's own panels already show the
-		// agent's actual room messages/presence as they land.
+		// for agent internals; the chat pane shows a collapsed line per
+		// event live, but agent.log keeps the full verbose detail.
 		agentLog := log.New(logFile, "", log.LstdFlags)
 		fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
 		localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-		go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog)
+		go runAgent(ctx, p, tools, room, goalText, localToolsReachable, agentLog, tuiEvents, userInputCh)
 	}
 
-	program := tea.NewProgram(tui.New(client), tea.WithAltScreen())
+	program := tea.NewProgram(tui.New(client, tuiEvents, userInputCh, cfg.StatusBarPosition), tea.WithAltScreen())
 	_, err = program.Run()
 	cancel()
 	return err
@@ -180,7 +188,7 @@ func agentLogPath() (string, error) {
 // (join, talk, answer rings, wait on mesh_say's own wait_reply_seconds) --
 // this function only supplies the cadence of asking it to keep going, not
 // any of the mesh actions themselves.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger) {
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable bool, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
 	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
 		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
 		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
@@ -208,6 +216,14 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	go func() {
 		for ev := range events {
 			logEvent(agentLog, ev)
+			// Non-blocking: the TUI is a slow, human-paced consumer and
+			// must never be able to stall the agent loop by not reading
+			// fast enough (or not running at all -- tuiEvents always
+			// exists, but nothing drains it without a program running).
+			select {
+			case tuiEvents <- ev:
+			default:
+			}
 		}
 	}()
 	defer close(events)
@@ -224,6 +240,7 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	consecutiveErrors := 0
 	backoff := initialBackoff
 
+	const defaultPrompt = "Check the room for anything new since your last check, and respond if warranted."
 	prompt := "Join the room and start participating."
 	for {
 		if ctx.Err() != nil {
@@ -234,20 +251,38 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 			agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, consecutiveErrors, maxConsecutiveErrors)
 			if consecutiveErrors >= maxConsecutiveErrors {
 				agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", consecutiveErrors)
+				events <- agent.Event{Kind: agent.EventMaxFailuresReached}
 				return
 			}
+			events <- agent.Event{Kind: agent.EventBackoff}
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(backoff):
 			}
 			backoff = nextBackoff(backoff)
-			prompt = "Check the room for anything new since your last check, and respond if warranted."
+			prompt = nextPrompt(userInputCh, defaultPrompt)
 			continue
 		}
 		consecutiveErrors = 0
 		backoff = initialBackoff
-		prompt = "Check the room for anything new since your last check, and respond if warranted."
+		prompt = nextPrompt(userInputCh, defaultPrompt)
+	}
+}
+
+// nextPrompt prefers a message the human composed in the TUI (drained
+// non-blocking -- if nothing is waiting, the loop keeps its own ambient
+// cadence) over the default "check for anything new" prompt. A message
+// typed while the agent is mid-Say() is picked up once that call returns,
+// not instantly -- no in-flight call gets interrupted for it; documented
+// as a known lag, not treated as a bug, matching this project's own
+// "no theatre" lean-MVP scope.
+func nextPrompt(userInputCh <-chan string, defaultPrompt string) string {
+	select {
+	case msg := <-userInputCh:
+		return msg
+	default:
+		return defaultPrompt
 	}
 }
 
@@ -277,5 +312,9 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 		agentLog.Printf("[tool result] %s -> %s", ev.ToolName, ev.Text)
 	case agent.EventError:
 		agentLog.Printf("[error] %s: %s", ev.ToolName, ev.Err)
+	case agent.EventBackoff:
+		agentLog.Printf("[backoff] agent hit an error, backing off before retrying")
+	case agent.EventMaxFailuresReached:
+		agentLog.Printf("[stopped] agent stopped after repeated failures")
 	}
 }

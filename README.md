@@ -53,10 +53,45 @@ need before running with `--room` is an API key file at
 `~/.ai-api-keys/.deepseek-api-keys/lazymesh` (bare value, no quotes),
 matching this workspace's key-file convention.
 
-`--room` mode logs agent activity (tool calls, replies) to
-`~/.config/lazymesh/agent.log` rather than the terminal — the TUI owns the
-screen once it starts, so agent internals go to a file you can `tail -f`
-in a second terminal instead.
+`--room` mode's agent activity renders live in the TUI's chat pane
+(collapsed one-line tool calls, expandable — see below) AND logs the full
+detail to `~/.config/lazymesh/agent.log`, which you can `tail -f` in a
+second terminal for anything the collapsed chat view doesn't show.
+
+## Using the TUI
+
+Vim-style modal input — **normal mode by default**:
+
+| Key | Normal mode | Insert mode |
+|---|---|---|
+| `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
+| `m` | expand/collapse the full mesh view (rooms/rings/presence) | (typed as text) |
+| `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
+| `b` | mute/unmute the bell | (typed as text) |
+| `i` | enter insert mode to compose a message | — |
+| `Esc` | — | return to normal mode |
+| `Enter` | — | send the composed message to the agent |
+| `q` | quit | (typed as text — never steals a "q" while you're composing) |
+| `ctrl+c` | quit | quit (works in either mode) |
+
+A persistent one-line status strip (`3 rooms · 2 pending rings · 8 agents
+seen`, position configurable via `status_bar_position: top\|bottom` in
+config, default bottom) is always visible whether the chat pane or the
+full mesh view is showing — collapsing the mesh view never loses that
+ambient awareness.
+
+**Audio cues**, plain terminal bell only (no audio library, no sound
+files): single bell for an ordinary room message from someone else,
+double bell for a ring addressed to you, triple bell if the agent enters
+a retry backoff or stops after repeated failures. Silent for the agent's
+own outgoing messages. Toggle with `b`; degrades silently wherever the
+bell is muted or unreachable (headless box, SSH, visual-bell-only
+terminals) — it never errors, since sending the raw BEL byte is always
+safe regardless of whether the terminal actually does anything with it.
+
+A message typed while the agent is mid-call (in particular a long
+`mesh_say` wait) is picked up once that call returns, not instantly —
+no in-flight LLM call gets interrupted for it.
 
 ### Mesh service tools (Phase 3, on by default)
 

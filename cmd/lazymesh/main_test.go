@@ -75,3 +75,32 @@ func TestResolveAllowlist_LocalToolsEnabledAloneDoesNotUnlockShellExec(t *testin
 		t.Fatalf("local_tools.enabled alone must not put shell_exec on the resolved allowlist")
 	}
 }
+
+func TestNextPrompt_PrefersPendingUserMessage(t *testing.T) {
+	ch := make(chan string, 1)
+	ch <- "hello from the human"
+	if got := nextPrompt(ch, "default cadence"); got != "hello from the human" {
+		t.Fatalf("expected the pending user message to win, got %q", got)
+	}
+}
+
+func TestNextPrompt_FallsBackToDefaultWhenNothingPending(t *testing.T) {
+	ch := make(chan string, 1)
+	if got := nextPrompt(ch, "default cadence"); got != "default cadence" {
+		t.Fatalf("expected the default cadence prompt, got %q", got)
+	}
+}
+
+func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
+	ch := make(chan string) // unbuffered, nobody ever sends
+	done := make(chan struct{})
+	go func() {
+		nextPrompt(ch, "default")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("nextPrompt blocked on an empty channel instead of returning the default immediately")
+	}
+}
