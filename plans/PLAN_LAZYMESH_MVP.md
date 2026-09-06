@@ -84,12 +84,18 @@ name) holding:
   the fleet's default elsewhere but hits account-level 429s under load,
   so DeepSeek is the right default here specifically, not a fleet-wide
   contradiction).
-- `model`: **verify the exact DeepSeek API model string before shipping**
-  (e.g. `deepseek-chat` per DeepSeek's own API docs) — do not copy Goose's
-  `deepseek-v4-pro` string verbatim, that's Goose's own internal alias
-  mapped to a real model id behind the scenes, not necessarily the raw
-  string DeepSeek's API expects. lazymesh calls the API directly, so this
-  needs its own verification.
+- `model`: **`deepseek-v4-flash`.** Correction, 2026-09-06 (94 verified
+  against api-docs.deepseek.com/updates/ before writing code, don't trust
+  this plan's original guess): `deepseek-chat`/`deepseek-reasoner` were
+  deprecated 2026-07-24; `deepseek-v4-pro` (what Goose already runs on
+  desk-us-east) and `deepseek-v4-flash` are the current GA models as of
+  today. Chose flash over pro: this plan's own rationale for DeepSeek at
+  all is cost ("the only one cheap enough to run continuously"), and
+  flash is the cheaper of the two — pro is a one-line config override if
+  capability turns out to matter more in practice. Since DeepSeek renames
+  and deprecates model ids on their own schedule, re-verify this string
+  against their docs if it ever starts erroring rather than assuming the
+  config is wrong.
 - `api_key_file`: path to a bare-value key file, matching the
   `~/.ai-api-keys/.<provider>-api-keys/<consumer>` convention already
   established across this workspace. Never hardcode a key, never accept
