@@ -166,7 +166,13 @@ func (m Model) renderRooms() string {
 		}
 		b.WriteString("\n" + dimStyle.Render(roomLabel(r.RoomTopic, r.Purpose)+":"))
 		for _, msg := range recent {
-			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("    %s: %s", displayName(msg.From, msg.FromPetname), truncate(msg.Text, 80))))
+			// Issue #8: the speaker's name carries their deterministic
+			// identity color (same principle as the presence badge below,
+			// IRC-nick-style); the message body stays dim -- coloring the
+			// whole line would fight legibility for exactly the busy
+			// multi-agent conversation this is meant to help read.
+			who := agentBadgeStyle(identityKey(msg.From, msg.FromPetname)).Render(displayName(msg.From, msg.FromPetname))
+			b.WriteString("\n    " + who + dimStyle.Render(": "+truncate(msg.Text, 80)))
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -205,6 +211,24 @@ func (m Model) renderPendingRings() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// presenceCol renders one presence-table cell to exactly width visual
+// columns (ANSI-aware pad/truncate via lipgloss.Width, ignoring escape
+// bytes), matching table.DefaultStyles' own Padding(0,1) per cell so this
+// panel still lines up with Rooms/Pending rings alongside it. Deliberately
+// NOT built on bubbles/table: its cell truncation
+// (runewidth.Truncate(value, width, "...")) measures raw bytes, so an
+// embedded ANSI color escape (issue #7's badge) would be sliced into and
+// corrupted -- found by reading table.go's own renderRow, not live, but
+// exactly the kind of thing this file's own columnWidths comment already
+// warns about verifying by rendering rather than reasoning.
+func presenceCol(content string, width int, bold bool) string {
+	s := lipgloss.NewStyle().Width(width).MaxWidth(width).Padding(0, 1).Inline(true)
+	if bold {
+		s = s.Bold(true)
+	}
+	return s.Render(content)
+}
+
 func (m Model) renderPresence() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Presence (%d agents)", len(m.state.agents))) + "\n")
@@ -218,18 +242,19 @@ func (m Model) renderPresence() string {
 	}
 
 	inner := m.panelInnerWidth()
-	widths := columnWidths(inner, []int{-1, 20, 12})
-	t := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "Name", Width: widths[0]},
-			{Title: "Connected via", Width: widths[1]},
-			{Title: "Last seen", Width: widths[2]},
-		}),
-		table.WithWidth(inner),
-		table.WithHeight(len(m.state.agents)+1),
-		table.WithStyles(tableStyles()),
+	// badge is a fixed 4-column slot (Padding(0,1) + 2-char initials);
+	// the rest split the remaining width the same way columnWidths
+	// already distributes bubbles/table columns in the sibling panels.
+	widths := columnWidths(inner, []int{4, -1, 20, 12})
+	header := lipgloss.JoinHorizontal(lipgloss.Top,
+		presenceCol("", widths[0], true),
+		presenceCol("Name", widths[1], true),
+		presenceCol("Connected via", widths[2], true),
+		presenceCol("Last seen", widths[3], true),
 	)
-	rows := make([]table.Row, 0, len(m.state.agents))
+	b.WriteString(header + "\n")
+
+	rows := make([]string, 0, len(m.state.agents))
 	for _, a := range m.state.agents {
 		// operator_name (a human-chosen self-description) wins when set;
 		// petname (a deterministic, human-legible stand-in for the raw
@@ -246,13 +271,21 @@ func (m Model) renderPresence() string {
 		if a.IsSelf {
 			name += " (you)"
 		}
-		rows = append(rows, table.Row{
-			name,
-			a.ConnectedVia,
-			fmt.Sprintf("%ds ago", a.SecondsSinceSeen),
-		})
+
+		// Issue #7's avatar badge: 1-2 initials in this agent's
+		// deterministic identity color -- same identityKey/agentColor
+		// pairing the Rooms panel's message previews use, so an agent
+		// reads as the same color everywhere it shows up in the mesh view.
+		identity := identityKey(a.NodeID, a.Petname)
+		badge := agentBadgeStyle(identity).Render(agentInitials(identity))
+
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top,
+			presenceCol(badge, widths[0], false),
+			presenceCol(name, widths[1], false),
+			presenceCol(a.ConnectedVia, widths[2], false),
+			presenceCol(fmt.Sprintf("%ds ago", a.SecondsSinceSeen), widths[3], false),
+		))
 	}
-	t.SetRows(rows)
-	b.WriteString(t.View())
-	return strings.TrimRight(b.String(), "\n")
+	b.WriteString(strings.Join(rows, "\n"))
+	return b.String()
 }

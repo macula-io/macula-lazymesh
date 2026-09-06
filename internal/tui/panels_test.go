@@ -188,6 +188,61 @@ func TestRenderPresence_TableContainsAgentFields(t *testing.T) {
 	}
 }
 
+// Issue #7: each presence row gets a colored initials badge, deterministic
+// from identity, distinct from the plain-uncolored badge state before.
+func TestRenderPresence_ShowsAvatarBadge(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.state.agents = []agentPresence{
+		{NodeID: "deadbeef", Petname: "swift-otter", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 0},
+	}
+	got := m.renderPresence()
+	if !strings.Contains(got, "SO") {
+		t.Fatalf("expected the 'swift-otter' badge initials 'SO' in the rendered presence panel, got:\n%s", got)
+	}
+}
+
+// Two different agents in the roster must not silently render with the
+// SAME badge -- would defeat the entire point of a per-agent identity
+// marker. (Not a strict impossibility with only 6 palette slots, but
+// these two particular petnames are asserted not to collide so the test
+// stays deterministic rather than probabilistic.)
+func TestRenderPresence_DistinctAgentsGetDistinctBadgeColors(t *testing.T) {
+	if agentColor("swift-otter") == agentColor("quiet-falcon") {
+		t.Skip("these two petnames happen to hash to the same slot -- pick different fixtures")
+	}
+	m := newTestModel(t)
+	m.width = 100
+	m.state.agents = []agentPresence{
+		{NodeID: "n1", Petname: "swift-otter", ConnectedVia: "x", SecondsSinceSeen: 0},
+		{NodeID: "n2", Petname: "quiet-falcon", ConnectedVia: "x", SecondsSinceSeen: 0},
+	}
+	got := m.renderPresence()
+	otterBadge := agentBadgeStyle("swift-otter").Render(agentInitials("swift-otter"))
+	falconBadge := agentBadgeStyle("quiet-falcon").Render(agentInitials("quiet-falcon"))
+	if !strings.Contains(got, otterBadge) || !strings.Contains(got, falconBadge) {
+		t.Fatalf("expected both agents' own distinct badge renderings present, got:\n%s", got)
+	}
+}
+
+// Issue #8: the speaker's name in a room's recent-message preview carries
+// their deterministic identity color -- same identityKey/agentColor pair
+// the presence badge (issue #7) uses, so an agent is the same color
+// everywhere in the mesh view.
+func TestRenderRooms_MessagePreviewColorsSpeakerName(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.state.joined = []joinedRoom{{RoomTopic: "agents.room.deadbeef", Purpose: "plan the release"}}
+	m.state.recent = map[string][]roomMessage{
+		"agents.room.deadbeef": {{From: "n1", FromPetname: "swift-otter", Text: "ship it"}},
+	}
+	got := m.renderRooms()
+	wantName := agentBadgeStyle(identityKey("n1", "swift-otter")).Render("swift-otter")
+	if !strings.Contains(got, wantName) {
+		t.Fatalf("expected the speaker name styled in its identity color, got:\n%s", got)
+	}
+}
+
 // Regression guard for the double-padding bug caught by actually
 // rendering sample data: bubbles/table's Model.cursor starts at 0
 // regardless of focus, and renderRow wraps the whole already-cell-padded
