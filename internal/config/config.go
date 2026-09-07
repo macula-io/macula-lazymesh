@@ -90,8 +90,33 @@ type Config struct {
 	// their existing happy path, only reorder/add retry logic) and
 	// RED/GREEN tested upstream (30 files, 433 tests). Explicitly does NOT
 	// claim to fix the separate, still-open "ring recorded then vanished"
-	// mystery -- left open on its own terms, not force-unified. Whoever
-	// next edits this default should do the same before bumping it, never
+	// mystery -- left open on its own terms, not force-unified.
+	//
+	// 0.25.0 (03d7c3d, single commit): mesh_ring's `to`, mesh_open_room's
+	// `participants`, and mesh_trust_agent/mesh_untrust_agent's `node_id`
+	// now also accept a petname, resolved to the real node_id once at each
+	// call's own top before anything else runs -- a raw 64-hex value (all
+	// this repo has ever sent) still passes through unchanged, so this is
+	// new INPUT flexibility only, nothing existing removed or renamed on
+	// any arg or response shape. 16 new tests upstream (including a real
+	// brute-forced sha256 petname collision, not simulated).
+	//
+	// 0.25.1 (three commits, all reviewed directly by this repo's own team
+	// -- see macula-io/macula-mcp#2/#3/#4/#5): cf7c7d8 fixes
+	// ring_service.ts's INITIAL registration (not just renewal, which
+	// 0.24.2 above already covered) retrying with backoff instead of
+	// permanently giving up on one transient failure -- pure internal
+	// reliability fix, no wire shape change. 3f6b7b1 adds a new
+	// `interval_seconds` field to every agent.hello and a new computed
+	// `stale` field to mesh_agents' response (both additive -- existing
+	// fields untouched), plus documentation-only comments about the
+	// hello/goodbye trust model (zero functional change). 8eaa3b3 is the
+	// version bump itself, no code change. Confirmed additive throughout:
+	// no tool renamed or removed, no existing response field removed, no
+	// existing arg made required that wasn't before. 458 tests passing
+	// upstream, typecheck clean.
+	//
+	// Whoever next edits this default should do the same before bumping it, never
 	// bump just to "pick up whatever's newest." Kept in sync with (but not
 	// imported from, to
 	// keep this package a leaf with no cross-package awareness, matching
@@ -180,7 +205,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition: "bottom",
-		MaculaMCPVersion:  "0.24.2",
+		MaculaMCPVersion:  "0.25.1",
 		ContactPolicyFile: filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:        "always-ask",
 		ExpressiveStyle:   false,
