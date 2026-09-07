@@ -323,6 +323,18 @@ func agentLogPath() (string, error) {
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
 func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle bool) string {
+	// The ring-check mesh_read_inbox call carries an explicit small limit
+	// (2026-09-07, Fable's follow-up on the runaway-context fix): this
+	// instruction fires every single cycle regardless of what triggered
+	// it (idle tick, room arrival, or a human message), which is a wider
+	// scope than agentDefaultPrompt's own already-fixed limit -- without
+	// this, the same unbounded-inbox failure mode could still occur via
+	// a room-arrival cycle, since that prompt's own text only scopes ONE
+	// room, but this system-prompt mandate covers every room regardless.
+	// Rings ignore this limit entirely (a separate, fixed cap in macula-
+	// mcp's own listRings, confirmed against its source), so shrinking it
+	// costs nothing ring-checking actually needs.
+	//
 	// Deliberately says nothing about why this changed (macula-io/macula-
 	// lazymesh#14/#15's own history) -- that belongs in code comments and
 	// the issue tracker, not in tokens sent to the model on every single
@@ -365,7 +377,10 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"conversation; check mesh_rooms fresh each time instead of relying on "+
 			"conversation memory, which gets trimmed. "+
 			"IMPORTANT, every single time you are prompted (not just when told to): call "+
-			"mesh_read_inbox with no room_topic argument (so it covers every room) and "+
+			"mesh_read_inbox with no room_topic argument and limit: 3 (small on purpose -- "+
+			"this is for checking rings, which ignore this limit entirely and are unaffected "+
+			"by it; call mesh_read_inbox again for one specific room_topic, with its own "+
+			"default limit, when you actually need that room's fuller history) and "+
 			"check its rings.pending list for anything addressed to you from ANY peer, not "+
 			"just people already in a room you're in. If one is pending, decide whether to "+
 			"accept or decline based on its stated purpose and call mesh_answer_ring -- "+

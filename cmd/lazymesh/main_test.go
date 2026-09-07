@@ -307,6 +307,19 @@ func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
 // to check mesh_rooms's own joined list before calling mesh_join_room again,
 // rather than assuming it will remember joining from earlier in the
 // conversation -- history gets trimmed, so that memory isn't reliable.
+// Covers Fable's 2026-09-07 follow-up on the runaway-context fix: the
+// system prompt's own ring-check mandate fires every cycle regardless of
+// trigger (idle tick, room arrival, human message) -- unlike
+// agentDefaultPrompt, scoping only the idle-tick path wasn't enough,
+// since a room-arrival cycle could still trigger this same unbounded
+// mesh_read_inbox via the system prompt alone.
+func TestBuildSystemPrompt_RingCheckUsesSmallLimit(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false)
+	if !strings.Contains(got, "mesh_read_inbox with no room_topic argument and limit: 3") {
+		t.Fatalf("expected the system prompt's ring-check mandate to request a small limit, got: %s", got)
+	}
+}
+
 func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
 	got := buildSystemPrompt("", "", false, false)
 	if !strings.Contains(got, "joined list") {
