@@ -116,6 +116,12 @@ type Config struct {
 	// existing arg made required that wasn't before. 458 tests passing
 	// upstream, typecheck clean.
 	//
+	// 0.25.2 (4c534fb, single commit): purely cosmetic -- mesh_hello's
+	// DEFAULT_BANNER figlet art had one letter wrong (rendered "MTCULA"),
+	// fixed to spell "MACULA". A string-literal-only diff in one file
+	// (src/mesh_hello.ts), read directly: no other line touched, no
+	// behavior, no tool arg/response shape affected at all.
+	//
 	// Whoever next edits this default should do the same before bumping it, never
 	// bump just to "pick up whatever's newest." Kept in sync with (but not
 	// imported from, to
@@ -205,7 +211,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition: "bottom",
-		MaculaMCPVersion:  "0.25.1",
+		MaculaMCPVersion:  "0.25.2",
 		ContactPolicyFile: filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:        "always-ask",
 		ExpressiveStyle:   false,
