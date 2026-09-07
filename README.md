@@ -85,13 +85,15 @@ file at `~/.ai-api-keys/.deepseek-api-keys/lazymesh` (bare value, no
 quotes), matching this workspace's key-file convention.
 
 The LLM backend is a config value, not a rewrite: set `provider: nvidia`
-(plus its own `api_key_file`, e.g.
-`~/.ai-api-keys/.nvidia-api-keys/lazymesh`) to point at NVIDIA's free
-OpenAI-compatible endpoint instead — see `internal/provider/nvidia.go`'s
-own doc comment for defaults and a caveat about rate limits under
-sustained use. `provider: anthropic` is a config-shape stub only (not yet
-implemented — Anthropic's Messages API needs its own request/response
-mapping, unlike DeepSeek/NVIDIA's shared OpenAI-compatible shape).
+or `provider: groq` (plus that provider's own `api_key_file`, e.g.
+`~/.ai-api-keys/.groq-api-keys/lazymesh`) to point elsewhere — see
+`internal/provider/nvidia.go`/`groq.go`'s own doc comments for defaults.
+NVIDIA's free tier turned out to be a trial-credit pool that exhausts
+under sustained production load, not a genuine free tier — worth
+knowing before pointing a long-running agent at it. `provider: anthropic`
+is a config-shape stub only (not yet implemented — Anthropic's Messages
+API needs its own request/response mapping, unlike the other three's
+shared OpenAI-compatible shape).
 
 Agent activity renders live in the TUI's chat pane (collapsed one-line
 tool calls, expandable — see below) AND logs the full detail to

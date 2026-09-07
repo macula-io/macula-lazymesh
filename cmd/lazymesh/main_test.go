@@ -77,6 +77,7 @@ func TestBuildProvider_DispatchesToTheRightBackend(t *testing.T) {
 		{"explicit deepseek", "deepseek", "*provider.DeepSeek"},
 		{"anthropic", "anthropic", "*provider.Anthropic"},
 		{"nvidia", "nvidia", "*provider.NVIDIA"},
+		{"groq", "groq", "*provider.Groq"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -14,17 +14,22 @@ import (
 // Config is lazymesh's on-disk configuration shape.
 type Config struct {
 	// Provider selects the LLM backend. "deepseek" (also what empty
-	// resolves to) and "nvidia" are working implementations; "anthropic"
-	// exists as an interface-shape stub (see internal/provider/anthropic.go)
-	// and returns an error if selected -- Anthropic's Messages API has a
-	// genuinely different shape from the other two's shared OpenAI-
-	// compatible one, so it needs real work, not just a config value.
-	// Default stays deepseek regardless of what else is available: it was
-	// chosen specifically for being cheap enough to run an agent against
-	// continuously. See internal/provider/nvidia.go's own doc comment
-	// before switching a long-running agent to nvidia -- this workspace's
-	// own fleet has hit account-level rate limits on NVIDIA's free tier
-	// under sustained use.
+	// resolves to), "nvidia", and "groq" are working implementations;
+	// "anthropic" exists as an interface-shape stub (see
+	// internal/provider/anthropic.go) and returns an error if selected --
+	// Anthropic's Messages API has a genuinely different shape from the
+	// other three's shared OpenAI-compatible one, so it needs real work,
+	// not just a config value. Default stays deepseek regardless of what
+	// else is available: it was chosen specifically for being cheap
+	// enough to run an agent against continuously.
+	//
+	// nvidia is available but this workspace's own fleet dropped it as
+	// its default elsewhere (2026-09-07): its "free" tier turned out to
+	// be a trial-credit pool that exhausted under sustained production
+	// load, not a genuine free tier, and continued use past that was
+	// against NVIDIA's own ToS for the purpose -- worth knowing before
+	// switching a long-running agent to it, not a reason it was removed
+	// as an option here.
 	Provider string `yaml:"provider"`
 	// Model is the backend's own model id string, verified against that
 	// backend's own docs, not copied from another harness's config.
