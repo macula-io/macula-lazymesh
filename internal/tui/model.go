@@ -611,9 +611,17 @@ func (m Model) renderHintLines() []string {
 	case ModeInsert:
 		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
 	default:
+		// The second line is indented to align under the first line's own
+		// shortcuts, not flush left -- found live 2026-09-08 (Raf, actually
+		// looking at it): two shortcut lines with mismatched left edges
+		// read as a jagged, unrelated pair rather than one coherent list.
+		// lipgloss.Width (ANSI-aware) rather than a hardcoded column count,
+		// so this stays correct if the mode indicator's own text ever
+		// changes length.
+		indent := strings.Repeat(" ", lipgloss.Width(mode)+2)
 		return []string{
 			mode + "  " + dimStyle.Render("m: mesh view  i: compose  ctrl+e: $EDITOR"),
-			dimStyle.Render("v: verbose  e: expand  b: mute  q: quit"),
+			indent + dimStyle.Render("v: verbose  e: expand  b: mute  q: quit"),
 		}
 	}
 }

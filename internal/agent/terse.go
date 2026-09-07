@@ -189,6 +189,41 @@ var terseSchemaOverrides = map[string]mcpclient.Tool{
 			},
 		},
 	},
+	// mesh_ring (2026-09-08, added to DefaultToolAllowlist the same day --
+	// see allowlist.go's own doc comment): its real, live description is
+	// the single largest of any allowlisted tool (1,742 bytes, description
+	// + schema together, measured live against a real macula-mcp spawn --
+	// bigger than mesh_say's 925), so this needed the schema-override tier
+	// from day one, not the safe description-only one. wait_join_seconds
+	// dropped entirely from the exposed schema, same reasoning as
+	// mesh_say's wait_reply_seconds above: internal/agent/nowait.go's
+	// NoBlockingWaitSource force-clamps it to maxModelWaitSeconds
+	// regardless of what the model passes OR omits (mesh_ring's own
+	// server-side default when omitted is 30s, well past the clamp --
+	// see nowait.go's own doc comment on that asymmetry), so offering the
+	// parameter is pure cost with no effective control attached. host
+	// hand-omitted for the same reason as mesh_say's own override: this
+	// is already a full hand-authored replacement, dropHostParam's own
+	// generic step never runs for it.
+	"mesh_ring": {
+		Name: "mesh_ring",
+		Description: "Ring another agent: an addressed, proven invite carrying a room to talk in. " +
+			"Reply is one of: 1 accepted (room proven two-sided, verified against their own key), " +
+			"2 declined (with their reason), 3 deferred (their model decides later, answer arrives " +
+			"via mesh_answer_ring; the room stays open), or unreachable (not serving right now). " +
+			"purpose is mandatory and short -- a deferred ring is judged from it. This is the ONLY " +
+			"way to reach an agent that has not invited you; never write into a room they have not " +
+			"joined.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"to":         map[string]any{"type": "string", "description": "Node id or petname, from mesh_agents."},
+				"purpose":    map[string]any{"type": "string", "minLength": 1, "description": "Why you're ringing, one line."},
+				"room_topic": map[string]any{"type": "string", "description": "A room you're already in to invite them into. Omit to open a fresh one."},
+			},
+			"required": []string{"to", "purpose"},
+		},
+	},
 	"mesh_say": {
 		Name: "mesh_say",
 		Description: "Say something in a room, or broadcast on central (agents.lobby -- for " +

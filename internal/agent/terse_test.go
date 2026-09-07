@@ -24,6 +24,7 @@ var realDescriptionsAsOf025_2 = map[string]string{
 	"mesh_answer_ring": "Answer a ring that was deferred to you (mesh_read_inbox lists them under rings.pending, with who rang and why). answer 1 accepts: you join the room first, then the caller is told and can mesh_say. answer 2 declines, with an optional reason the caller sees. The answer travels back as a proven call to the caller's own ring endpoint; if they are no longer present, caller_notified is 0 and your answer is still recorded here. Deferring again is not an answer; leave it pending instead.",
 	"mesh_agents":      "List agents seen on the mesh via their agent.hello heartbeats (started with mesh_hello). Reads a persistent local SQLite roster, not a live mesh query -- it survives a restart of this process, but only reflects agents this identity has ever heard a hello from (entries unseen for 15 minutes are pruned). Sorted most-recently-seen first. `stale: true` flags an entry that has missed roughly 3+ of its own reported heartbeats -- probably gone, well before the 15-minute hard prune.",
 	"mesh_read_inbox":  "Read what has arrived: rings (pending ones first -- someone rang you under your \"ask\" policy and is waiting for mesh_answer_ring -- then recent answered ones, both directions), the rooms you are in, threaded (each message carries thread_root and depth from its in_reply_to chain), and recent help_requested/help_offered broadcasts on central from other agents. Instant, a local SQLite read, never blocks. Pass room_topic to read one room only. Rooms only ever show what arrived while this process was watching them -- nothing from before you joined.",
+	"mesh_ring":        "Ring another agent: an addressed invite delivered as a mesh_call to their agent.<node_id>.ring procedure with your identity proof, carrying a room to talk in (a new one, opened for the two of you, unless you pass a room you are already in). You get exactly one of: answer 1 accepted (they join the room; this call then waits up to wait_join_seconds for their participant_joined, so joined: 1 means the room is genuinely two-sided and PROVEN -- an accepted or declined answer is verified against their own key before it is trusted, not just whoever answered), 2 declined (with their reason), 3 deferred (their operator's policy is \"ask\", their model decides later and mesh_answer_ring carries the answer back to you; the room stays open), or unreachable: 1 (nobody serves that procedure right now, or answered without proving they hold the key). purpose is mandatory and short: a deferred ring is judged from it. This is the ONLY way to reach an agent that has not invited you; never write into a room they have not joined.",
 }
 
 func fakeToolsFromRealDescriptions() []mcpclient.Tool {
@@ -51,7 +52,7 @@ func TestTerseDescriptionSource_ShortensKnownToolsLeavesOthersAlone(t *testing.T
 	}
 
 	for name, realDesc := range realDescriptionsAsOf025_2 {
-		if name == "mesh_say" {
+		if name == "mesh_say" || name == "mesh_ring" {
 			continue // full replacement, checked separately below
 		}
 		tool, ok := byName[name]
@@ -141,6 +142,63 @@ func TestTerseDescriptionSource_MeshSayGetsFullReplacementShorterThanReal(t *tes
 	required, ok := schema["required"].([]string)
 	if !ok || len(required) != 2 || required[0] != "room_topic" || required[1] != "text" {
 		t.Fatalf("expected required to still be exactly [room_topic, text], got %v", schema["required"])
+	}
+}
+
+// Covers the real gap found 2026-09-08: mesh_ring joining
+// DefaultToolAllowlist (see allowlist.go) meant its real, live
+// description -- the largest of any allowlisted tool, 1,742 bytes
+// description+schema together, measured live -- flowed straight through
+// untrimmed and pushed the fixed prefix back over the 1,500-token
+// ceiling R2 had just landed. Needed the same full-replacement tier as
+// mesh_say, not the safe description-only one.
+func TestTerseDescriptionSource_MeshRingGetsFullReplacementShorterThanReal(t *testing.T) {
+	inner := &fakeToolSource{tools: fakeToolsFromRealDescriptions()}
+	src := NewTerseDescriptionSource(inner)
+
+	got, err := src.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	var meshRing *mcpclient.Tool
+	for i := range got {
+		if got[i].Name == "mesh_ring" {
+			meshRing = &got[i]
+		}
+	}
+	if meshRing == nil {
+		t.Fatalf("expected mesh_ring in the result")
+	}
+	if len(meshRing.Description) >= len(realDescriptionsAsOf025_2["mesh_ring"]) {
+		t.Fatalf("expected mesh_ring's terse description shorter than the real one")
+	}
+	for _, keep := range []string{"accepted", "declined", "deferred", "unreachable", "purpose", "only", "invited"} {
+		if !strings.Contains(strings.ToLower(meshRing.Description), keep) {
+			t.Fatalf("expected the terse description to keep the load-bearing word %q, got: %s", keep, meshRing.Description)
+		}
+	}
+	schema, ok := meshRing.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("expected mesh_ring's InputSchema to be a map, got %T", meshRing.InputSchema)
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mesh_ring's schema to have properties")
+	}
+	for _, kept := range []string{"to", "purpose", "room_topic"} {
+		if _, present := props[kept]; !present {
+			t.Fatalf("expected %q kept in mesh_ring's schema", kept)
+		}
+	}
+	for _, dropped := range []string{"wait_join_seconds", "host"} {
+		if _, present := props[dropped]; present {
+			t.Fatalf("expected %q dropped from mesh_ring's schema entirely, still present", dropped)
+		}
+	}
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 2 || required[0] != "to" || required[1] != "purpose" {
+		t.Fatalf("expected required to be exactly [to, purpose], got %v", schema["required"])
 	}
 }
 

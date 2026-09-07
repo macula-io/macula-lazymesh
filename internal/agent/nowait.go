@@ -29,15 +29,44 @@ import (
 const maxModelWaitSeconds = 10
 
 // NoBlockingWaitSource wraps another ToolSource and clamps any
-// wait_reply_seconds argument on mesh_say down to maxModelWaitSeconds,
-// regardless of what the model asks for -- defense in depth matching
-// AllowlistSource's own posture ("don't just tell the model what to do,
-// remove the capability to do the wrong thing"): a prompt rewrite alone
-// is one bad instruction (or one confused model) away from recreating
-// the exact bug #14 exists to fix. mesh_wait_room itself needs no
-// clamping here -- it is never on DefaultToolAllowlist, so the model
-// cannot call it regardless; only the loop-owned roomwaiter.Manager does,
-// directly against the client, bypassing this wrapper entirely.
+// wait_reply_seconds argument on mesh_say, or wait_join_seconds on
+// mesh_ring, down to maxModelWaitSeconds, regardless of what the model
+// asks for -- defense in depth matching AllowlistSource's own posture
+// ("don't just tell the model what to do, remove the capability to do
+// the wrong thing"): a prompt rewrite alone is one bad instruction (or
+// one confused model) away from recreating the exact bug #14 exists to
+// fix. mesh_wait_room itself needs no clamping here -- it is never on
+// DefaultToolAllowlist, so the model cannot call it regardless; only the
+// loop-owned roomwaiter.Manager does, directly against the client,
+// bypassing this wrapper entirely.
+//
+// mesh_ring's wait_join_seconds added 2026-09-08, the same day mesh_ring
+// itself joined DefaultToolAllowlist (see allowlist.go's own doc
+// comment): its max is 600s (10 minutes) -- verified against
+// mesh_ring.ts directly -- well past maxModelWaitSeconds even before
+// considering what the model might ask for, so adding mesh_ring to the
+// allowlist without this clamp would have quietly reopened the exact
+// blocking-tool-slot failure mode this wrapper exists to close. Not a
+// functional loss: mesh_ring's own reply already tells the model what to
+// do when the join wasn't seen in time ("Accepted, but their
+// participant_joined was not seen in time. mesh_read_inbox will show it
+// when it lands; you can mesh_say already"), and the room mesh_ring
+// opens is being watched in the background regardless of whether this
+// call itself waited for it.
+//
+// A real asymmetry from mesh_say, checked directly in each tool's own
+// source rather than assumed identical: mesh_say's wait_reply_seconds is
+// z.optional() with no server-side fallback (rooms.ts), so an omitted
+// field genuinely means "don't wait" and needs no clamp. mesh_ring's
+// wait_join_seconds is also z.optional() in its own schema, but
+// placeRing (mesh_ring.ts) applies `args.waitJoinSeconds ??
+// DEFAULT_WAIT_JOIN_SECONDS` -- omitting the field there does NOT mean
+// "don't wait," it means "wait the server's own default of 30s," itself
+// already 3x maxModelWaitSeconds. clampWaitSeconds' forceWhenAbsent
+// parameter exists specifically for this: false for mesh_say (leave a
+// genuinely-absent field alone), true for mesh_ring (an absent field
+// still needs an explicit value injected, or the server-side default
+// slips through this wrapper untouched).
 type NoBlockingWaitSource struct {
 	inner ToolSource
 }
@@ -52,10 +81,18 @@ func (n *NoBlockingWaitSource) ListTools(ctx context.Context) ([]mcpclient.Tool,
 }
 
 func (n *NoBlockingWaitSource) CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error) {
-	if name != "mesh_say" {
+	var field string
+	var forceWhenAbsent bool
+	switch name {
+	case "mesh_say":
+		field = "wait_reply_seconds"
+	case "mesh_ring":
+		field = "wait_join_seconds"
+		forceWhenAbsent = true
+	default:
 		return n.inner.CallToolRaw(ctx, name, argumentsJSON)
 	}
-	clamped, err := clampWaitReplySeconds(argumentsJSON)
+	clamped, err := clampWaitSeconds(argumentsJSON, field, forceWhenAbsent)
 	if err != nil {
 		// Malformed arguments aren't this wrapper's problem to diagnose --
 		// pass through unchanged and let the real tool's own validation
@@ -65,22 +102,30 @@ func (n *NoBlockingWaitSource) CallToolRaw(ctx context.Context, name string, arg
 	return n.inner.CallToolRaw(ctx, name, clamped)
 }
 
-func clampWaitReplySeconds(argumentsJSON string) (string, error) {
+func clampWaitSeconds(argumentsJSON, field string, forceWhenAbsent bool) (string, error) {
 	args := map[string]any{}
 	if argumentsJSON != "" {
 		if err := json.Unmarshal([]byte(argumentsJSON), &args); err != nil {
 			return "", err
 		}
 	}
-	raw, ok := args["wait_reply_seconds"]
-	if !ok {
-		return argumentsJSON, nil
+	raw, present := args[field]
+	if !present {
+		if !forceWhenAbsent {
+			return argumentsJSON, nil
+		}
+		args[field] = float64(maxModelWaitSeconds)
+		out, err := json.Marshal(args)
+		if err != nil {
+			return "", err
+		}
+		return string(out), nil
 	}
 	seconds, ok := raw.(float64) // json.Unmarshal decodes any JSON number as float64
 	if !ok || seconds <= maxModelWaitSeconds {
 		return argumentsJSON, nil
 	}
-	args["wait_reply_seconds"] = float64(maxModelWaitSeconds)
+	args[field] = float64(maxModelWaitSeconds)
 	out, err := json.Marshal(args)
 	if err != nil {
 		return "", err

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
@@ -286,6 +287,25 @@ func TestRenderHintLines_NormalModeStillListsEveryShortcut(t *testing.T) {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("expected shortcut %q somewhere in the hint lines, got %q", want, combined)
 		}
+	}
+}
+
+// Found live 2026-09-08 (Raf, actually looking at it): the second hint
+// line started flush left while the first line's own shortcuts started
+// after the mode indicator -- two shortcut lines with mismatched left
+// edges read as a jagged, unrelated pair rather than one coherent list.
+// The second line's shortcuts must start at the same visible column as
+// the first line's.
+func TestRenderHintLines_SecondLineAlignsUnderFirstLinesShortcuts(t *testing.T) {
+	m := newTestModel(t)
+	lines := m.renderHintLines()
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 hint lines in Normal mode, got %d: %v", len(lines), lines)
+	}
+	wantIndent := lipgloss.Width(m.renderModeIndicator()) + 2 // +2 for the "  " gap after the mode indicator
+	gotIndent := len(lines[1]) - len(strings.TrimLeft(lines[1], " "))
+	if gotIndent != wantIndent {
+		t.Fatalf("expected the second hint line indented %d spaces to align under the first line's shortcuts, got %d: %q", wantIndent, gotIndent, lines[1])
 	}
 }
 

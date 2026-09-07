@@ -45,6 +45,28 @@ import (
 // mesh_hello was ever called. This tool's own schema was also the single
 // largest line item in the fixed prefix sent on every request -- pure
 // cost with no remaining function once the auto-start covers it.
+//
+// mesh_ring added 2026-09-08 (real gap Raf hit live: asked the agent to
+// ring another agent, and it structurally couldn't -- mesh_answer_ring
+// was here but nothing let it INITIATE contact). Checked before adding
+// it, not assumed: the original list (commit 9550c6f, the adversarial-
+// review fix this whole file exists for) never mentions mesh_ring at
+// all, in the commit message or the code. It reads as the exact reactive
+// tool set buildSystemPrompt's design needed at the time (join/say/read/
+// answer-a-ring/list), not a considered exclusion -- there was simply no
+// feature yet for the agent to proactively contact anyone. Read
+// mesh_ring.ts directly (macula-io/macula-mcp) to check it actually
+// belongs in this bucket rather than the excluded one: it is a signed
+// mesh_call to the callee's own served agent.<node_id>.ring procedure,
+// answer cryptographically proven against their key -- no local state
+// read or written, nothing executed, same conversational-primitive shape
+// as mesh_say/mesh_answer_ring already here, not mesh_serve/shell_exec/
+// mesh_remember_directory's category (this file's own doc comment above
+// names those as the real risks). Its wait_join_seconds (default 30s,
+// max 600s) needed the same clamp mesh_say's wait_reply_seconds already
+// gets -- see internal/agent/nowait.go, extended in the same change --
+// or this would have quietly reopened the blocking-tool-slot bug #14/#15
+// exist to close.
 var DefaultToolAllowlist = []string{
 	"mesh_join_room",
 	"mesh_leave_room",
@@ -53,6 +75,7 @@ var DefaultToolAllowlist = []string{
 	"mesh_answer_ring",
 	"mesh_rooms",
 	"mesh_agents",
+	"mesh_ring",
 }
 
 // AllowlistSource wraps another ToolSource and enforces allowed at BOTH

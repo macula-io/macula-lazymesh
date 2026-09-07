@@ -83,3 +83,23 @@ func TestDefaultToolAllowlist_ExcludesLocalTools(t *testing.T) {
 		}
 	}
 }
+
+// Real gap Raf hit live (2026-09-08): the agent could answer a ring
+// (mesh_answer_ring) but had no way to initiate one, since mesh_ring
+// itself was never on this list. Checked against the original adversarial-
+// review commit before adding it (see this list's own doc comment) --
+// it's a signed conversational mesh_call to a proven peer endpoint, same
+// risk bucket as mesh_say/mesh_answer_ring already here, not the
+// mesh_serve/shell_exec/mesh_remember_directory bucket this file exists
+// to keep out.
+func TestDefaultToolAllowlist_IncludesMeshRing(t *testing.T) {
+	found := false
+	for _, name := range DefaultToolAllowlist {
+		if name == "mesh_ring" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected mesh_ring on DefaultToolAllowlist, got %v", DefaultToolAllowlist)
+	}
+}
