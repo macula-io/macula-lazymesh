@@ -1,0 +1,47 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // MaculaMCPVersion (internal/config/config.go's Default(), kept in sync
+  // with internal/mcpclient's DefaultMaculaMCPVersion -- see both fields'
+  // own doc comments) isn't a real package.json/go.mod dependency: it's a
+  // hardcoded string constant this repo passes to `npx -p @macula-io/mcp`,
+  // so Renovate's built-in npm/gomod managers never see it. The
+  // customManagers regex entry below is what makes Renovate treat it as
+  // one anyway, watching BOTH locations so a PR only ever proposes them
+  // in lock-step. Deliberately PR-only, not auto-merge (Raf's explicit
+  // call, unlike macula-portal/macula-station's real macula SDK
+  // dependency): this pin is only ever bumped after reading the actual
+  // upstream diff (see config.go's own bump-history comment for the
+  // methodology), which is exactly the judgment call an auto-merge would
+  // skip.
+  extends: ["config:recommended", ":dependencyDashboard"],
+  customManagers: [
+    {
+      customType: "regex",
+      fileMatch: ["^internal/config/config\\.go$", "^internal/mcpclient/mcpclient\\.go$"],
+      matchStrings: [
+        "MaculaMCPVersion:\\s*\"(?<currentValue>[0-9.]+)\"",
+        "DefaultMaculaMCPVersion\\s*=\\s*\"(?<currentValue>[0-9.]+)\"",
+      ],
+      depNameTemplate: "@macula-io/mcp",
+      datasourceTemplate: "npm",
+    },
+  ],
+  packageRules: [
+    // Scoped to just this one pin, deliberately -- this is Renovate's
+    // first appearance in this repo, and the ask was specifically the
+    // macula-mcp pin, not general go.mod dependency management (bubbletea,
+    // the MCP go-sdk, etc.). Same narrowing pattern macula-portal/
+    // macula-station already use for their own macula SDK dependency;
+    // drop this rule if broader dependency management is wanted later.
+    {
+      matchDepNames: ["!@macula-io/mcp"],
+      enabled: false,
+    },
+    {
+      matchDepNames: ["@macula-io/mcp"],
+      groupName: "macula-mcp pin",
+      automerge: false,
+    },
+  ],
+  rebaseWhen: "behind-base-branch",
+}
