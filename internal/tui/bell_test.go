@@ -99,6 +99,29 @@ func TestSelfNodeID_EmptyWhenNoneMarkedSelf(t *testing.T) {
 	}
 }
 
+func TestSelfPetname_PrefersPetnameOverShortID(t *testing.T) {
+	agents := []agentPresence{
+		{NodeID: "a", IsSelf: false, Petname: "other-agent"},
+		{NodeID: "deadbeefcafe", IsSelf: true, Petname: "swift-otter"},
+	}
+	if got := selfPetname(agents); got != "swift-otter" {
+		t.Fatalf("expected swift-otter, got %q", got)
+	}
+}
+
+func TestSelfPetname_FallsBackToShortIDWhenPetnameEmpty(t *testing.T) {
+	agents := []agentPresence{{NodeID: "deadbeefcafe", IsSelf: true}}
+	if got := selfPetname(agents); got != "deadbeef" {
+		t.Fatalf("expected shortened node_id fallback, got %q", got)
+	}
+}
+
+func TestSelfPetname_EmptyWhenNoSelfEntryYet(t *testing.T) {
+	if got := selfPetname(nil); got != "" {
+		t.Fatalf("expected empty string before the first refresh populates agents, got %q", got)
+	}
+}
+
 func TestRingBell_MutedNeverWrites(t *testing.T) {
 	// ringBell's Cmd body is only observably safe to call directly in a
 	// test if muted is true (unmuted would actually write \a to this

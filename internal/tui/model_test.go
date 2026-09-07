@@ -465,6 +465,45 @@ func TestView_MeshExpanded_StatusAnchorsToTopEdge(t *testing.T) {
 	}
 }
 
+// Raf's ask, tied directly to the dual-instance identity bug fixed in
+// 8622117: once two lazymesh instances actually have distinct mesh
+// identities, that distinctness should be confirmable at a glance in the
+// one place that's always on screen, not just correct under the hood.
+func TestRenderStatusStrip_ShowsOwnPetnameWhenKnown(t *testing.T) {
+	m := newTestModel(t)
+	m.state.agents = []agentPresence{{NodeID: "deadbeefcafe", IsSelf: true, Petname: "swift-otter"}}
+	got := m.renderStatusStrip()
+	if !strings.Contains(got, "swift-otter") {
+		t.Fatalf("expected own petname in the status strip, got %q", got)
+	}
+}
+
+func TestRenderStatusStrip_OmitsPetnameBeforeFirstRefresh(t *testing.T) {
+	m := newTestModel(t)
+	got := m.renderStatusStrip()
+	if strings.Contains(got, "· ·") {
+		t.Fatalf("expected no dangling separator when petname is unknown, got %q", got)
+	}
+}
+
+// The actual scenario this was built for: two instances, two distinct
+// petnames, both visible in what would be two separate terminals'
+// status strips.
+func TestRenderStatusStrip_DistinctInstancesShowDistinctPetnames(t *testing.T) {
+	a := newTestModel(t)
+	a.state.agents = []agentPresence{{NodeID: "aaaa", IsSelf: true, Petname: "swift-otter"}}
+	b := newTestModel(t)
+	b.state.agents = []agentPresence{{NodeID: "bbbb", IsSelf: true, Petname: "quiet-falcon"}}
+
+	gotA, gotB := a.renderStatusStrip(), b.renderStatusStrip()
+	if !strings.Contains(gotA, "swift-otter") || strings.Contains(gotA, "quiet-falcon") {
+		t.Fatalf("instance A: expected only its own petname, got %q", gotA)
+	}
+	if !strings.Contains(gotB, "quiet-falcon") || strings.Contains(gotB, "swift-otter") {
+		t.Fatalf("instance B: expected only its own petname, got %q", gotB)
+	}
+}
+
 func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 	m := newTestModel(t)
 	m.agentEvents = make(chan agent.Event) // never fires again, fine for this assertion

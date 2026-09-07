@@ -580,6 +580,14 @@ func (m Model) renderChatterLine() string {
 func (m Model) renderSummaryLine() string {
 	line := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
 		len(m.state.joined), len(m.state.pending), len(m.state.agents))
+	// Leads with "who am I" when known -- the dual-instance identity bug
+	// (two lazymesh instances silently sharing one mesh node_id, fixed in
+	// 8622117) was only visible by comparing raw node_ids or Presence
+	// panel rows across terminals; this makes distinctness confirmable at
+	// a glance, in the one place that's always on screen.
+	if petname := selfPetname(m.state.agents); petname != "" {
+		line = petname + " · " + line
+	}
 	if m.agentModel != "" {
 		line += " · " + m.agentModel
 	}

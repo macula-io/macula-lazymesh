@@ -109,3 +109,23 @@ func selfNodeID(agents []agentPresence) string {
 	}
 	return ""
 }
+
+// selfPetname is this instance's own deterministic petname, the same
+// displayName fallback (petname, else shortened node_id) the presence
+// panel already uses for everyone else -- lazymesh never sets its own
+// operator_name (no config option for it, no explicit mesh_hello call
+// anywhere in this codebase), so petname is the only human-legible label
+// a lazymesh instance's own presence entry actually has. Requires
+// macula-mcp >= 0.25.2 (macula-io/macula-mcp#3/@a939b0b): mesh_agents
+// didn't include petname for every roster entry, self included, before
+// that. Empty until the first refreshCmd tick populates m.state.agents
+// (see resizeComponents' own callers for the same "may not have data yet"
+// shape elsewhere in this package).
+func selfPetname(agents []agentPresence) string {
+	for _, a := range agents {
+		if a.IsSelf {
+			return displayName(a.NodeID, a.Petname)
+		}
+	}
+	return ""
+}

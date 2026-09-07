@@ -130,8 +130,10 @@ loses that ambient awareness. It grows from a minimum of two lines:
   one (`mesh_call`, `mesh_say`, ...) — this is where routine tool-call
   "chatter" goes by default, keeping the conversation pane to actual
   dialogue; `v` toggles it back inline into the chat pane instead
-- the summary line (`3 rooms · 2 pending rings · 8 agents seen`) plus the
-  current key hints
+- the summary line — this instance's own petname once known (`swift-otter
+  · 3 rooms · 2 pending rings · 8 agents seen`, requires macula-mcp
+  >= 0.25.2), so two instances running side by side are distinguishable
+  at a glance instead of only under the hood — plus the current key hints
 
 **Audio cues**, plain terminal bell only (no audio library, no sound
 files): single bell for an ordinary room message from someone else,
