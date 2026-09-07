@@ -13,6 +13,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 )
 
@@ -33,43 +34,6 @@ func TestNextBackoff_DoublesUntilCap(t *testing.T) {
 	}
 	if seen[len(seen)-1] != maxBackoff {
 		t.Fatalf("expected backoff to have reached the cap after repeated doubling, got %v", seen[len(seen)-1])
-	}
-}
-
-// Covers the 2026-09-07 idle-tick backoff fix: a flat 20s tick paid a
-// full LLM turn's cost on every idle check regardless of how long the
-// mesh had actually been quiet. This pins the growth behavior
-// independent of nextEvent's own channel/timer plumbing, same reasoning
-// as TestNextBackoff_DoublesUntilCap above.
-func TestUpdateIdleInterval_GrowsOnIdleTickCapsAtMax(t *testing.T) {
-	d := ringCheckInterval
-	seen := []time.Duration{d}
-	for i := 0; i < 10; i++ {
-		d = updateIdleInterval(d, sourceIdleTick)
-		seen = append(seen, d)
-	}
-	if seen[1] != 2*ringCheckInterval {
-		t.Fatalf("expected first doubling to be %v, got %v", 2*ringCheckInterval, seen[1])
-	}
-	for _, d := range seen {
-		if d > maxIdleTickInterval {
-			t.Fatalf("idle interval exceeded the cap: %v > %v", d, maxIdleTickInterval)
-		}
-	}
-	if seen[len(seen)-1] != maxIdleTickInterval {
-		t.Fatalf("expected idle interval to have reached the cap after repeated idle ticks, got %v", seen[len(seen)-1])
-	}
-}
-
-func TestUpdateIdleInterval_RealActivityResetsToRingCheckInterval(t *testing.T) {
-	grown := updateIdleInterval(maxIdleTickInterval, sourceIdleTick) // already at the cap
-	if grown != maxIdleTickInterval {
-		t.Fatalf("expected the cap to hold under another idle tick, got %v", grown)
-	}
-	for _, src := range []eventSource{sourceHuman, sourceRoomArrival} {
-		if got := updateIdleInterval(maxIdleTickInterval, src); got != ringCheckInterval {
-			t.Fatalf("expected real activity (source %v) to reset the interval to %v, got %v", src, ringCheckInterval, got)
-		}
 	}
 }
 
@@ -277,29 +241,9 @@ func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
 	}
 }
 
-// Covers the 2026-09-07 runaway-context fix: the periodic idle-tick
-// prompt must not re-request the full, unscoped mesh_read_inbox default
-// (50 messages per joined room, no room cap) on every single cycle --
-// that's what drove a real instance past a 1M-token context window. The
-// one-time startup prompt deliberately keeps the full default since it
-// has genuinely nothing to catch up on yet.
-func TestAgentDefaultPrompt_RequestsSmallInboxLimitUnlikeInitialPrompt(t *testing.T) {
-	if !strings.Contains(agentDefaultPrompt, "limit: 3") {
-		t.Fatalf("expected agentDefaultPrompt to request a small mesh_read_inbox limit on the periodic idle check, got: %s", agentDefaultPrompt)
-	}
-	if strings.Contains(agentInitialPrompt, "limit:") {
-		t.Fatalf("expected agentInitialPrompt to keep mesh_read_inbox's full default limit for the one-time startup catch-up, got: %s", agentInitialPrompt)
-	}
-}
-
-func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
-	for name, p := range map[string]string{
-		"agentDefaultPrompt": agentDefaultPrompt,
-		"agentInitialPrompt": agentInitialPrompt,
-	} {
-		if !strings.Contains(p, "mesh_rooms") {
-			t.Fatalf("%s: expected the per-cycle prompt to call mesh_rooms so scope isn't pinned to one room, got: %s", name, p)
-		}
+func TestAgentInitialPromptCallsMeshRooms(t *testing.T) {
+	if !strings.Contains(agentInitialPrompt, "mesh_rooms") {
+		t.Fatalf("expected the startup prompt to call mesh_rooms so scope isn't pinned to one room, got: %s", agentInitialPrompt)
 	}
 }
 
@@ -307,19 +251,6 @@ func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
 // to check mesh_rooms's own joined list before calling mesh_join_room again,
 // rather than assuming it will remember joining from earlier in the
 // conversation -- history gets trimmed, so that memory isn't reliable.
-// Covers Fable's 2026-09-07 follow-up on the runaway-context fix: the
-// system prompt's own ring-check mandate fires every cycle regardless of
-// trigger (idle tick, room arrival, human message) -- unlike
-// agentDefaultPrompt, scoping only the idle-tick path wasn't enough,
-// since a room-arrival cycle could still trigger this same unbounded
-// mesh_read_inbox via the system prompt alone.
-func TestBuildSystemPrompt_RingCheckUsesSmallLimit(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
-	if !strings.Contains(got, "mesh_read_inbox with no room_topic argument and limit: 3") {
-		t.Fatalf("expected the system prompt's ring-check mandate to request a small limit, got: %s", got)
-	}
-}
-
 func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
 	got := buildSystemPrompt("", "", false, false)
 	if !strings.Contains(got, "joined list") {
@@ -409,6 +340,20 @@ func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
 	}
 }
 
+// Covers 2026-09-07: the system prompt's own former blanket "every
+// single time you are prompted... call mesh_read_inbox with no
+// room_topic" ring-check mandate is gone, replaced by internal/
+// ringwaiter waking the model only when a ring genuinely exists.
+func TestBuildSystemPrompt_DropsBlanketRingCheckMandate(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false)
+	if strings.Contains(got, "every single time you are prompted") {
+		t.Fatalf("expected the blanket per-cycle ring-check mandate to be gone, got: %s", got)
+	}
+	if strings.Contains(got, "rings.pending") {
+		t.Fatalf("expected no direct rings.pending mention -- ringwaiter owns this now, got: %s", got)
+	}
+}
+
 func TestParseJoinedRooms_ExtractsTopics(t *testing.T) {
 	got := parseJoinedRooms(`{"joined":[{"room_topic":"agents.room.a"},{"room_topic":"agents.room.b"}],"seen_on_central":[]}`)
 	want := []string{"agents.room.a", "agents.room.b"}
@@ -426,45 +371,37 @@ func TestParseJoinedRooms_MalformedResultReturnsNil(t *testing.T) {
 func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "from the human"
-	got, ok, src := nextEvent(context.Background(), ch, nil, time.Hour)
+	got, ok := nextEvent(context.Background(), ch, nil, nil)
 	if !ok || got != "from the human" {
 		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
-	}
-	if src != sourceHuman {
-		t.Fatalf("expected sourceHuman, got %v", src)
 	}
 }
 
 func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
 	mgr := roomwaiter.New(nil, "")
+	ringMgr := ringwaiter.New(nil, "")
 	ch := make(chan string, 1)
 	ch <- "human message"
 
-	got, ok, src := nextEvent(context.Background(), ch, mgr, time.Hour)
+	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr)
 	if !ok || got != "human message" {
 		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
-	}
-	if src != sourceHuman {
-		t.Fatalf("expected sourceHuman, got %v", src)
 	}
 }
 
 func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
 	mgr := roomwaiter.New(nil, "")
+	ringMgr := ringwaiter.New(nil, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	ch := make(chan string)
 
-	_, ok, _ := nextEvent(ctx, ch, mgr, time.Hour)
+	_, ok := nextEvent(ctx, ch, mgr, ringMgr)
 	if ok {
 		t.Fatalf("expected nextEvent to report !ok once ctx is done")
 	}
 }
 
-// Covers the ring-checking gap found while building #15: rings have no
-// blocking-wait primitive analogous to mesh_wait_room, so nextEvent must
-// wake up on its own periodically even with nothing else pending, or a
-// ring arriving during a quiet stretch would never be noticed.
 // fakeRoomWaiterCaller lets a test drive a real roomwaiter.Manager (via
 // Sync) without a real macula-mcp spawn -- roomwaiter.Caller is exported
 // exactly so cross-package callers like nextEvent's own tests can do this.
@@ -476,35 +413,47 @@ func (fakeRoomWaiterCaller) CallTool(ctx context.Context, name string, args map[
 
 func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
 	mgr := roomwaiter.New(fakeRoomWaiterCaller{}, "")
+	ringMgr := ringwaiter.New(nil, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mgr.Sync(ctx, []string{"agents.room.deadbeef"})
 
 	ch := make(chan string)
-	got, ok, src := nextEvent(ctx, ch, mgr, time.Hour)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
 	if !strings.Contains(got, "agents.room.deadbeef") {
 		t.Fatalf("expected the room arrival's prompt to name the room, got %q", got)
 	}
-	if src != sourceRoomArrival {
-		t.Fatalf("expected sourceRoomArrival, got %v", src)
-	}
 }
 
-func TestNextEvent_WakesOnTickIntervalWhenNothingElsePending(t *testing.T) {
-	mgr := roomwaiter.New(nil, "")
-	ch := make(chan string)
+// fakeRingWaiterCaller lets a test drive a real ringwaiter.Manager (via
+// Start) without a real macula-mcp spawn -- same reasoning as
+// fakeRoomWaiterCaller above.
+type fakeRingWaiterCaller struct{}
 
-	got, ok, src := nextEvent(context.Background(), ch, mgr, 10*time.Millisecond)
+func (fakeRingWaiterCaller) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	return `{"rings":{"pending":[{"ring_id":"r1","purpose":"come help","peer_petname":"Nova"}]}}`, nil
+}
+
+func TestNextEvent_ConsumesARealRingArrival(t *testing.T) {
+	orig := ringwaiter.PollInterval
+	ringwaiter.PollInterval = time.Millisecond
+	defer func() { ringwaiter.PollInterval = orig }()
+
+	mgr := roomwaiter.New(nil, "")
+	ringMgr := ringwaiter.New(fakeRingWaiterCaller{}, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ringMgr.Start(ctx)
+
+	ch := make(chan string)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
-	if src != sourceIdleTick {
-		t.Fatalf("expected sourceIdleTick, got %v", src)
-	}
-	if got != agentDefaultPrompt {
-		t.Fatalf("expected the tick to reuse agentDefaultPrompt (which already asks the model to check rings and rooms), got %q", got)
+	if !strings.Contains(got, "r1") || !strings.Contains(got, "Nova") || !strings.Contains(got, "come help") {
+		t.Fatalf("expected the ring arrival's prompt to name the ring/peer/purpose, got %q", got)
 	}
 }

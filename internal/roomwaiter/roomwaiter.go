@@ -48,7 +48,10 @@ const waitSeconds = 3600
 // initialBackoff for the main agent retry loop -- reused rather than
 // picked independently, so this codebase has one answer to "how fast do
 // we retry after an error," not two unexplained ones.
-const errorBackoff = 5 * time.Second
+// var, not const, so a test can shorten it (see
+// TestManager_ErrorBackoffForcesACheckAfterward) rather than waiting out
+// the real 5s -- never reassigned outside a test.
+var errorBackoff = 5 * time.Second
 
 // Manager runs one goroutine per joined room, each blocked in a real
 // mesh_wait_room call, and reports arrivals on a single channel.
@@ -168,6 +171,20 @@ func (m *Manager) watch(ctx context.Context, room string) {
 				return
 			case <-time.After(errorBackoff):
 			}
+			// Force a check after any error+backoff pause (found
+			// 2026-09-07, removing cmd/lazymesh's idle tick which had
+			// been accidentally covering this): the next mesh_wait_room
+			// call above computes its own afterId fresh, from
+			// lastFactId(topic) read at THAT call's own start (macula-
+			// mcp's rooms.ts) -- not from before this backoff began. An
+			// envelope that landed during this exact sleep is invisible
+			// to that next call's own window, permanently, not just
+			// delayed. enqueue is safe to call speculatively (idempotent
+			// while already pending, cleared again on the next real
+			// arrival if this one turns out unnecessary) -- worst case
+			// one redundant mesh_read_inbox(room_topic) the model didn't
+			// strictly need, never a silent loss.
+			m.enqueue(room)
 			continue
 		}
 		if arrived(result) {

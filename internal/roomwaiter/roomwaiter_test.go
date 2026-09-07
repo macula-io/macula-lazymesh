@@ -2,6 +2,7 @@ package roomwaiter
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,45 @@ func TestManager_ArrivalDedupUntilAck(t *testing.T) {
 	m.Ack("agents.room.a")
 	close(release)
 	cancel() // let the blocked second call return via ctx.Done(), ending the test cleanly
+}
+
+// TestManager_ErrorBackoffForcesACheckAfterward is a regression test for
+// the blind-spot Fable found 2026-09-07: mesh_wait_room's own afterId
+// baseline is read fresh at call time (macula-mcp's rooms.ts), so an
+// envelope landing during the error-backoff sleep was previously
+// invisible to the next call forever, not just delayed -- accidentally
+// covered until now by cmd/lazymesh's own idle tick, which is being
+// removed as part of the same change. Confirms watch() surfaces an
+// Arrival after an error+backoff pause even though the RETRY itself
+// (scripted to hang until ctx is cancelled, same as every other test
+// here) never reports one.
+func TestManager_ErrorBackoffForcesACheckAfterward(t *testing.T) {
+	callN := 0
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		callN++
+		if callN == 1 {
+			return "", errors.New("transient failure")
+		}
+		<-ctx.Done() // the retry after backoff -- never itself reports an arrival
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	orig := errorBackoff
+	errorBackoff = time.Millisecond
+	defer func() { errorBackoff = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Sync(ctx, []string{"agents.room.a"})
+
+	select {
+	case a := <-m.Arrivals():
+		if a.RoomTopic != "agents.room.a" {
+			t.Fatalf("unexpected arrival: %+v", a)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected an arrival forced after the error+backoff pause")
+	}
 }
 
 // TestManager_DroppedEnqueueClearsPendingSoTheRoomIsNotStuckForever is a

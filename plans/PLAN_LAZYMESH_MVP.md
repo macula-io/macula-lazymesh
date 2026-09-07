@@ -3,9 +3,16 @@
 **Status:** Phases 1, 2, and 3 implemented and live-verified. All three
 Fable-identified required security findings fixed (see "Security review
 findings" below). Loop-owned room listening (#14 spike, #15 real
-implementation) also shipped -- see its own section below.
+implementation) also shipped -- see its own section below. Loop-owned
+ring listening shipped 2026-09-07, removing the periodic idle tick #15
+itself introduced entirely (a real live instance ran that tick into a
+1M-token context crash) -- see "Runaway-context incident" section. #15's
+own separate "unplanned finding" (the full tool-schema array resent every
+round) is a real, still-open cost on every GENUINE cycle -- removing the
+idle tick only eliminates paying it for cycles that found nothing, not
+the underlying cost itself.
 **Created:** 2026-09-06
-**Last Updated:** 2026-09-06
+**Last Updated:** 2026-09-07
 
 ## Why this exists
 
@@ -1061,3 +1068,111 @@ routing), `cmd/lazymesh` (`buildSystemPrompt`/`nextEvent`/
 `parseJoinedRooms` unit tests plus 3 live tests: the old-design
 reproduction, the new-design fix, and the 3-minute sustained run). Full
 suite green, `go vet` clean, race-detector clean.
+
+## Runaway-context incident and loop-owned ring listening (2026-09-07)
+
+**The incident:** a real, long-running (21.5h) lazymesh instance hit a
+hard crash, verbatim from its own `agent.log`: `"This model's maximum
+context length is 1048576 tokens. However, you requested 1056557
+tokens..."` -- over a million tokens of history, stuck retrying the
+identical failing request (`consecutiveErrors` climbing toward
+`maxConsecutiveErrors`, never recovering, since nothing shrank the
+history in response to the error itself).
+
+**Root cause, found reading the real log, not just the code:**
+`buildSystemPrompt` and `agentDefaultPrompt` (#15's own periodic idle
+tick) both mandated an unscoped `mesh_read_inbox` (no `room_topic`) on
+every single cycle, mostly finding nothing new. One real call, measured
+directly: 75,100 bytes. ~1,300 of them logged over 21.5h. Stored verbatim
+in conversation history with no truncation; `trimHistory` capped by
+MESSAGE COUNT (200) alone, which a handful of 75KB messages blows through
+long before hitting.
+
+**Fixes, landed in dependency order (D -> A -> C -> B, coordinator-approved,
+each RED/GREEN unit-tested):**
+- **D**: `Loop.Usage()` existed with zero call sites anywhere -- wired
+  into a new `agent.log` `[usage]` line (per-cycle delta + running
+  total). Added DeepSeek's `prompt_cache_hit_tokens`/
+  `prompt_cache_miss_tokens` fields, previously silently dropped by
+  `json.Unmarshal` for having nowhere to land.
+- **A**: `agentDefaultPrompt`'s inbox check requested `limit: 3` instead
+  of the default 50/room (rings ignore `limit` entirely -- a separate,
+  fixed cap in macula-mcp's own `listRings`, confirmed against source --
+  so this loses no ring-answering reliability). `agentInitialPrompt` kept
+  the full default (one-time startup catch-up, genuinely needs it).
+- **C** (the fix that actually stops the crash): `trimHistory` is now
+  byte-aware (`maxHistoryBytes=250_000`) alongside the existing
+  message-count cap, and runs after every tool result within a `Say()`
+  call, not just once at its start (`Say` can span up to 25 rounds).
+  Added `maxToolResultBytes` as a second, independent safety net: an
+  oversized individual tool result is truncated before being stored
+  (full-fidelity version still reaches the `Event`/`agent.log` -- exactly
+  how this incident's own root cause was found).
+- **B**: the idle-tick interval backed off (doubling, 5-minute cap,
+  reset on real activity) instead of a flat 20s -- superseded days later
+  in this same section by removing the tick entirely; see below.
+
+**Fable's follow-up, found the same day:** the system prompt's own ring-
+check mandate ran on EVERY cycle regardless of trigger (idle tick, room
+arrival, human message) -- wider scope than `agentDefaultPrompt`'s own
+fix, so a room-arrival cycle alone could still trip the same unbounded-
+read failure mode via the system prompt's separate instruction. Fixed the
+same way (`limit: 3`).
+
+**R1, the bigger piece -- take ring-checking off the model entirely:**
+`internal/ringwaiter` (new package) replaces the system prompt's own
+former ring-check mandate. Rings have no blocking-wait primitive
+analogous to `mesh_wait_room` (confirmed against macula-mcp's source --
+no `wait_seconds` anywhere in `mesh_ring.ts`/`mesh_answer_ring.ts`), so
+this can't structurally mirror `roomwaiter` -- instead, one Go goroutine
+polls `mesh_read_inbox` (`limit: 1`) on a short, fixed interval (5s,
+`ringwaiter.PollInterval`), still zero LLM cost (same "deterministic
+harness plumbing, bypasses the model" pattern as `roomwaiter`/
+`sayGoodbye`). Surfaced ring IDs are tracked in a set (mirrors the TUI's
+own `seenRingIDs` in `ringpopup.go`) so a ring the model declines to act
+on doesn't re-wake it forever. `nextEvent` gained a third select case
+(`ringMgr.Arrivals()`); a new `ringArrivalPrompt` carries the ring's own
+details (id/purpose/petname) directly, no follow-up call needed.
+
+**Who answers a ring, decided rather than left implicit (coordinator-
+confirmed):** kept today's existing relationship exactly as-is -- the
+TUI's human-facing pop-up is primary, the model is the fallback answerer
+when `ringwaiter` wakes it (same race that already existed, just
+triggered efficiently now instead of via a wasteful blanket poll).
+Resolving that race was explicitly out of scope for this fix.
+
+**Idle tick removed entirely (coordinator-confirmed, matches the
+acceptance bar):** with both rooms (`roomwaiter`) and rings (`ringwaiter`)
+now event-driven, `ringCheckInterval`/`nextEvent`'s `time.After` branch
+and B's own idle-backoff machinery (`updateIdleInterval`) had nothing
+left to justify them -- removed, along with `agentDefaultPrompt` (no
+remaining caller once nothing ever re-nudges "check anything"; the one
+per-cycle nudge that still exists, `agentInitialPrompt`, runs exactly
+once at startup). Fable's own review of the same live instance found
+388/464 logged cycles were purely mechanical, empty `read_inbox`+`rooms`
+checks -- exactly the cost this removes. **A quiet mesh now produces zero
+`ChatCompletion` calls.**
+
+**Companion fix, not deferred (coordinator-confirmed it becomes live, not
+latent, the moment the idle tick is removed):** `roomwaiter.Manager`'s own
+error-backoff retry re-arms `mesh_wait_room` with an `afterId` baseline
+read fresh AT THAT CALL's own start (`lastFactId(topic)`, confirmed in
+macula-mcp's `rooms.ts`) -- an envelope landing during the `errorBackoff`
+sleep was invisible to that next call's own window, permanently. The
+idle tick had been accidentally covering this. Fixed: `watch()` now
+force-enqueues an Arrival right after the backoff sleep, unconditionally
+-- worst case one redundant `mesh_read_inbox(room_topic)` the model
+didn't strictly need, never a silent loss.
+
+All new/changed code covered: `internal/ringwaiter` (new package, unit
+tests including dedup-by-`ring_id`, `Start`/`Stop` idempotence, race-
+clean), `internal/roomwaiter` (the backoff-gap regression test,
+RED-confirmed against the pre-fix code via a temporarily-reverted diff),
+`internal/agent` (byte-aware `trimHistory`, mid-`Say` trimming,
+`truncateForHistory`, all RED/GREEN via a build-time revert since the new
+identifiers don't exist pre-fix), `internal/provider` (DeepSeek cache-hit/
+miss parsing), `cmd/lazymesh` (`nextEvent`'s signature simplified back to
+two return values once the idle-backoff machinery it was carrying
+`eventSource` for was removed; `buildSystemPrompt`/prompt tests updated
+to match). Full suite green, `go vet` clean, `gofmt` clean, race-detector
+clean throughout.

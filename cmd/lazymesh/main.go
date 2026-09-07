@@ -25,6 +25,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
@@ -130,6 +131,13 @@ func run(configPath, room, goalText string) error {
 	}
 	waiterMgr.Sync(ctx, initialRooms)
 
+	// Loop-owned ring listening (2026-09-07, replacing the system
+	// prompt's own former blanket ring-check mandate): same teardown
+	// ordering as waiterMgr above, deferred before client.Close().
+	ringMgr := ringwaiter.New(client, "")
+	defer ringMgr.Stop()
+	ringMgr.Start(ctx)
+
 	logPath, err := agentLogPath()
 	if err != nil {
 		return fmt.Errorf("resolve agent log path: %w", err)
@@ -148,7 +156,7 @@ func run(configPath, room, goalText string) error {
 	agentLog := log.New(logFile, "", log.LstdFlags)
 	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, waiterMgr, agentLog, tuiEvents, userInputCh)
+	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -323,29 +331,23 @@ func agentLogPath() (string, error) {
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
 func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle bool) string {
-	// The ring-check mesh_read_inbox call carries an explicit small limit
-	// (2026-09-07, Fable's follow-up on the runaway-context fix): this
-	// instruction fires every single cycle regardless of what triggered
-	// it (idle tick, room arrival, or a human message), which is a wider
-	// scope than agentDefaultPrompt's own already-fixed limit -- without
-	// this, the same unbounded-inbox failure mode could still occur via
-	// a room-arrival cycle, since that prompt's own text only scopes ONE
-	// room, but this system-prompt mandate covers every room regardless.
-	// Rings ignore this limit entirely (a separate, fixed cap in macula-
-	// mcp's own listRings, confirmed against its source), so shrinking it
-	// costs nothing ring-checking actually needs.
-	//
 	// Deliberately says nothing about why this changed (macula-io/macula-
 	// lazymesh#14/#15's own history) -- that belongs in code comments and
 	// the issue tracker, not in tokens sent to the model on every single
 	// cycle; the model only needs the current instruction.
+	//
+	// No longer mentions rings (2026-09-07, replacing the former blanket
+	// "every single time, call mesh_read_inbox with no room_topic and
+	// check rings.pending" mandate here): internal/ringwaiter now watches
+	// for a pending ring itself, at zero LLM cost, and wakes the model
+	// with a ring-specific prompt (see ringArrivalPrompt) only when one
+	// actually exists -- the model no longer needs to be told to go
+	// looking for one on every unrelated turn.
 	const waitingLine = "You do not need to wait for messages yourself: the harness is watching " +
-		"every room you are in and will prompt you the moment something new arrives there, or " +
-		"when a human sends you a message directly, or periodically if nothing else has happened " +
-		"in a while so you can check for anything the harness itself can't watch (like a ring). " +
-		"Do not call mesh_say/mesh_wait_room just to wait for a reply -- when you genuinely have " +
-		"nothing to add right now, reply briefly (or with nothing) and your turn simply ends " +
-		"until the harness wakes you again."
+		"every room you are in (and separately watching for any ring addressed to you) and will " +
+		"prompt you the moment something new arrives. Do not call mesh_say/mesh_wait_room just to " +
+		"wait for a reply -- when you genuinely have nothing to add right now, reply briefly (or " +
+		"with nothing) and your turn simply ends until the harness wakes you again."
 	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
 		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
 		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
@@ -375,18 +377,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"have already joined -- never call mesh_join_room for a room_topic already "+
 			"in that list, even if you don't recall joining it earlier in this "+
 			"conversation; check mesh_rooms fresh each time instead of relying on "+
-			"conversation memory, which gets trimmed. "+
-			"IMPORTANT, every single time you are prompted (not just when told to): call "+
-			"mesh_read_inbox with no room_topic argument and limit: 3 (small on purpose -- "+
-			"this is for checking rings, which ignore this limit entirely and are unaffected "+
-			"by it; call mesh_read_inbox again for one specific room_topic, with its own "+
-			"default limit, when you actually need that room's fuller history) and "+
-			"check its rings.pending list for anything addressed to you from ANY peer, not "+
-			"just people already in a room you're in. If one is pending, decide whether to "+
-			"accept or decline based on its stated purpose and call mesh_answer_ring -- "+
-			"never leave a ring sitting there unanswered just because it's not about a room "+
-			"you were already in; accepting one puts you in a new room, which becomes part "+
-			"of your scope from then on too. %s",
+			"conversation memory, which gets trimmed. %s",
 		toolsLine, roomHint, waitingLine)
 	if expressiveStyle {
 		systemPrompt += " Feel free to be expressive in room conversation (mesh_say text) when " +
@@ -404,12 +395,14 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // program runs; room and goalText are optional hints, not a scope
 // restriction -- the model discovers and participates in every room it is
 // currently a member of via mesh_rooms, regardless of whether either is
-// set. Every round the LLM decides what to do (join, talk, answer rings)
-// -- waiting itself is waiterMgr's job now (macula-io/macula-lazymesh#14/
-// #15), not something the model asks for; this function supplies the
-// cadence of asking it to keep going, driven by real events rather than
-// the model's own long tool-call waits.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle bool, waiterMgr *roomwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+// set. Every round the LLM decides what to do (join, talk, answer rings
+// when told about one) -- waiting itself is waiterMgr's (rooms) and
+// ringMgr's (rings) job now (macula-io/macula-lazymesh#14/#15, rings
+// 2026-09-07), not something the model asks for or checks periodically;
+// this function supplies the cadence of asking it to keep going, driven
+// by real events rather than the model's own long tool-call waits or a
+// periodic re-check.
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle bool, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
 	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle)
 
 	loop := agent.NewLoop(p, tools, systemPrompt)
@@ -447,7 +440,6 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	const maxConsecutiveErrors = 8
 	consecutiveErrors := 0
 	backoff := initialBackoff
-	idleInterval := ringCheckInterval
 
 	prompt := agentInitialPrompt
 	for {
@@ -472,9 +464,7 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 			backoff = nextBackoff(backoff)
 			events <- agent.Event{Kind: agent.EventListening}
 			var ok bool
-			var src eventSource
-			prompt, ok, src = nextEvent(ctx, userInputCh, waiterMgr, idleInterval)
-			idleInterval = updateIdleInterval(idleInterval, src)
+			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 			if !ok {
 				return
 			}
@@ -485,9 +475,7 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 		logCycleUsage(agentLog, usageBefore, loop.Usage())
 		events <- agent.Event{Kind: agent.EventListening}
 		var ok bool
-		var src eventSource
-		prompt, ok, src = nextEvent(ctx, userInputCh, waiterMgr, idleInterval)
-		idleInterval = updateIdleInterval(idleInterval, src)
+		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 		if !ok {
 			return
 		}
@@ -535,63 +523,6 @@ func nextPrompt(userInputCh <-chan string, defaultPrompt string) string {
 	}
 }
 
-// ringCheckInterval is how often nextEvent wakes up on its own when
-// nothing else is pending, to make one cheap mesh_read_inbox/mesh_rooms
-// check via the model. Rings have no blocking-wait primitive analogous
-// to mesh_wait_room (confirmed against macula-mcp's own source -- rings
-// are RPC-delivered, not room pubsub, and mesh_read_inbox's own doc
-// only ever describes an instant local read, never a wait_seconds
-// param); without this, a ring arriving while every room is quiet would
-// sit unanswered indefinitely, since nothing else would ever wake the
-// loop to look. This is exactly macula-mcp's own mesh://etiquette
-// "waiting for something, without polling" option 3 (a harness-scheduled
-// periodic cheap check, explicitly recommended for anything without its
-// own blocking primitive) -- not an invented workaround, and not the
-// "manual sleep and re-poll" anti-pattern that same doc warns against:
-// this frees the loop's turn entirely between checks, it doesn't hold
-// one open.
-const ringCheckInterval = 20 * time.Second
-
-// maxIdleTickInterval caps how far runAgent lets the idle-tick interval
-// grow (2026-09-07, the runaway-context incident): a flat 20s tick pays
-// a full LLM turn's cost -- system prompt, tool schemas, and (before the
-// same incident's other fixes) a full mesh-wide inbox re-read -- for a
-// response that's almost always "nothing new." Real cycle spacing
-// measured against a live instance's agent.log already ran well past
-// 20s once history had grown large, showing the flat interval wasn't
-// even being honored precisely in practice. Doubling on each
-// idle-tick-sourced cycle (see updateIdleInterval) and resetting the
-// instant real activity arrives keeps a quiet stretch cheap without
-// making a ring wait arbitrarily long -- 5 minutes is still frequent
-// enough that nothing addressed to this agent sits unanswered for long,
-// while cutting idle-cycle volume roughly 15x at the ceiling versus the
-// flat 20s tick.
-const maxIdleTickInterval = 5 * time.Minute
-
-// eventSource is nextEvent's own classification of what woke it, so its
-// caller can distinguish "real activity, go back to being responsive"
-// from "just the idle tick again, worth backing off further" without
-// nextEvent needing to carry that policy itself.
-type eventSource int
-
-const (
-	sourceHuman eventSource = iota
-	sourceRoomArrival
-	sourceIdleTick
-)
-
-// updateIdleInterval is runAgent's idle-tick backoff policy: grow on a
-// tick that found nothing (src == sourceIdleTick), reset the instant
-// something real happens. Pulled out as its own pure function so the
-// policy has a direct test independent of nextEvent's own channel/timer
-// plumbing -- same reasoning as nextBackoff's own doc comment.
-func updateIdleInterval(current time.Duration, src eventSource) time.Duration {
-	if src == sourceIdleTick {
-		return doubleCapped(current, maxIdleTickInterval)
-	}
-	return ringCheckInterval
-}
-
 // roomArrivalPrompt is what a room's Arrival becomes as the next Say()
 // prompt -- reuses the model's existing, already-allowlisted
 // mesh_read_inbox tool-use pattern rather than carrying raw envelope
@@ -604,73 +535,94 @@ func roomArrivalPrompt(room string) string {
 	)
 }
 
+// ringArrivalPrompt is what a ringwaiter.Ring becomes as the next Say()
+// prompt (2026-09-07, replacing the system prompt's own former blanket
+// ring-check mandate): unlike roomArrivalPrompt, this carries the ring's
+// own details directly rather than pointing the model at another tool
+// call first -- ringwaiter already read them, and there is no cheaper,
+// ring-scoped follow-up call to make instead the way
+// mesh_read_inbox(room_topic=...) is for a room.
+//
+// Deliberately does not try to resolve the race with the TUI's own
+// human-facing ring pop-up (internal/tui/ringpopup.go) -- that relationship
+// (human-popup-primary, model as fallback answerer) already exists today
+// and is out of scope here; see ringpopup.go's own comment on Esc leaving
+// a ring for runAgent's per-cycle checking to still pick up.
+func ringArrivalPrompt(r ringwaiter.Ring) string {
+	return fmt.Sprintf(
+		"A ring is pending from %s: %q (ring_id=%s). Decide whether to accept or decline based on "+
+			"its stated purpose and call mesh_answer_ring for this ring_id -- no need to check any "+
+			"other room or ring, just this one. Accepting puts you in a new room, which becomes "+
+			"part of your scope from then on too.",
+		r.FromPetname, r.Purpose, r.RingID,
+	)
+}
+
 // nextEvent replaced nextPrompt's instant fallback (macula-io/macula-
 // lazymesh#14/#15): it BLOCKS until there is an actual reason to run
-// another Say() round -- a human message, a room arrival, or the
-// periodic ring-check tick -- rather than looping the provider for free
-// on a synthetic "check for anything new" prompt every cycle. That
-// instant fallback was exactly right for the OLD design (the model's own
-// long mesh_say wait supplied the pacing); once that wait moved out of
-// the model's own tool-calling turn, something has to supply it here
-// instead.
+// another Say() round -- a human message, a room arrival, or a ring
+// arrival -- rather than looping the provider for free on a synthetic
+// "check for anything new" prompt every cycle. That instant fallback was
+// exactly right for the OLD design (the model's own long mesh_say wait
+// supplied the pacing); once that wait moved out of the model's own
+// tool-calling turn, something has to supply it here instead.
+//
+// No periodic idle tick (2026-09-07, removed once ringwaiter covered
+// rings the same zero-LLM-cost way roomwaiter already covers rooms):
+// with both signal types now event-driven, a periodic "check anyway"
+// fallback had nothing left to justify it -- Fable's own review of a
+// live instance found 388/464 cycles were purely mechanical, empty
+// read_inbox+rooms checks, exactly the cost this removes. A quiet mesh
+// now produces zero ChatCompletion calls.
 //
 // Fairness/priority policy (Atlas's flagged gap in #14, made a real,
 // deliberate decision for #15 rather than left as a spike-only
 // tradeoff): human input is checked non-blockingly FIRST, so an
 // already-pending human message always wins outright. Only once nothing
 // is immediately pending does this block on a real select across every
-// channel -- in the rare case a human message and a room arrival become
-// ready at the exact same instant during that block, Go's own
-// select-among-ready-cases randomization decides, not a strict priority.
-// Closing this fully would mean a second, always-running non-blocking
-// check loop (spin on userInputCh between every select wakeup instead of
-// trusting the select itself), trading a rare, microsecond-scale tie for
-// a permanently more complex loop -- judged not worth it: the spike
-// measured human-input pickup at ~1 microsecond when nothing else was
-// ready, so the window where a genuine tie is even possible is only ever
-// a few microseconds wide. Room-arrival fairness AMONG rooms is
-// roomwaiter.Manager's own job (see its doc comment): this function just
-// consumes whatever it hands back.
+// channel -- in the rare case two sources become ready at the exact same
+// instant during that block, Go's own select-among-ready-cases
+// randomization decides, not a strict priority. Closing this fully would
+// mean a second, always-running non-blocking check loop (spin on
+// userInputCh between every select wakeup instead of trusting the select
+// itself), trading a rare, microsecond-scale tie for a permanently more
+// complex loop -- judged not worth it: the spike measured human-input
+// pickup at ~1 microsecond when nothing else was ready, so the window
+// where a genuine tie is even possible is only ever a few microseconds
+// wide. Room-arrival fairness AMONG rooms is roomwaiter.Manager's own
+// job (see its doc comment); ring fairness is ringwaiter.Manager's own
+// (surfaced-set keyed on ring_id) -- this function just consumes
+// whatever each hands back.
 //
-// waiterMgr == nil is a defensive fallback, never hit in production
-// (cmd/lazymesh always constructs a real Manager) -- preserves
-// nextPrompt's old behavior so a future caller that somehow doesn't have
-// one yet still gets a safe, tested default rather than a nil-pointer
-// panic. tickInterval is the CURRENT idle-tick interval (runAgent's own
-// idleInterval, grown/reset via updateIdleInterval -- ringCheckInterval
-// only at startup or right after real activity), parameterized so a test
-// can use a short interval instead of waiting for real.
+// waiterMgr == nil or ringMgr == nil is a defensive fallback, never hit
+// in production (cmd/lazymesh always constructs real Managers) --
+// preserves nextPrompt's old behavior so a future caller that somehow
+// doesn't have one yet still gets a safe, tested default rather than a
+// nil-pointer panic.
 //
 // Returns ok=false only when ctx is done -- the caller should stop the
-// loop, not call Say with an empty prompt. The returned eventSource lets
-// the caller feed updateIdleInterval without this function needing to
-// own that policy itself.
-func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, tickInterval time.Duration) (string, bool, eventSource) {
-	if waiterMgr == nil {
-		select {
-		case msg := <-userInputCh:
-			return msg, true, sourceHuman
-		default:
-			return agentDefaultPrompt, true, sourceIdleTick
-		}
+// loop, not call Say with an empty prompt.
+func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager) (string, bool) {
+	if waiterMgr == nil || ringMgr == nil {
+		return nextPrompt(userInputCh, "check for anything new"), true
 	}
 
 	select {
 	case msg := <-userInputCh:
-		return msg, true, sourceHuman
+		return msg, true
 	default:
 	}
 
 	select {
 	case <-ctx.Done():
-		return "", false, sourceIdleTick
+		return "", false
 	case msg := <-userInputCh:
-		return msg, true, sourceHuman
+		return msg, true
 	case arrival := <-waiterMgr.Arrivals():
 		waiterMgr.Ack(arrival.RoomTopic)
-		return roomArrivalPrompt(arrival.RoomTopic), true, sourceRoomArrival
-	case <-time.After(tickInterval):
-		return agentDefaultPrompt, true, sourceIdleTick
+		return roomArrivalPrompt(arrival.RoomTopic), true
+	case ring := <-ringMgr.Arrivals():
+		return ringArrivalPrompt(ring), true
 	}
 }
 
@@ -712,65 +664,42 @@ const (
 	maxBackoff     = 2 * time.Minute
 )
 
-// agentDefaultPrompt/agentInitialPrompt are runAgent's per-cycle nudges,
-// hoisted to package level (rather than local consts inside runAgent) so
-// their room-scoping content has a direct unit test.
+// agentInitialPrompt is runAgent's one-time startup nudge, hoisted to
+// package level (rather than a local const inside runAgent) so its
+// room-scoping content has a direct unit test. Runs exactly once, when
+// there is genuinely no prior context yet to catch up on -- every cycle
+// after this one is driven by a specific human message, room arrival, or
+// ring arrival instead (see nextEvent), not a repeated generic nudge.
+//
+// Still mentions rings explicitly, unlike everything after it (2026-09-07,
+// once internal/ringwaiter took over ongoing ring-checking): ringwaiter's
+// own first poll fires after PollInterval (a few seconds) from process
+// start, so a ring that arrived just before this process started could
+// otherwise sit uncaught for that brief window -- checking once here too
+// is a one-time, low-cost redundancy for startup correctness, not the
+// ongoing per-cycle waste that made the old blanket mandate a problem.
 //
 // Investigated 2026-09-06 after a live "ring stuck deferred" report -- that
 // specific incident turned out to be an instance Raf stopped himself
 // mid-test, not a bug, but the underlying gap is real regardless: the
 // system prompt alone saying "answer any ring addressed to you" wasn't
 // reliably driving the model to actually check for one, since every
-// per-turn prompt only ever mentioned "the room." Both prompts say it
-// explicitly, every cycle, not just once at the start of the conversation.
-// Extended macula-io/macula-lazymesh#1 (2026-09-06): "the room" is now
-// "every room mesh_rooms reports," not one hardcoded topic -- a room
-// joined later via an accepted ring must stay in scope too.
-//
-// agentDefaultPrompt's mesh_read_inbox call carries an explicit small
-// limit (2026-09-07, investigating the runaway-context incident):
-// mesh_read_inbox's default (50 messages PER joined room, no cap on room
-// count) is right for genuinely catching up, but agentDefaultPrompt runs
-// on EVERY idle tick (ringCheckInterval, currently every 20s), almost
-// always finding nothing new -- measured directly against a real
-// instance's agent.log: one default-limit call = 75KB, ~1,300 of them
-// logged over 21.5h, the direct cause of that instance exceeding a
-// 1M-token context window. Rings are unaffected by this limit --
-// mesh_read_inbox's own source (macula-mcp's listRings) uses a separate,
-// fixed cap of its own, not the caller's limit param -- so shrinking this
-// loses no ring-answering reliability, only the redundant bulk of
-// already-seen room history re-fetched for no reason. agentInitialPrompt
-// deliberately keeps the default: it runs exactly once, at startup, when
-// there genuinely is no prior context yet to catch up on.
-const (
-	agentDefaultPrompt = "First, call mesh_read_inbox (no room_topic, limit: 3) and answer any pending ring " +
-		"addressed to you via mesh_answer_ring, from any peer. Then call mesh_rooms and check " +
-		"every room you are currently a member of for anything new since your last check, " +
-		"responding if warranted -- not just the room you were originally pointed at, if any. " +
-		"The small limit here is deliberate: this runs on every idle check, and pending rings " +
-		"are unaffected by it -- call mesh_read_inbox again for one specific room_topic (its " +
-		"own default limit) if you need to actually catch up on a room's fuller history."
-	agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
-		"addressed to you via mesh_answer_ring. Then call mesh_rooms; join any room you were " +
-		"pointed at only if its room_topic is not already in mesh_rooms's own joined list, and " +
-		"start participating in every room you are a member of."
-)
+// per-turn prompt only ever mentioned "the room." Extended macula-io/
+// macula-lazymesh#1 (2026-09-06): "the room" is now "every room
+// mesh_rooms reports," not one hardcoded topic -- a room joined later via
+// an accepted ring must stay in scope too.
+const agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+	"addressed to you via mesh_answer_ring. Then call mesh_rooms; join any room you were " +
+	"pointed at only if its room_topic is not already in mesh_rooms's own joined list, and " +
+	"start participating in every room you are a member of."
 
 // nextBackoff doubles d, capped at maxBackoff -- pulled out as a pure
 // function so the growth/cap behavior has its own test independent of the
 // retry loop's I/O.
 func nextBackoff(d time.Duration) time.Duration {
-	return doubleCapped(d, maxBackoff)
-}
-
-// doubleCapped doubles d, capped at max -- the shared growth/cap shape
-// behind both nextBackoff (error retries) and updateIdleInterval (the
-// idle tick, 2026-09-07): same doubling policy, two different ceilings
-// for two different reasons to back off.
-func doubleCapped(d, max time.Duration) time.Duration {
 	d *= 2
-	if d > max {
-		return max
+	if d > maxBackoff {
+		return maxBackoff
 	}
 	return d
 }
