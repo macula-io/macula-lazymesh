@@ -432,12 +432,14 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 	const maxConsecutiveErrors = 8
 	consecutiveErrors := 0
 	backoff := initialBackoff
+	idleInterval := ringCheckInterval
 
 	prompt := agentInitialPrompt
 	for {
 		if ctx.Err() != nil {
 			return
 		}
+		usageBefore := loop.Usage()
 		if err := loop.Say(ctx, prompt, events); err != nil {
 			consecutiveErrors++
 			agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, consecutiveErrors, maxConsecutiveErrors)
@@ -455,7 +457,9 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 			backoff = nextBackoff(backoff)
 			events <- agent.Event{Kind: agent.EventListening}
 			var ok bool
-			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringCheckInterval)
+			var src eventSource
+			prompt, ok, src = nextEvent(ctx, userInputCh, waiterMgr, idleInterval)
+			idleInterval = updateIdleInterval(idleInterval, src)
 			if !ok {
 				return
 			}
@@ -463,13 +467,38 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 		}
 		consecutiveErrors = 0
 		backoff = initialBackoff
+		logCycleUsage(agentLog, usageBefore, loop.Usage())
 		events <- agent.Event{Kind: agent.EventListening}
 		var ok bool
-		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringCheckInterval)
+		var src eventSource
+		prompt, ok, src = nextEvent(ctx, userInputCh, waiterMgr, idleInterval)
+		idleInterval = updateIdleInterval(idleInterval, src)
 		if !ok {
 			return
 		}
 	}
+}
+
+// logCycleUsage reports both this cycle's own token cost (the delta since
+// usageBefore) and the running total, so an operator watching agent.log
+// sees cost accumulate live instead of only discovering it after a hard
+// context-length failure (found investigating the 2026-09-07 runaway-
+// context incident: Loop.Usage() existed already but had zero call sites
+// anywhere in this codebase). cacheHit/cacheMiss are 0/0 on a backend
+// that doesn't report the split (NVIDIA, currently) -- printed anyway
+// rather than omitted, so their being zero is visible as a fact about
+// that backend, not silently missing output a reader might mistake for a
+// bug.
+func logCycleUsage(agentLog *log.Logger, before, after provider.Usage) {
+	agentLog.Printf(
+		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d) -- running total: %d tokens",
+		after.PromptTokens-before.PromptTokens,
+		after.CompletionTokens-before.CompletionTokens,
+		after.TotalTokens-before.TotalTokens,
+		after.PromptCacheHitTokens-before.PromptCacheHitTokens,
+		after.PromptCacheMissTokens-before.PromptCacheMissTokens,
+		after.TotalTokens,
+	)
 }
 
 // nextPrompt prefers a message the human composed in the TUI (drained
@@ -507,6 +536,46 @@ func nextPrompt(userInputCh <-chan string, defaultPrompt string) string {
 // this frees the loop's turn entirely between checks, it doesn't hold
 // one open.
 const ringCheckInterval = 20 * time.Second
+
+// maxIdleTickInterval caps how far runAgent lets the idle-tick interval
+// grow (2026-09-07, the runaway-context incident): a flat 20s tick pays
+// a full LLM turn's cost -- system prompt, tool schemas, and (before the
+// same incident's other fixes) a full mesh-wide inbox re-read -- for a
+// response that's almost always "nothing new." Real cycle spacing
+// measured against a live instance's agent.log already ran well past
+// 20s once history had grown large, showing the flat interval wasn't
+// even being honored precisely in practice. Doubling on each
+// idle-tick-sourced cycle (see updateIdleInterval) and resetting the
+// instant real activity arrives keeps a quiet stretch cheap without
+// making a ring wait arbitrarily long -- 5 minutes is still frequent
+// enough that nothing addressed to this agent sits unanswered for long,
+// while cutting idle-cycle volume roughly 15x at the ceiling versus the
+// flat 20s tick.
+const maxIdleTickInterval = 5 * time.Minute
+
+// eventSource is nextEvent's own classification of what woke it, so its
+// caller can distinguish "real activity, go back to being responsive"
+// from "just the idle tick again, worth backing off further" without
+// nextEvent needing to carry that policy itself.
+type eventSource int
+
+const (
+	sourceHuman eventSource = iota
+	sourceRoomArrival
+	sourceIdleTick
+)
+
+// updateIdleInterval is runAgent's idle-tick backoff policy: grow on a
+// tick that found nothing (src == sourceIdleTick), reset the instant
+// something real happens. Pulled out as its own pure function so the
+// policy has a direct test independent of nextEvent's own channel/timer
+// plumbing -- same reasoning as nextBackoff's own doc comment.
+func updateIdleInterval(current time.Duration, src eventSource) time.Duration {
+	if src == sourceIdleTick {
+		return doubleCapped(current, maxIdleTickInterval)
+	}
+	return ringCheckInterval
+}
 
 // roomArrivalPrompt is what a room's Arrival becomes as the next Say()
 // prompt -- reuses the model's existing, already-allowlisted
@@ -552,32 +621,41 @@ func roomArrivalPrompt(room string) string {
 // (cmd/lazymesh always constructs a real Manager) -- preserves
 // nextPrompt's old behavior so a future caller that somehow doesn't have
 // one yet still gets a safe, tested default rather than a nil-pointer
-// panic. tickInterval is ringCheckInterval in production, parameterized
-// so a test can use a short interval instead of waiting 20s for real.
+// panic. tickInterval is the CURRENT idle-tick interval (runAgent's own
+// idleInterval, grown/reset via updateIdleInterval -- ringCheckInterval
+// only at startup or right after real activity), parameterized so a test
+// can use a short interval instead of waiting for real.
 //
 // Returns ok=false only when ctx is done -- the caller should stop the
-// loop, not call Say with an empty prompt.
-func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, tickInterval time.Duration) (string, bool) {
+// loop, not call Say with an empty prompt. The returned eventSource lets
+// the caller feed updateIdleInterval without this function needing to
+// own that policy itself.
+func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, tickInterval time.Duration) (string, bool, eventSource) {
 	if waiterMgr == nil {
-		return nextPrompt(userInputCh, agentDefaultPrompt), true
+		select {
+		case msg := <-userInputCh:
+			return msg, true, sourceHuman
+		default:
+			return agentDefaultPrompt, true, sourceIdleTick
+		}
 	}
 
 	select {
 	case msg := <-userInputCh:
-		return msg, true
+		return msg, true, sourceHuman
 	default:
 	}
 
 	select {
 	case <-ctx.Done():
-		return "", false
+		return "", false, sourceIdleTick
 	case msg := <-userInputCh:
-		return msg, true
+		return msg, true, sourceHuman
 	case arrival := <-waiterMgr.Arrivals():
 		waiterMgr.Ack(arrival.RoomTopic)
-		return roomArrivalPrompt(arrival.RoomTopic), true
+		return roomArrivalPrompt(arrival.RoomTopic), true, sourceRoomArrival
 	case <-time.After(tickInterval):
-		return agentDefaultPrompt, true
+		return agentDefaultPrompt, true, sourceIdleTick
 	}
 }
 
@@ -633,11 +711,30 @@ const (
 // Extended macula-io/macula-lazymesh#1 (2026-09-06): "the room" is now
 // "every room mesh_rooms reports," not one hardcoded topic -- a room
 // joined later via an accepted ring must stay in scope too.
+//
+// agentDefaultPrompt's mesh_read_inbox call carries an explicit small
+// limit (2026-09-07, investigating the runaway-context incident):
+// mesh_read_inbox's default (50 messages PER joined room, no cap on room
+// count) is right for genuinely catching up, but agentDefaultPrompt runs
+// on EVERY idle tick (ringCheckInterval, currently every 20s), almost
+// always finding nothing new -- measured directly against a real
+// instance's agent.log: one default-limit call = 75KB, ~1,300 of them
+// logged over 21.5h, the direct cause of that instance exceeding a
+// 1M-token context window. Rings are unaffected by this limit --
+// mesh_read_inbox's own source (macula-mcp's listRings) uses a separate,
+// fixed cap of its own, not the caller's limit param -- so shrinking this
+// loses no ring-answering reliability, only the redundant bulk of
+// already-seen room history re-fetched for no reason. agentInitialPrompt
+// deliberately keeps the default: it runs exactly once, at startup, when
+// there genuinely is no prior context yet to catch up on.
 const (
-	agentDefaultPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+	agentDefaultPrompt = "First, call mesh_read_inbox (no room_topic, limit: 3) and answer any pending ring " +
 		"addressed to you via mesh_answer_ring, from any peer. Then call mesh_rooms and check " +
 		"every room you are currently a member of for anything new since your last check, " +
-		"responding if warranted -- not just the room you were originally pointed at, if any."
+		"responding if warranted -- not just the room you were originally pointed at, if any. " +
+		"The small limit here is deliberate: this runs on every idle check, and pending rings " +
+		"are unaffected by it -- call mesh_read_inbox again for one specific room_topic (its " +
+		"own default limit) if you need to actually catch up on a room's fuller history."
 	agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
 		"addressed to you via mesh_answer_ring. Then call mesh_rooms; join any room you were " +
 		"pointed at only if its room_topic is not already in mesh_rooms's own joined list, and " +
@@ -648,9 +745,17 @@ const (
 // function so the growth/cap behavior has its own test independent of the
 // retry loop's I/O.
 func nextBackoff(d time.Duration) time.Duration {
+	return doubleCapped(d, maxBackoff)
+}
+
+// doubleCapped doubles d, capped at max -- the shared growth/cap shape
+// behind both nextBackoff (error retries) and updateIdleInterval (the
+// idle tick, 2026-09-07): same doubling policy, two different ceilings
+// for two different reasons to back off.
+func doubleCapped(d, max time.Duration) time.Duration {
 	d *= 2
-	if d > maxBackoff {
-		return maxBackoff
+	if d > max {
+		return max
 	}
 	return d
 }

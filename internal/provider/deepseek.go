@@ -90,6 +90,11 @@ type dsUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// DeepSeek-specific (silently zero, not an error, on a backend --
+	// NVIDIA included -- that doesn't report this split): automatic
+	// server-side prefix-cache accounting.
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 }
 
 type dsChatResponse struct {

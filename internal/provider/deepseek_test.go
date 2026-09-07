@@ -88,6 +88,34 @@ func TestDeepSeek_ChatCompletion_APIErrorSurfaced(t *testing.T) {
 	}
 }
 
+// Found investigating the 2026-09-07 runaway-context incident:
+// prompt_cache_hit_tokens/prompt_cache_miss_tokens were present in
+// DeepSeek's real usage object but had no field to land in, so were
+// silently dropped -- this pins that they now parse through.
+func TestDeepSeek_ChatCompletion_UsageIncludesCacheHitMiss(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi"}}],` +
+			`"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,` +
+			`"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}`))
+	}))
+	defer srv.Close()
+
+	d := NewDeepSeek(srv.URL, "deepseek-v4-flash", "test-key", nil)
+	resp, err := d.ChatCompletion(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion returned error: %v", err)
+	}
+	if resp.Usage.PromptCacheHitTokens != 80 {
+		t.Fatalf("expected PromptCacheHitTokens=80, got %d", resp.Usage.PromptCacheHitTokens)
+	}
+	if resp.Usage.PromptCacheMissTokens != 20 {
+		t.Fatalf("expected PromptCacheMissTokens=20, got %d", resp.Usage.PromptCacheMissTokens)
+	}
+}
+
 func TestDeepSeek_Defaults(t *testing.T) {
 	d := NewDeepSeek("", "", "key", nil)
 	if d.BaseURL != DeepSeekDefaultBaseURL {

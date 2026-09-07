@@ -55,10 +55,20 @@ type ChatRequest struct {
 // rather than an error when unavailable. Added for macula-io/macula-
 // lazymesh#14/#15 (the room-waiter concurrency work): measuring token
 // cost needed real numbers, not an estimate.
+//
+// PromptCacheHitTokens/PromptCacheMissTokens (added investigating the
+// 2026-09-07 runaway-context incident): DeepSeek's API reports these in
+// its usage object -- automatic server-side prefix caching, no request-
+// side opt-in needed -- but nothing in this codebase previously captured
+// them, so "is caching actually working" was unanswerable from here.
+// Zero on backends that don't report the split, same as the other
+// fields.
 type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	PromptTokens          int
+	CompletionTokens      int
+	TotalTokens           int
+	PromptCacheHitTokens  int
+	PromptCacheMissTokens int
 }
 
 // ChatResponse is the assistant's reply to a ChatRequest.

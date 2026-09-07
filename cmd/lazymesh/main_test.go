@@ -36,6 +36,43 @@ func TestNextBackoff_DoublesUntilCap(t *testing.T) {
 	}
 }
 
+// Covers the 2026-09-07 idle-tick backoff fix: a flat 20s tick paid a
+// full LLM turn's cost on every idle check regardless of how long the
+// mesh had actually been quiet. This pins the growth behavior
+// independent of nextEvent's own channel/timer plumbing, same reasoning
+// as TestNextBackoff_DoublesUntilCap above.
+func TestUpdateIdleInterval_GrowsOnIdleTickCapsAtMax(t *testing.T) {
+	d := ringCheckInterval
+	seen := []time.Duration{d}
+	for i := 0; i < 10; i++ {
+		d = updateIdleInterval(d, sourceIdleTick)
+		seen = append(seen, d)
+	}
+	if seen[1] != 2*ringCheckInterval {
+		t.Fatalf("expected first doubling to be %v, got %v", 2*ringCheckInterval, seen[1])
+	}
+	for _, d := range seen {
+		if d > maxIdleTickInterval {
+			t.Fatalf("idle interval exceeded the cap: %v > %v", d, maxIdleTickInterval)
+		}
+	}
+	if seen[len(seen)-1] != maxIdleTickInterval {
+		t.Fatalf("expected idle interval to have reached the cap after repeated idle ticks, got %v", seen[len(seen)-1])
+	}
+}
+
+func TestUpdateIdleInterval_RealActivityResetsToRingCheckInterval(t *testing.T) {
+	grown := updateIdleInterval(maxIdleTickInterval, sourceIdleTick) // already at the cap
+	if grown != maxIdleTickInterval {
+		t.Fatalf("expected the cap to hold under another idle tick, got %v", grown)
+	}
+	for _, src := range []eventSource{sourceHuman, sourceRoomArrival} {
+		if got := updateIdleInterval(maxIdleTickInterval, src); got != ringCheckInterval {
+			t.Fatalf("expected real activity (source %v) to reset the interval to %v, got %v", src, ringCheckInterval, got)
+		}
+	}
+}
+
 func TestProviderLabel_MatchesBuildProviderDefault(t *testing.T) {
 	// buildProvider's own switch treats "" the same as "deepseek" -- the
 	// status strip must show that resolved default, never a blank
@@ -240,6 +277,21 @@ func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
 	}
 }
 
+// Covers the 2026-09-07 runaway-context fix: the periodic idle-tick
+// prompt must not re-request the full, unscoped mesh_read_inbox default
+// (50 messages per joined room, no room cap) on every single cycle --
+// that's what drove a real instance past a 1M-token context window. The
+// one-time startup prompt deliberately keeps the full default since it
+// has genuinely nothing to catch up on yet.
+func TestAgentDefaultPrompt_RequestsSmallInboxLimitUnlikeInitialPrompt(t *testing.T) {
+	if !strings.Contains(agentDefaultPrompt, "limit: 3") {
+		t.Fatalf("expected agentDefaultPrompt to request a small mesh_read_inbox limit on the periodic idle check, got: %s", agentDefaultPrompt)
+	}
+	if strings.Contains(agentInitialPrompt, "limit:") {
+		t.Fatalf("expected agentInitialPrompt to keep mesh_read_inbox's full default limit for the one-time startup catch-up, got: %s", agentInitialPrompt)
+	}
+}
+
 func TestAgentPrompts_CoverEveryRoomNotJustOnePinned(t *testing.T) {
 	for name, p := range map[string]string{
 		"agentDefaultPrompt": agentDefaultPrompt,
@@ -361,9 +413,12 @@ func TestParseJoinedRooms_MalformedResultReturnsNil(t *testing.T) {
 func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "from the human"
-	got, ok := nextEvent(context.Background(), ch, nil, time.Hour)
+	got, ok, src := nextEvent(context.Background(), ch, nil, time.Hour)
 	if !ok || got != "from the human" {
 		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
+	}
+	if src != sourceHuman {
+		t.Fatalf("expected sourceHuman, got %v", src)
 	}
 }
 
@@ -372,9 +427,12 @@ func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "human message"
 
-	got, ok := nextEvent(context.Background(), ch, mgr, time.Hour)
+	got, ok, src := nextEvent(context.Background(), ch, mgr, time.Hour)
 	if !ok || got != "human message" {
 		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
+	}
+	if src != sourceHuman {
+		t.Fatalf("expected sourceHuman, got %v", src)
 	}
 }
 
@@ -384,7 +442,7 @@ func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
 	cancel()
 	ch := make(chan string)
 
-	_, ok := nextEvent(ctx, ch, mgr, time.Hour)
+	_, ok, _ := nextEvent(ctx, ch, mgr, time.Hour)
 	if ok {
 		t.Fatalf("expected nextEvent to report !ok once ctx is done")
 	}
@@ -410,12 +468,15 @@ func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
 	mgr.Sync(ctx, []string{"agents.room.deadbeef"})
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, time.Hour)
+	got, ok, src := nextEvent(ctx, ch, mgr, time.Hour)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
 	if !strings.Contains(got, "agents.room.deadbeef") {
 		t.Fatalf("expected the room arrival's prompt to name the room, got %q", got)
+	}
+	if src != sourceRoomArrival {
+		t.Fatalf("expected sourceRoomArrival, got %v", src)
 	}
 }
 
@@ -423,9 +484,12 @@ func TestNextEvent_WakesOnTickIntervalWhenNothingElsePending(t *testing.T) {
 	mgr := roomwaiter.New(nil, "")
 	ch := make(chan string)
 
-	got, ok := nextEvent(context.Background(), ch, mgr, 10*time.Millisecond)
+	got, ok, src := nextEvent(context.Background(), ch, mgr, 10*time.Millisecond)
 	if !ok {
 		t.Fatalf("expected ok, got false")
+	}
+	if src != sourceIdleTick {
+		t.Fatalf("expected sourceIdleTick, got %v", src)
 	}
 	if got != agentDefaultPrompt {
 		t.Fatalf("expected the tick to reuse agentDefaultPrompt (which already asks the model to check rings and rooms), got %q", got)

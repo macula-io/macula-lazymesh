@@ -112,6 +112,53 @@ func NewLoop(p provider.Provider, tools ToolSource, systemPrompt string) *Loop {
 // the provider's own context limit (see trimHistory).
 const maxHistoryMessages = 200
 
+// maxHistoryBytes is trimHistory's second, independent cap (2026-09-07,
+// the runaway-context incident): maxHistoryMessages alone caps message
+// COUNT, not size, and a live instance reached over 1,048,576 tokens of
+// history while sitting at nowhere near 200 messages -- a handful of
+// mesh_read_inbox results (measured at ~75KB each against that same
+// instance's real agent.log) is plenty to blow a real context window
+// long before the count cap would ever trigger.
+//
+// 250,000 bytes is a conservative, deliberately provider-agnostic
+// safety net, not a tuned-per-model budget: at a rough ~4 bytes/token
+// (English text; tool-result JSON runs similar), that's roughly 62,500
+// tokens, comfortably under even a modest ~64K-128K-token context after
+// leaving headroom for the system prompt, the full tool-schema list, and
+// the model's own reply -- while still leaving room for a real, useful
+// conversation. A precise per-provider budget would need the model's
+// actual context window plumbed through the Provider interface, which
+// nothing here currently does; treated as a real option, not implemented
+// here as its own separate piece of scope.
+const maxHistoryBytes = 250_000
+
+// maxToolResultBytes caps how much of a single tool result's raw content
+// is kept in conversation history (2026-09-07, same incident) -- a
+// second, independent safety net alongside maxHistoryBytes: that cap
+// only removes OLD messages, so a single freshly-arrived oversized result
+// (mesh_read_inbox's no-room_topic form can still return this large even
+// after cmd/lazymesh's own prompt change to request a small limit on the
+// idle-tick path -- other tools, or a caller-supplied room_topic/limit,
+// can still produce a large result) would otherwise sit in the model's
+// own most recent, active context at full size regardless of trimming.
+// Deliberately only applied to what's STORED for the model, never to
+// what's emitted as an Event/logged to agent.log -- full-fidelity tool
+// output remains available for a human debugging live, which is exactly
+// how this incident's own root cause was found.
+const maxToolResultBytes = 20_000
+
+// truncateForHistory shortens s to maxToolResultBytes if it's longer,
+// appending a note so the model sees an honest, obviously-incomplete
+// result rather than content that silently stops mid-structure with no
+// explanation.
+func truncateForHistory(s string) string {
+	if len(s) <= maxToolResultBytes {
+		return s
+	}
+	return fmt.Sprintf("%s\n... [truncated: %d of %d bytes shown -- call again with a narrower scope if you need the rest]",
+		s[:maxToolResultBytes], maxToolResultBytes, len(s))
+}
+
 // Say adds a user message to the conversation and runs the loop until the
 // model produces a plain assistant reply with no further tool calls,
 // emitting an Event for every intermediate step along the way.
@@ -152,6 +199,8 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		l.usage.PromptTokens += resp.Usage.PromptTokens
 		l.usage.CompletionTokens += resp.Usage.CompletionTokens
 		l.usage.TotalTokens += resp.Usage.TotalTokens
+		l.usage.PromptCacheHitTokens += resp.Usage.PromptCacheHitTokens
+		l.usage.PromptCacheMissTokens += resp.Usage.PromptCacheMissTokens
 
 		if resp.Message.Content != "" {
 			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
@@ -174,32 +223,49 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 				toolMsg.Content = fmt.Sprintf("error: %s", callErr)
 				emit(events, Event{Kind: EventError, ToolName: tc.Name, Err: callErr})
 			} else {
-				toolMsg.Content = result
+				// Full result goes to the event (TUI/agent.log keep
+				// full-fidelity output); only what's stored for the
+				// model's own next turn is capped -- see
+				// truncateForHistory's own doc comment.
+				toolMsg.Content = truncateForHistory(result)
 				emit(events, Event{Kind: EventToolResult, ToolName: tc.Name, Text: result})
 			}
 			l.messages = append(l.messages, toolMsg)
+			// Trimmed after every tool result, not just once at Say's own
+			// start (2026-09-07 fix): a single Say call can run up to
+			// maxRounds rounds, each appending its own tool results --
+			// without this, a pathological single turn could already
+			// exceed the context window before the NEXT Say call ever
+			// got a chance to trim anything.
+			l.trimHistory()
 		}
 	}
 	return fmt.Errorf("agent loop: exceeded %d tool-calling rounds without a final reply", maxRounds)
 }
 
 // trimHistory drops the oldest complete "turns" (a user message and
-// everything up to but not including the next user message) once
-// l.messages exceeds maxHistoryMessages, keeping any leading system
-// message intact. Cutting at user-message boundaries specifically is what
-// keeps a tool_calls assistant message and its tool-result messages
-// together -- splitting those would send a provider a tool result with no
-// matching call, which most OpenAI-compatible APIs reject outright.
+// everything up to but not including the next user message) while
+// l.messages exceeds EITHER maxHistoryMessages OR maxHistoryBytes,
+// keeping any leading system message intact. Cutting at user-message
+// boundaries specifically is what keeps a tool_calls assistant message
+// and its tool-result messages together -- splitting those would send a
+// provider a tool result with no matching call, which most OpenAI-
+// compatible APIs reject outright.
+//
+// Byte-aware trimming added 2026-09-07 (the runaway-context incident):
+// the count-only cap alone let a real instance reach over a million
+// tokens of history while sitting at nowhere near maxHistoryMessages,
+// because a handful of its messages were tens of KB each. Both caps stay
+// -- message count still matters on its own (many small messages cost
+// real per-message overhead too), it's just no longer the ONLY thing
+// that can trigger eviction.
 func (l *Loop) trimHistory() {
-	if len(l.messages) <= maxHistoryMessages {
-		return
-	}
 	systemOffset := 0
 	if len(l.messages) > 0 && l.messages[0].Role == provider.RoleSystem {
 		systemOffset = 1
 	}
 	rest := l.messages[systemOffset:]
-	for systemOffset+len(rest) > maxHistoryMessages {
+	for len(rest) > 0 && (systemOffset+len(rest) > maxHistoryMessages || messagesByteSize(rest) > maxHistoryBytes) {
 		cut := 1
 		for cut < len(rest) && rest[cut].Role != provider.RoleUser {
 			cut++
@@ -209,10 +275,30 @@ func (l *Loop) trimHistory() {
 		}
 		rest = rest[cut:]
 	}
+	if systemOffset+len(rest) == len(l.messages) {
+		return // nothing was actually cut -- avoid the reallocation below
+	}
 	trimmed := make([]provider.Message, 0, systemOffset+len(rest))
 	trimmed = append(trimmed, l.messages[:systemOffset]...)
 	trimmed = append(trimmed, rest...)
 	l.messages = trimmed
+}
+
+// messagesByteSize sums a rough content size across msgs -- Content plus
+// each tool call's Name/Arguments, the parts that actually scale with
+// what a tool returned or the model asked for (ID/ToolCallID/Role are all
+// small, fixed-shape fields not worth counting). Not a real tokenizer:
+// see maxHistoryBytes's own doc comment for why an approximate,
+// provider-agnostic budget is the deliberate choice here.
+func messagesByteSize(msgs []provider.Message) int {
+	total := 0
+	for _, m := range msgs {
+		total += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Name) + len(tc.Arguments)
+		}
+	}
+	return total
 }
 
 func emit(events chan<- Event, e Event) {

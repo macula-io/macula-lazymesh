@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
@@ -135,6 +136,91 @@ func TestLoop_Say_ToolErrorIsFedBackNotFatal(t *testing.T) {
 	}
 	if !sawErr {
 		t.Fatalf("expected an EventError for the failed tool call")
+	}
+}
+
+// Covers the 2026-09-07 runaway-context fix at the Say() level: an
+// oversized tool result must not be stored verbatim in conversation
+// history (it would sit there, uncapped, until the next trim), but the
+// EMITTED Event must still carry the full result -- that's the log/TUI's
+// own full-fidelity view, which is how this incident's root cause was
+// actually found in the first place.
+func TestLoop_Say_OversizedToolResultTruncatedInHistoryNotInEvent(t *testing.T) {
+	bigResult := strings.Repeat("z", maxToolResultBytes+1000)
+	tools := &fakeToolSource{
+		tools:    []mcpclient.Tool{{Name: "mesh_read_inbox"}},
+		callText: bigResult,
+	}
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{
+			Role:      provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{{ID: "c1", Name: "mesh_read_inbox", Arguments: "{}"}},
+		}},
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "done"}},
+	}}
+	loop := NewLoop(p, tools, "")
+
+	events := make(chan Event, 8)
+	if err := loop.Say(context.Background(), "check inbox", events); err != nil {
+		t.Fatalf("Say returned error: %v", err)
+	}
+	close(events)
+
+	var sawFullResultEvent bool
+	for e := range events {
+		if e.Kind == EventToolResult && e.Text == bigResult {
+			sawFullResultEvent = true
+		}
+	}
+	if !sawFullResultEvent {
+		t.Fatalf("expected EventToolResult to carry the full, untruncated result")
+	}
+
+	// The stored tool message (l.messages) must be capped, not the
+	// full bigResult -- inspect directly since that's the whole point.
+	var storedToolMsg *provider.Message
+	for i := range loop.messages {
+		if loop.messages[i].Role == provider.RoleTool {
+			storedToolMsg = &loop.messages[i]
+		}
+	}
+	if storedToolMsg == nil {
+		t.Fatalf("expected a stored tool-role message")
+	}
+	if len(storedToolMsg.Content) >= len(bigResult) {
+		t.Fatalf("expected the stored tool result to be truncated, got the full %d bytes", len(storedToolMsg.Content))
+	}
+}
+
+// Covers mid-Say trimming (2026-09-07 fix): a single Say() call can span
+// several tool-calling rounds (up to maxRounds), each appending its own
+// result -- trimming must happen after each one, not only once at Say's
+// own start, or a single pathological turn could already exceed the
+// byte budget before the NEXT Say call ever got a chance to trim
+// anything.
+func TestLoop_Say_TrimsMidCallAcrossMultipleRounds(t *testing.T) {
+	bigResult := strings.Repeat("w", maxHistoryBytes/2)
+	tools := &fakeToolSource{callText: bigResult}
+	// Three rounds, each returning a big tool result, before the model
+	// finally stops -- three of these already exceed maxHistoryBytes on
+	// their own, so if trimming only ran once at Say's start, history
+	// would end this call sitting well over budget.
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "big", Arguments: "{}"}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c2", Name: "big", Arguments: "{}"}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c3", Name: "big", Arguments: "{}"}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "done"}},
+	}}
+	loop := NewLoop(p, tools, "system")
+
+	events := make(chan Event, 32)
+	if err := loop.Say(context.Background(), "go", events); err != nil {
+		t.Fatalf("Say returned error: %v", err)
+	}
+	close(events)
+
+	if got := messagesByteSize(loop.messages); got > maxHistoryBytes {
+		t.Fatalf("expected history to stay within maxHistoryBytes (%d) even mid-call, got %d bytes -- trimming isn't running between rounds", maxHistoryBytes, got)
 	}
 }
 

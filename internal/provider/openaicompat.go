@@ -88,9 +88,11 @@ func callOpenAICompatChatCompletions(ctx context.Context, httpClient *http.Clien
 	return ChatResponse{
 		Message: out,
 		Usage: Usage{
-			PromptTokens:     parsed.Usage.PromptTokens,
-			CompletionTokens: parsed.Usage.CompletionTokens,
-			TotalTokens:      parsed.Usage.TotalTokens,
+			PromptTokens:          parsed.Usage.PromptTokens,
+			CompletionTokens:      parsed.Usage.CompletionTokens,
+			TotalTokens:           parsed.Usage.TotalTokens,
+			PromptCacheHitTokens:  parsed.Usage.PromptCacheHitTokens,
+			PromptCacheMissTokens: parsed.Usage.PromptCacheMissTokens,
 		},
 	}, nil
 }
