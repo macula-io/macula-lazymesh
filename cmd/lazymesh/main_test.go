@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +45,67 @@ func TestProviderLabel_MatchesBuildProviderDefault(t *testing.T) {
 	}
 	if got := providerLabel(config.Config{Provider: "anthropic"}); got != "anthropic" {
 		t.Fatalf("expected an explicit Provider to pass through unchanged, got %q", got)
+	}
+}
+
+func testAPIKeyFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, []byte("test-key\n"), 0o600); err != nil {
+		t.Fatalf("write test key file: %v", err)
+	}
+	return path
+}
+
+// Covers the "add the ability to point the LLM backend elsewhere" work:
+// buildProvider's switch must actually produce the right concrete
+// provider.Provider for each recognized value of cfg.Provider, not just
+// resolve a label (see TestProviderLabel_MatchesBuildProviderDefault
+// above for that separate, narrower guarantee).
+func TestBuildProvider_DispatchesToTheRightBackend(t *testing.T) {
+	keyPath := testAPIKeyFile(t)
+
+	cases := []struct {
+		name     string
+		provider string
+		wantType string // %T of the expected concrete provider.Provider
+	}{
+		{"empty defaults to deepseek", "", "*provider.DeepSeek"},
+		{"explicit deepseek", "deepseek", "*provider.DeepSeek"},
+		{"anthropic", "anthropic", "*provider.Anthropic"},
+		{"nvidia", "nvidia", "*provider.NVIDIA"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.Config{Provider: c.provider, APIKeyFile: keyPath}
+			got, err := buildProvider(cfg)
+			if err != nil {
+				t.Fatalf("buildProvider(%q) returned error: %v", c.provider, err)
+			}
+			if gotType := fmt.Sprintf("%T", got); gotType != c.wantType {
+				t.Fatalf("buildProvider(%q): expected %s, got %s", c.provider, c.wantType, gotType)
+			}
+		})
+	}
+}
+
+func TestBuildProvider_UnknownProviderErrors(t *testing.T) {
+	cfg := config.Config{Provider: "not-a-real-provider", APIKeyFile: testAPIKeyFile(t)}
+	if _, err := buildProvider(cfg); err == nil {
+		t.Fatalf("expected an error for an unrecognized provider")
+	}
+}
+
+// nvidia must go through the same explicit, per-provider api_key_file
+// the other backends do -- no auto-switching default key path when the
+// provider changes. Deliberate: an auto-switching default here would be
+// the same shape of footgun as the identity_file bug that made two
+// concurrent lazymesh instances collide onto one mesh identity (see
+// internal/config/config.go's IdentityFile doc comment).
+func TestBuildProvider_NVIDIARequiresItsOwnAPIKeyFile(t *testing.T) {
+	cfg := config.Config{Provider: "nvidia"} // no APIKeyFile set
+	if _, err := buildProvider(cfg); err == nil {
+		t.Fatalf("expected an error when nvidia has no api_key_file configured")
 	}
 }
 

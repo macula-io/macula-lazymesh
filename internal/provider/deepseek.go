@@ -1,13 +1,8 @@
 package provider
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 )
 
 // DeepSeekDefaultBaseURL is DeepSeek's OpenAI-compatible API root.
@@ -148,69 +143,10 @@ func toDSTools(specs []ToolSpec) []dsToolSpec {
 	return out
 }
 
+// ChatCompletion delegates to callOpenAICompatChatCompletions (see its own
+// doc comment in openaicompat.go) -- DeepSeek's wire shape is plain
+// OpenAI-compatible chat completions, shared with NVIDIA rather than
+// duplicated.
 func (d *DeepSeek) ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-	body := dsChatRequest{
-		Model:      d.Model,
-		Messages:   toDSMessages(req.Messages),
-		Tools:      toDSTools(req.Tools),
-		ToolChoice: "auto",
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return ChatResponse{}, fmt.Errorf("marshal deepseek request: %w", err)
-	}
-
-	url := strings.TrimRight(d.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return ChatResponse{}, fmt.Errorf("build deepseek request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+d.APIKey)
-
-	resp, err := d.HTTP.Do(httpReq)
-	if err != nil {
-		return ChatResponse{}, fmt.Errorf("call deepseek: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ChatResponse{}, fmt.Errorf("read deepseek response: %w", err)
-	}
-
-	var parsed dsChatResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return ChatResponse{}, fmt.Errorf("decode deepseek response (status %d): %w", resp.StatusCode, err)
-	}
-	if parsed.Error != nil {
-		return ChatResponse{}, fmt.Errorf("deepseek API error (status %d): %s", resp.StatusCode, parsed.Error.Message)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return ChatResponse{}, fmt.Errorf("deepseek API returned status %d: %s", resp.StatusCode, string(respBody))
-	}
-	if len(parsed.Choices) == 0 {
-		return ChatResponse{}, fmt.Errorf("deepseek response had no choices")
-	}
-
-	msg := parsed.Choices[0].Message
-	out := Message{
-		Role:    Role(msg.Role),
-		Content: msg.Content,
-	}
-	for _, tc := range msg.ToolCalls {
-		out.ToolCalls = append(out.ToolCalls, ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: tc.Function.Arguments,
-		})
-	}
-	return ChatResponse{
-		Message: out,
-		Usage: Usage{
-			PromptTokens:     parsed.Usage.PromptTokens,
-			CompletionTokens: parsed.Usage.CompletionTokens,
-			TotalTokens:      parsed.Usage.TotalTokens,
-		},
-	}, nil
+	return callOpenAICompatChatCompletions(ctx, d.HTTP, d.BaseURL, d.Model, d.APIKey, req)
 }

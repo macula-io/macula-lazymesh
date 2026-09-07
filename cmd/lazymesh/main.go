@@ -226,6 +226,12 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 			return nil, err
 		}
 		return provider.NewAnthropic(cfg.BaseURL, cfg.Model, key), nil
+	case "nvidia":
+		key, err := cfg.APIKey()
+		if err != nil {
+			return nil, err
+		}
+		return provider.NewNVIDIA(cfg.BaseURL, cfg.Model, key, nil), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", cfg.Provider)
 	}

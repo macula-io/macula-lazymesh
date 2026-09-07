@@ -13,10 +13,18 @@ import (
 
 // Config is lazymesh's on-disk configuration shape.
 type Config struct {
-	// Provider selects the LLM backend. Currently "deepseek" is the only
-	// working implementation; "anthropic" exists as an interface-shape
-	// stub (see internal/provider/anthropic.go) and returns an error if
-	// selected.
+	// Provider selects the LLM backend. "deepseek" (also what empty
+	// resolves to) and "nvidia" are working implementations; "anthropic"
+	// exists as an interface-shape stub (see internal/provider/anthropic.go)
+	// and returns an error if selected -- Anthropic's Messages API has a
+	// genuinely different shape from the other two's shared OpenAI-
+	// compatible one, so it needs real work, not just a config value.
+	// Default stays deepseek regardless of what else is available: it was
+	// chosen specifically for being cheap enough to run an agent against
+	// continuously. See internal/provider/nvidia.go's own doc comment
+	// before switching a long-running agent to nvidia -- this workspace's
+	// own fleet has hit account-level rate limits on NVIDIA's free tier
+	// under sustained use.
 	Provider string `yaml:"provider"`
 	// Model is the backend's own model id string, verified against that
 	// backend's own docs, not copied from another harness's config.
@@ -27,6 +35,10 @@ type Config struct {
 	// APIKeyFile points at a bare-value key file, matching this
 	// workspace's ~/.ai-api-keys/.<provider>-api-keys/<consumer>
 	// convention. Never a literal key in this struct or on disk here.
+	// Set this explicitly to the new provider's own key file when you
+	// change Provider -- there is no auto-switching default path per
+	// provider (deliberately: see IdentityFile's own doc comment below
+	// for why an auto-switched default is the wrong shape here).
 	APIKeyFile string `yaml:"api_key_file"`
 	// IdentityFile, if set, is passed to macula-mcp as MACULA_MCP_IDENTITY
 	// so this lazymesh instance keeps the same mesh node_id across a full
