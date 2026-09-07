@@ -12,13 +12,19 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 )
 
-// TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault confirms
+// TestLiveBuildToolSource_ExcludesMeshServiceToolsByDefault confirms
 // Phase 3's actual production wiring (main.go's buildToolSource, not just
 // internal/meshservices in isolation): a real macula-mcp spawn, combined
-// the same way the real binary does it, lists at least one real
-// mesh_service_* tool by default -- no local_tools, no allowlist
-// override, exactly what an operator gets out of the box.
-func TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault(t *testing.T) {
+// the same way the real binary does it, lists NO mesh_service_* tool by
+// default -- no local_tools, no allowlist override, exactly what an
+// operator gets out of the box. Flipped 2026-09-07 (R2's close-out):
+// mesh_service_* used to be on by default; Fable's own review accepted
+// gating this session-static, off unless explicitly requested, over
+// trimming the 16-tool corpus-search catalog further -- see
+// config.MeshServicesEnabled's own doc comment.
+// TestLiveBuildToolSource_MeshServicesEnabledIncludesCuratedTools below
+// covers the opted-in case.
+func TestLiveBuildToolSource_ExcludesMeshServiceToolsByDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -49,8 +55,42 @@ func TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault(t *testing.T) {
 	if !sawMeshRooms {
 		t.Fatalf("expected mesh_rooms among the default tools")
 	}
+	if sawMeshService {
+		t.Fatalf("expected no mesh_service_* tool among the default tools -- mesh_services_enabled defaults false")
+	}
+}
+
+// TestLiveBuildToolSource_MeshServicesEnabledIncludesCuratedTools is the
+// opted-in counterpart: an operator who sets mesh_services_enabled: true
+// still gets the full curated catalog, unchanged from before R2's default
+// flip.
+func TestLiveBuildToolSource_MeshServicesEnabledIncludesCuratedTools(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client, err := mcpclient.Spawn(ctx, mcpclient.SpawnOptions{})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer client.Close()
+
+	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, nil)
+	if err != nil {
+		t.Fatalf("buildToolSource: %v", err)
+	}
+
+	listed, err := tools.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	sawMeshService := false
+	for _, tool := range listed {
+		if strings.HasPrefix(tool.Name, "mesh_service_") {
+			sawMeshService = true
+		}
+	}
 	if !sawMeshService {
-		t.Fatalf("expected at least one mesh_service_* tool among the default tools -- Phase 3 should be on by default")
+		t.Fatalf("expected at least one mesh_service_* tool when mesh_services_enabled is true")
 	}
 }
 

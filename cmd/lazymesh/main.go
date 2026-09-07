@@ -144,7 +144,7 @@ func run(configPath, room, goalText string) error {
 	// fails fast with a clear message instead of the same class of
 	// crash the runaway-context incident already produced once.
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle)
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled)
 	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func run(configPath, room, goalText string) error {
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
-	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
+	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -275,21 +275,26 @@ func providerLabel(cfg config.Config) string {
 	return cfg.Provider
 }
 
-// buildToolSource combines macula-mcp, Phase 3's mesh-service tools
-// (always on -- real, curated, currently-discovered mesh procedures,
-// dogfooding the mesh's own service directory per the plan's actual
-// thesis), and Phase 2's local shell/file tools when explicitly enabled
-// -- then wraps whatever that is in an AllowlistSource. The allowlist is
-// the actual gate: an agent's entire conversation can be steered by
-// arbitrary mesh peers (room messages, ring purposes), so what the model
-// is ALLOWED to see or call matters independently of what sources merely
-// exist. cfg.LocalTools.Enabled controls whether shell_exec/read_file/
-// write_file are wired up at all; it does NOT put them on the allowlist
-// by itself -- see config.ToolAllowlist and internal/agent/allowlist.go.
+// buildToolSource combines macula-mcp, Phase 3's mesh-service tools when
+// cfg.MeshServicesEnabled turns them on (real, curated, currently-
+// discovered mesh procedures, dogfooding the mesh's own service directory
+// per the plan's actual thesis -- but OFF by default since R2, 2026-09-07:
+// see config.MeshServicesEnabled's own doc comment for why), and Phase 2's
+// local shell/file tools when explicitly enabled -- then wraps whatever
+// that is in an AllowlistSource. The allowlist is the actual gate: an
+// agent's entire conversation can be steered by arbitrary mesh peers (room
+// messages, ring purposes), so what the model is ALLOWED to see or call
+// matters independently of what sources merely exist. cfg.LocalTools.Enabled
+// controls whether shell_exec/read_file/write_file are wired up at all; it
+// does NOT put them on the allowlist by itself -- see config.ToolAllowlist
+// and internal/agent/allowlist.go.
 func buildToolSource(cfg config.Config, client *mcpclient.Client, agentLog *log.Logger) (agent.ToolSource, error) {
-	meshSvc := meshservices.New(client)
-	meshSvc.SetLogger(agentLog)
-	sources := []agent.ToolSource{client, meshSvc}
+	sources := []agent.ToolSource{client}
+	if cfg.MeshServicesEnabled {
+		meshSvc := meshservices.New(client)
+		meshSvc.SetLogger(agentLog)
+		sources = append(sources, meshSvc)
+	}
 	if cfg.LocalTools.Enabled {
 		local, err := localtools.New(localtools.Config{
 			Enabled:      cfg.LocalTools.Enabled,
@@ -315,15 +320,22 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, agentLog *log.
 // so buildToolSource's actual enforcement and runAgent's system-prompt
 // claim about available tools can never drift apart -- telling the model
 // it has a tool the allowlist then refuses is worse than not mentioning
-// it. The default is agent's own conversational primitives PLUS Phase 3's
-// curated mesh-service tool names (meshservices stays out of package
-// agent to avoid a reverse dependency; this is the single place the two
-// defaults get merged).
+// it. The default is agent's own conversational primitives, PLUS Phase 3's
+// curated mesh-service tool names only when cfg.MeshServicesEnabled is set
+// (meshservices stays out of package agent to avoid a reverse dependency;
+// this is the single place the two defaults get merged) -- this condition
+// MUST match buildToolSource's own cfg.MeshServicesEnabled check, or the
+// allowlist and the actual wired-up sources drift apart exactly the way
+// this function's own job is to prevent.
 func resolveAllowlist(cfg config.Config) []string {
 	if len(cfg.ToolAllowlist) > 0 {
 		return cfg.ToolAllowlist
 	}
-	return append(append([]string{}, agent.DefaultToolAllowlist...), meshservices.AllowedToolNames()...)
+	names := append([]string{}, agent.DefaultToolAllowlist...)
+	if cfg.MeshServicesEnabled {
+		names = append(names, meshservices.AllowedToolNames()...)
+	}
+	return names
 }
 
 func allowlistIncludes(allowlist []string, name string) bool {
@@ -427,7 +439,7 @@ func agentLogPath() (string, error) {
 // model is told to discover its actual participation scope live via
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
-func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle bool) string {
+func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool) string {
 	// Deliberately says nothing about why this changed (macula-io/macula-
 	// lazymesh#14/#15's own history) -- that belongs in code comments and
 	// the issue tracker, not in tokens sent to the model on every single
@@ -445,11 +457,20 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 		"prompt you the moment something new arrives. Do not call mesh_say/mesh_wait_room just to " +
 		"wait for a reply -- when you genuinely have nothing to add right now, reply briefly (or " +
 		"with nothing) and your turn simply ends until the harness wakes you again."
-	toolsLine := "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
-		"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
-		"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
-		"arguments aren't advertised; if a call errors, read the error and retry with corrected " +
-		"arguments rather than giving up after one attempt."
+	// mesh_service_* is mentioned ONLY when actually wired up (2026-09-07,
+	// R2's close-out): config.MeshServicesEnabled defaults false, and
+	// telling the model about a tool buildToolSource never built is worse
+	// than not mentioning it -- resolveAllowlist's own doc comment already
+	// requires this file and buildToolSource stay in lockstep for the same
+	// reason.
+	toolsLine := "You have macula-mcp's mesh_* tools."
+	if meshServicesEnabled {
+		toolsLine = "You have macula-mcp's mesh_* tools, plus mesh_service_* tools that call real " +
+			"mesh services (search/knowledge-graph/forum capabilities, discovered live) -- prefer " +
+			"a mesh_service_* tool over guessing at an answer when the task fits one. Their exact " +
+			"arguments aren't advertised; if a call errors, read the error and retry with corrected " +
+			"arguments rather than giving up after one attempt."
+	}
 	if localToolsReachable {
 		toolsLine += " You also have shell_exec/read_file/write_file scoped to a local working " +
 			"directory -- use those only when actual local work (not just mesh conversation or " +
@@ -499,8 +520,8 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // this function supplies the cadence of asking it to keep going, driven
 // by real events rather than the model's own long tool-call waits or a
 // periodic re-check.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle bool, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle)
+func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle, meshServicesEnabled)
 
 	loop := agent.NewLoop(p, tools, systemPrompt)
 	events := make(chan agent.Event, 16)

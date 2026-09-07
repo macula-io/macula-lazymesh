@@ -1176,3 +1176,104 @@ two return values once the idle-backoff machinery it was carrying
 `eventSource` for was removed; `buildSystemPrompt`/prompt tests updated
 to match). Full suite green, `go vet` clean, `gofmt` clean, race-detector
 clean throughout.
+
+## R2: shrink the fixed prefix to fit a small model's context window (2026-09-07)
+
+**The goal, from the same incident above:** the crash fix (byte-aware
+`trimHistory`) stops a runaway conversation from ever reaching the
+context limit again, but it does nothing about the FIXED cost paid on
+every single request regardless of history -- system prompt + every
+allowlisted tool's schema. Orion's real-measured baseline on msi00: 7,931
+prompt tokens for a plain room-arrival turn with empty history. Fable's
+review set a design target: fixed prefix under 1,500 tokens, so a
+small/cheap model's context window isn't mostly consumed before the
+conversation even starts.
+
+**Landed, in order, each real-measured against a live macula-mcp spawn,
+not estimated:**
+- `Provider.ContextWindow() int` added to the interface (DeepSeek 1M,
+  NVIDIA 1,048,576 -- sourced from the crash's own error message,
+  Anthropic 200k as a stub value for the never-functional stub provider).
+- `checkStartupBudget` (`cmd/lazymesh/main.go`): a real, hard-fail
+  startup check, conditional on the configured model's actual
+  `ContextWindow()` -- refuses to start below a floor with a clear
+  message, rather than the same silent-overrun-into-crash class of
+  failure that produced the incident above. Neither DeepSeek nor NVIDIA
+  trips it today (~1M each); it exists for whoever configures a
+  genuinely small-context model.
+- `mesh_hello` dropped from `agent.DefaultToolAllowlist` -- every tool
+  that matters (`mesh_say`/`mesh_join_room`/`mesh_leave_room`/
+  `mesh_rooms`/`mesh_answer_ring`/`mesh_read_inbox`) auto-starts mesh
+  presence on its own; the explicit hello call and its own schema weight
+  were pure redundant cost.
+- `internal/agent/terse.go` (new): `TerseDescriptionSource` wrapper,
+  two tiers -- description-only replacement for tools whose schema was
+  already small, full hand-authored schema replacement (dropping
+  `mesh_say`'s unused `refs`/`wait_reply_seconds` fields and unused
+  `kind` enum values, e.g. `lane_claimed`/`claim_confirmed`, this narrow
+  use case never emits) where schema itself was real remaining weight.
+  A generic `dropHostParam` step also strips the identical ~90-byte
+  `host` field/description repeated across nearly every macula-mcp tool
+  schema -- lazymesh has no design that lets the model pick a station.
+  Verified against macula-mcp 0.25.2's real, live tool descriptions
+  (captured by spawning macula-mcp directly, quoted verbatim in
+  `internal/agent/terse_test.go` for future drift-detection).
+- `internal/meshservices/meshservices.go`: discovery resolves ONCE per
+  session (a `discovered bool`, not the former 60s TTL) -- matches
+  Orion's own point about byte-stable prompt/tool-schema prefixes
+  mattering for CPU-inference KV-cache reuse, which a periodically-
+  changing fixed prefix defeats. Real tradeoff, accepted deliberately: a
+  mesh service appearing mid-session isn't noticed until restart. Logs
+  clearly (`[mesh_service discovery] resolved N of M...`) so this isn't
+  silently invisible. `internal/meshservices/catalog.go`'s 16 curated
+  procedures' own descriptions shortened the same way.
+
+**Result, real-measured against a live macula-mcp spawn:** 7,931 -> 1,864
+tokens (~76%), still above the 1,500 target because the 16-tool
+`mesh_service_*` catalog (hecate-rag/hecate_agora/hecate_graph corpus
+search) is inherently large. Verified live, not just unit-tested: a real
+DeepSeek call against the terse-ified tool source still correctly picks
+`mesh_join_room` then `mesh_say` with valid arguments for an ordinary
+room-join instruction (`TestLiveR2ToolSelectionStillWorksWithTerseSchemas`),
+and a regression-ceiling test
+(`TestLiveR2FixedPrefixStaysUnderRegressionCeiling`) guards the fixed
+prefix from creeping back up.
+
+## R2 close-out: mesh_service_* gated off by default (2026-09-07)
+
+**The remaining gap:** R2 left the fixed prefix at ~1,864 tokens, still
+above the 1,500-token target, because the 16-tool `mesh_service_*`
+catalog itself is large and R2's own trims had already squeezed the
+description text about as far as it safely goes. Rather than trim
+further, the coordinator pointed back at Fable's own original Phase 3
+review: it explicitly rejected exposing `mesh_service_*` conditionally
+PER-TURN, but explicitly accepted a SESSION-STATIC version -- "a config
+profile that decides at startup which sources are on." A room-chat-only
+agent (the common case) will usually never touch corpus search at all.
+
+**Landed:** `config.MeshServicesEnabled` (new field, default `false`,
+same conservative posture as `LocalTools.Enabled`/`ExpressiveStyle` --
+nobody gets a capability they didn't ask for). `buildToolSource` only
+constructs `meshservices.New(client)` when it's set; `resolveAllowlist`
+only appends `meshservices.AllowedToolNames()` when it's set (the two
+MUST move together -- see `resolveAllowlist`'s own doc comment); and
+`buildSystemPrompt` only mentions `mesh_service_*` tools in its
+`toolsLine` when the flag is set, matching `localToolsReachable`'s
+existing precedent -- telling the model about a tool that was never
+wired up is worse than not mentioning it (the exact failure mode
+`resolveAllowlist`'s own comment already warns about for the allowlist
+side).
+
+**Result, real-measured against a live macula-mcp spawn:** the default
+(room-chat-only) case is now **7 tools, ~1,072 tokens** -- under the
+1,500-token design target for the first time. The opted-in case
+(`mesh_services_enabled: true`) is unchanged from R2's own number: 23
+tools, ~1,864 tokens, now covered by its own separate regression ceiling
+(`maxAcceptableFixedPrefixTokensMeshServicesEnabled`,
+`TestLiveR2ToolSelectionMeshServicesEnabledStillFitsRegressionCeiling`)
+so the default case moving to a tighter ceiling doesn't leave the
+opted-in case unguarded. Live-verified with a real DeepSeek call
+(`TestLiveR2ToolSelectionStillWorksWithTerseSchemas`, mesh services off)
+that tool-selection still works correctly with the new default. Full
+suite green (`go test ./...` and `go test -tags live` both, `go vet`
+clean under both tags, `gofmt` clean).

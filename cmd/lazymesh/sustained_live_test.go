@@ -95,7 +95,7 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
-	systemPrompt := buildSystemPrompt("", "", false, false)
+	systemPrompt := buildSystemPrompt("", "", false, false, false)
 	loop := agent.NewLoop(p, tools, systemPrompt)
 	events := make(chan agent.Event, 256)
 	discardLog := log.New(discardWriter{}, "", 0)

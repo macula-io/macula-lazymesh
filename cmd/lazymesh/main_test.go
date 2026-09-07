@@ -113,8 +113,32 @@ func TestBuildProvider_NVIDIARequiresItsOwnAPIKeyFile(t *testing.T) {
 	}
 }
 
+// mesh_service_* names are deliberately absent from the default allowlist
+// (2026-09-07, R2's close-out): config.MeshServicesEnabled defaults false,
+// per Fable's own review accepting a session-static opt-in over trimming
+// the 16-tool corpus-search catalog further -- see config.go's own doc
+// comment on that field. TestResolveAllowlist_MeshServicesEnabledAddsCuratedNames
+// below covers the opted-in case.
 func TestResolveAllowlist_DefaultsWhenUnset(t *testing.T) {
 	got := resolveAllowlist(config.Config{})
+	wantLen := len(agent.DefaultToolAllowlist)
+	if len(got) != wantLen {
+		t.Fatalf("expected exactly agent's defaults (%d), got %d: %v", wantLen, len(got), got)
+	}
+	for _, name := range agent.DefaultToolAllowlist {
+		if !allowlistIncludes(got, name) {
+			t.Fatalf("expected default to include agent primitive %q", name)
+		}
+	}
+	for _, name := range meshservices.AllowedToolNames() {
+		if allowlistIncludes(got, name) {
+			t.Fatalf("expected curated mesh-service tool %q absent when mesh_services_enabled is unset", name)
+		}
+	}
+}
+
+func TestResolveAllowlist_MeshServicesEnabledAddsCuratedNames(t *testing.T) {
+	got := resolveAllowlist(config.Config{MeshServicesEnabled: true})
 	wantLen := len(agent.DefaultToolAllowlist) + len(meshservices.AllowedToolNames())
 	if len(got) != wantLen {
 		t.Fatalf("expected agent's defaults + meshservices' curated names (%d), got %d: %v", wantLen, len(got), got)
@@ -126,7 +150,7 @@ func TestResolveAllowlist_DefaultsWhenUnset(t *testing.T) {
 	}
 	for _, name := range meshservices.AllowedToolNames() {
 		if !allowlistIncludes(got, name) {
-			t.Fatalf("expected default to include curated mesh-service tool %q", name)
+			t.Fatalf("expected mesh_services_enabled to include curated mesh-service tool %q", name)
 		}
 	}
 }
@@ -195,7 +219,7 @@ func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
 
 func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 	for _, room := range []string{"", "agents.room.deadbeef"} {
-		got := buildSystemPrompt(room, "", false, false)
+		got := buildSystemPrompt(room, "", false, false, false)
 		if !strings.Contains(got, "mesh_rooms") {
 			t.Fatalf("room=%q: expected system prompt to instruct calling mesh_rooms, got: %s", room, got)
 		}
@@ -206,14 +230,14 @@ func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyRoomHasNoPriorityHint(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(got, "prioritize this room") {
 		t.Fatalf("expected no room-specific priority hint when room is empty, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false)
 	if !strings.Contains(got, "prioritize this room: agents.room.deadbeef") {
 		t.Fatalf("expected the given room to appear as a priority hint, got: %s", got)
 	}
@@ -227,18 +251,18 @@ func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *
 }
 
 func TestBuildSystemPrompt_IncludesGoalWhenSet(t *testing.T) {
-	got := buildSystemPrompt("", "find the best pun on the mesh", false, false)
+	got := buildSystemPrompt("", "find the best pun on the mesh", false, false, false)
 	if !strings.Contains(got, "Additional objective: find the best pun on the mesh") {
 		t.Fatalf("expected goal text to appear verbatim, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
-	without := buildSystemPrompt("", "", false, false)
+	without := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(without, "shell_exec") {
 		t.Fatalf("expected no mention of shell_exec when local tools aren't reachable, got: %s", without)
 	}
-	with := buildSystemPrompt("", "", true, false)
+	with := buildSystemPrompt("", "", true, false, false)
 	if !strings.Contains(with, "shell_exec") {
 		t.Fatalf("expected shell_exec to be mentioned when local tools are reachable, got: %s", with)
 	}
@@ -255,7 +279,7 @@ func TestAgentInitialPromptCallsMeshRooms(t *testing.T) {
 // rather than assuming it will remember joining from earlier in the
 // conversation -- history gets trimmed, so that memory isn't reliable.
 func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if !strings.Contains(got, "joined list") {
 		t.Fatalf("expected system prompt to reference mesh_rooms's joined list, got: %s", got)
 	}
@@ -265,7 +289,7 @@ func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing
 }
 
 func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false)
 	if !strings.Contains(got, "check mesh_rooms's own joined list first") {
 		t.Fatalf("expected the priority-room hint to check the joined list before joining, got: %s", got)
 	}
@@ -276,19 +300,38 @@ func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
 // permission to use emoji/expressive tone in room conversation -- never a
 // hardcoded persona forced on every operator.
 func TestBuildSystemPrompt_ExpressiveStyleOffByDefault(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(got, "emoji") {
 		t.Fatalf("expected no emoji guidance when expressiveStyle is false, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
-	got := buildSystemPrompt("", "", false, true)
+	got := buildSystemPrompt("", "", false, true, false)
 	if !strings.Contains(got, "emoji") {
 		t.Fatalf("expected emoji guidance when expressiveStyle is true, got: %s", got)
 	}
 	if !strings.Contains(got, "mesh_say") {
 		t.Fatalf("expected the guidance to scope expressiveness to room conversation text, got: %s", got)
+	}
+}
+
+// Covers R2's close-out (2026-09-07): mentioning mesh_service_* tools in
+// the system prompt when buildToolSource never wired them up (see
+// resolveAllowlist's own doc comment on why the two must stay in lockstep)
+// wastes tokens on a capability the model doesn't have and risks a
+// hallucinated call.
+func TestBuildSystemPrompt_MeshServicesOffByDefault(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, false)
+	if strings.Contains(got, "mesh_service_") {
+		t.Fatalf("expected no mesh_service_* mention when meshServicesEnabled is false, got: %s", got)
+	}
+}
+
+func TestBuildSystemPrompt_MeshServicesEnabledMentionsMeshServiceTools(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, true)
+	if !strings.Contains(got, "mesh_service_") {
+		t.Fatalf("expected a mesh_service_* mention when meshServicesEnabled is true, got: %s", got)
 	}
 }
 
@@ -334,7 +377,7 @@ func TestSayGoodbye_ToleratesFailureWithoutPropagatingIt(t *testing.T) {
 // itself, and explain what happens instead. Unconditional now (no more
 // spike-vs-baseline split) -- this is the only behavior.
 func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(got, "call mesh_say with a long") {
 		t.Fatalf("expected the model-driven long-wait instruction to be gone, got: %s", got)
 	}
@@ -348,7 +391,7 @@ func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
 // room_topic" ring-check mandate is gone, replaced by internal/
 // ringwaiter waking the model only when a ring genuinely exists.
 func TestBuildSystemPrompt_DropsBlanketRingCheckMandate(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false)
+	got := buildSystemPrompt("", "", false, false, false)
 	if strings.Contains(got, "every single time you are prompted") {
 		t.Fatalf("expected the blanket per-cycle ring-check mandate to be gone, got: %s", got)
 	}

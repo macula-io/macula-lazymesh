@@ -68,7 +68,7 @@ func TestLiveR2ToolSelectionStillWorksWithTerseSchemas(t *testing.T) {
 	}
 	tools = agent.NewNoBlockingWaitSource(tools)
 
-	loop := agent.NewLoop(p, tools, buildSystemPrompt(room, "", false, false))
+	loop := agent.NewLoop(p, tools, buildSystemPrompt(room, "", false, false, false))
 	events := make(chan agent.Event, 64)
 
 	var toolCalls []agent.Event
