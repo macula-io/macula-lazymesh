@@ -251,6 +251,64 @@ func TestRenderStatusStrip_ShowsModeIndicator(t *testing.T) {
 	}
 }
 
+// Found live 2026-09-07: Normal mode's full shortcut list combined with
+// everything else on one line routinely clipped on a narrow terminal.
+// Split across 2 lines in Normal mode (mode indicator leads the first);
+// Insert/Ring's own much shorter hints fit on one.
+func TestRenderHintLines_SplitsAcrossTwoLinesInNormalModeOnly(t *testing.T) {
+	m := newTestModel(t)
+	if got := len(m.renderHintLines()); got != 2 {
+		t.Fatalf("expected 2 hint lines in Normal mode, got %d: %v", got, m.renderHintLines())
+	}
+
+	updated, _ := m.Update(runeKey('i'))
+	m = updated.(Model)
+	if got := len(m.renderHintLines()); got != 1 {
+		t.Fatalf("expected 1 hint line in Insert mode, got %d: %v", got, m.renderHintLines())
+	}
+
+	m2 := newTestModel(t)
+	ring := pendingRing{RingID: "r1", Peer: "peer1"}
+	m2.pendingRingPopup = &ring
+	m2.mode = ModeRingPopup
+	if got := len(m2.renderHintLines()); got != 1 {
+		t.Fatalf("expected 1 hint line during a ring pop-up (it shows its own hints), got %d: %v", got, m2.renderHintLines())
+	}
+}
+
+// Every shortcut that used to appear on the single combined line must
+// still appear somewhere across the (now up to 2) hint lines -- the
+// split must not silently drop one.
+func TestRenderHintLines_NormalModeStillListsEveryShortcut(t *testing.T) {
+	m := newTestModel(t)
+	combined := strings.Join(m.renderHintLines(), " ")
+	for _, want := range []string{"m:", "i:", "ctrl+e:", "v:", "e:", "b:", "q:"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("expected shortcut %q somewhere in the hint lines, got %q", want, combined)
+		}
+	}
+}
+
+// Issue found live 2026-09-07: bolding the whole summary line competed
+// with the instance's own petname for visual attention instead of
+// setting it apart. The petname segment stays bold, in its own
+// deterministic color (agentBadgeStyle, same scheme as the presence
+// badge/room-message previews); the rest of the line (rooms/rings/
+// agents/model) is normal weight, same blue as before.
+func TestRenderSummaryLine_PetnameStandsOutFromNormalWeightRest(t *testing.T) {
+	if summaryStyle.GetBold() {
+		t.Fatalf("expected the summary segment (rooms/rings/agents/model) to be normal weight, got bold")
+	}
+	identity := identityKey("deadbeefcafe", "swift-otter")
+	badge := agentBadgeStyle(identity)
+	if !badge.GetBold() {
+		t.Fatalf("expected the petname segment to stay bold")
+	}
+	if badge.GetForeground() == summaryStyle.GetForeground() {
+		t.Fatalf("expected the petname's color to be distinct from the rest of the summary line, both were %v", badge.GetForeground())
+	}
+}
+
 // Issue #4: the compose line stays visible (and keeps its draft) after
 // Esc back to Normal mode, instead of being replaced by a static hint.
 func TestRenderInputLine_AlwaysVisibleWithRetainedDraft(t *testing.T) {
@@ -271,9 +329,11 @@ func TestRenderInputLine_AlwaysVisibleWithRetainedDraft(t *testing.T) {
 	}
 }
 
-// Issue #2: routine tool-call activity is relocated out of the
-// conversation pane by default.
-func TestHandleAgentEvent_ToolCallRoutedToChatterLineByDefault(t *testing.T) {
+// Issue #2 (revised live 2026-09-07: the status-strip summary was
+// dropped, little practical value per Raf -- see renderSummaryLine's own
+// doc comment): routine tool-call activity is dropped from the
+// conversation pane by default, and not shown anywhere else either.
+func TestHandleAgentEvent_ToolCallDroppedByDefault(t *testing.T) {
 	m := newTestModel(t)
 	m.agentEvents = make(chan agent.Event)
 
@@ -282,11 +342,29 @@ func TestHandleAgentEvent_ToolCallRoutedToChatterLineByDefault(t *testing.T) {
 	if len(m.chatEntries) != 0 {
 		t.Fatalf("expected no chat entry for a tool call by default, got %+v", m.chatEntries)
 	}
-	if !strings.Contains(m.lastChatter, "mesh_call") {
-		t.Fatalf("expected the tool call to land in lastChatter, got %q", m.lastChatter)
+	if strings.Contains(m.renderStatusStrip(), "mesh_call") {
+		t.Fatalf("expected the tool call to not appear anywhere in the status strip, got %q", m.renderStatusStrip())
 	}
-	if !strings.Contains(m.renderStatusStrip(), "mesh_call") {
-		t.Fatalf("expected the status strip to surface the last tool call, got %q", m.renderStatusStrip())
+}
+
+// The liveness heartbeat is a different concern from routine tool-call
+// chatter (see lastListeningAt's own doc comment) and is never dropped:
+// it's always tracked and always shown in the summary line, regardless
+// of showChatter.
+func TestHandleAgentEvent_ListeningAlwaysUpdatesHeartbeat(t *testing.T) {
+	m := newTestModel(t)
+	m.agentEvents = make(chan agent.Event)
+
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventListening}))
+	m = updated.(Model)
+	if m.lastListeningAt.IsZero() {
+		t.Fatalf("expected lastListeningAt to be set after an EventListening")
+	}
+	if !strings.Contains(m.renderStatusStrip(), "listening ") {
+		t.Fatalf("expected the summary line to show the listening heartbeat, got %q", m.renderStatusStrip())
+	}
+	if len(m.chatEntries) != 0 {
+		t.Fatalf("expected EventListening to stay out of the chat pane by default, got %+v", m.chatEntries)
 	}
 }
 
@@ -390,28 +468,34 @@ func TestHandleEditorFinished_ErrorSurfacesAsChatEntry(t *testing.T) {
 	}
 }
 
-// Regression guard, found live 2026-09-06: a tool result containing
-// pretty-printed JSON (raw newlines) landed in the chatter line and
-// secretly rendered as more than one terminal row, so
-// resizeComponents' `len(m.statusLines()) + 2` reserved-height math
-// (one slice element assumed to be one row) undercounted -- the chat
-// viewport visibly jumped on every update. statusLines()'s own line
-// count must always match what actually prints as one row each.
-func TestStatusLines_ChatterLineNeverContainsEmbeddedNewlines(t *testing.T) {
-	m := newTestModel(t)
-	m.agentEvents = make(chan agent.Event)
-
-	prettyJSON := "{\n  \"rooms\": [\n    \"agents.room.deadbeef\"\n  ]\n}"
-	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventToolResult, ToolName: "mesh_rooms", Text: prettyJSON}))
-	m = updated.(Model)
-
-	for i, line := range m.statusLines() {
-		if strings.Contains(line, "\n") {
-			t.Fatalf("statusLines()[%d] contains an embedded newline, breaking the one-element-one-row assumption: %q", i, line)
+// statusLines()'s own line count must always match what renderStatusStrip
+// actually prints, in every mode -- resizeComponents' reserved-height
+// math (len(m.statusLines()) + 2) depends on this exactly, and the hint
+// row's line count now varies by mode (2 in Normal, 1 in Insert/Ring,
+// found live 2026-09-07 when the shortcuts row was split across 2
+// lines). Also guards the original 2026-09-06 finding at the unit level
+// it actually belongs at now that the chatter status line is gone: no
+// status line may contain a raw embedded newline (see
+// collapseNewlines/truncateForChat in chat_test.go for that fix itself;
+// this just confirms nothing here can reintroduce the symptom).
+func TestStatusLines_LineCountMatchesActualRenderedRows(t *testing.T) {
+	for _, mode := range []Mode{ModeNormal, ModeInsert, ModeRingPopup} {
+		m := newTestModel(t)
+		m.mode = mode
+		if mode == ModeRingPopup {
+			ring := pendingRing{RingID: "r1", Peer: "peer1"}
+			m.pendingRingPopup = &ring
 		}
-	}
-	if got, want := len(strings.Split(m.renderStatusStrip(), "\n")), len(m.statusLines()); got != want {
-		t.Fatalf("renderStatusStrip rendered as %d rows, but resizeComponents counted %d via statusLines()", got, want)
+		m.resizeComponents()
+
+		for i, line := range m.statusLines() {
+			if strings.Contains(line, "\n") {
+				t.Fatalf("mode %v: statusLines()[%d] contains an embedded newline, breaking the one-element-one-row assumption: %q", mode, i, line)
+			}
+		}
+		if got, want := len(strings.Split(m.renderStatusStrip(), "\n")), len(m.statusLines()); got != want {
+			t.Fatalf("mode %v: renderStatusStrip rendered as %d rows, but resizeComponents would count %d via statusLines()", mode, got, want)
+		}
 	}
 }
 

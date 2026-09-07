@@ -96,15 +96,30 @@ type Model struct {
 	statusBarPosition string // "top" or "bottom"
 	agentModel        string // see Options.AgentModel
 
-	// showChatter controls where routine tool-call activity (mesh
-	// operations) is shown. Off by default: it goes to lastChatter, a
-	// single ambient line in the status block, keeping the conversation
-	// pane to actual dialogue (you/agent/error/system). Toggling it on
-	// (the 'v' key) restores the old behavior of every tool call/result
-	// also landing as its own line in chatEntries -- for anyone who wants
-	// the full blow-by-blow inline rather than the ambient summary.
+	// showChatter controls whether routine tool-call activity (mesh
+	// operations) reaches the conversation pane at all. Off by default:
+	// isChatter events are silently dropped, keeping the pane to actual
+	// dialogue (you/agent/error/system). Toggling it on (the 'v' key)
+	// shows every tool call/result inline as its own line in chatEntries,
+	// for anyone who wants the full blow-by-blow. Used to also drive an
+	// ambient one-line status-block summary of the most recent one;
+	// dropped live 2026-09-07 (little practical value, per Raf) --
+	// suppressed now means genuinely not shown, not shown elsewhere.
+	// EventListening (see lastListeningAt) is deliberately NOT gated by
+	// this: it's a liveness heartbeat, not routine chatter, and stays
+	// visible regardless.
 	showChatter bool
-	lastChatter string // most recent tool call/result, rendered collapsed-form; empty until the first one
+	// lastListeningAt is #13/#15's liveness heartbeat: EventListening
+	// fires once per agent-loop cycle even when nothing else is
+	// happening, and an advancing timestamp is what makes a frozen
+	// process distinguishable from a correctly-idle one (a frozen one
+	// shows the same time forever). Rendered in the summary line, not a
+	// standalone status line -- the standalone "last: <chatter>" line
+	// this used to share a mechanism with was dropped live 2026-09-07
+	// (little practical value, per Raf) but the heartbeat itself is a
+	// different, still-load-bearing concern and survives that in
+	// condensed form. Zero until the first one arrives.
+	lastListeningAt time.Time
 
 	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
 
@@ -283,12 +298,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, DefaultKeyMap.Normal):
 			m.input.Blur()
 			m.mode = ModeNormal
+			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
 			return m, nil
 		case key.Matches(msg, DefaultKeyMap.Submit):
 			text := strings.TrimSpace(m.input.Value())
 			m.input.Reset()
 			m.input.Blur()
 			m.mode = ModeNormal
+			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
 			if text == "" {
 				return m, nil
 			}
@@ -308,6 +325,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, DefaultKeyMap.Insert):
 		m.mode = ModeInsert
+		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
 		return m, m.input.Focus()
 	case key.Matches(msg, DefaultKeyMap.ToggleMesh):
 		m.meshExpanded = !m.meshExpanded
@@ -321,7 +339,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
 		m.showChatter = !m.showChatter
-		m.resizeComponents()
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Up):
 		if !m.meshExpanded {
@@ -396,6 +413,7 @@ func (m *Model) processPendingRings() []tea.Cmd {
 			r := ring
 			m.pendingRingPopup = &r
 			m.mode = ModeRingPopup
+			m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Ring)
 		}
 	}
 	if len(cmds) > 0 {
@@ -424,14 +442,24 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		pattern = bellTriple
 	}
 
-	entry := chatEntryFromAgentEvent(agent.Event(ev))
-	if isChatter(ev.Kind) && !m.showChatter {
-		m.lastChatter = entry.render(false)
-		m.resizeComponents() // the chatter line may be appearing for the first time
-	} else {
-		m.chatEntries = append(m.chatEntries, entry)
-		m.syncViewport()
+	if ev.Kind == agent.EventListening {
+		// Always tracked, regardless of showChatter -- see
+		// lastListeningAt's own doc comment: this is a liveness
+		// heartbeat, a different concern from "should routine tool-call
+		// chatter clutter the chat pane" below.
+		m.lastListeningAt = time.Now()
 	}
+
+	if isChatter(ev.Kind) && !m.showChatter {
+		// Routine tool-call activity, suppressed by default (see
+		// isChatter's own doc comment) -- genuinely dropped now, not
+		// shown elsewhere either. 'v' still shows it inline in the chat
+		// pane for anyone who wants the full detail.
+		return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+	}
+	entry := chatEntryFromAgentEvent(agent.Event(ev))
+	m.chatEntries = append(m.chatEntries, entry)
+	m.syncViewport()
 	return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
 }
 
@@ -464,6 +492,7 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 	m.input.SetValue(strings.TrimRight(string(content), "\n"))
 	m.input.CursorEnd()
 	m.mode = ModeInsert
+	m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert) -- a no-op if already Insert
 	return m, m.input.Focus()
 }
 
@@ -501,6 +530,14 @@ var (
 	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	statusStripStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38BDF8"))
+	// summaryStyle is statusStripStyle's normal-weight sibling, for the
+	// rooms/pending-rings/agents-seen/model portion of the summary line
+	// specifically -- found live 2026-09-07: bold there read as louder
+	// than that information warrants, especially now that the instance's
+	// own petname (renderSummaryLine, its own distinct bold+color via
+	// agentBadgeStyle) needs to be the thing that visually stands out on
+	// that line, not compete with it.
+	summaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8"))
 )
 
 func (m Model) View() string {
@@ -534,23 +571,17 @@ func (m Model) View() string {
 
 // statusLines is the status block's content, one entry per rendered line.
 // resizeComponents' reserved-height math counts this slice directly, so
-// any new line kind that can appear/disappear at runtime (the chatter
-// line here) must go through this, not be appended ad hoc in
-// renderStatusStrip -- otherwise the viewport height and what's actually
-// on screen drift apart.
+// any new line kind that can appear/disappear at runtime (the hint row's
+// own 1-vs-2-line count, depending on mode) must go through this, not be
+// appended ad hoc in renderStatusStrip -- otherwise the viewport height
+// and what's actually on screen drift apart.
 func (m Model) statusLines() []string {
-	lines := []string{m.renderModeIndicator()}
-	if chatter := m.renderChatterLine(); chatter != "" {
-		lines = append(lines, chatter)
-	}
-	lines = append(lines, m.renderSummaryLine())
-	return lines
+	lines := m.renderHintLines()
+	return append(lines, m.renderSummaryLine())
 }
 
 // renderModeIndicator follows vim's own bottom-of-screen convention
-// (`-- INSERT --` etc.) -- issue #2's "mode indicator" ask, made its own
-// line rather than folded into the summary line so it's legible at a
-// glance rather than buried mid-sentence.
+// (`-- INSERT --` etc.).
 func (m Model) renderModeIndicator() string {
 	switch m.mode {
 	case ModeInsert:
@@ -562,45 +593,64 @@ func (m Model) renderModeIndicator() string {
 	}
 }
 
-// renderChatterLine is the ambient stand-in for tool-call activity that
-// isChatter routed out of the chat pane. Empty (rendered as no line at
-// all, see statusLines) until the first one arrives, and suppressed
-// entirely once showChatter is on -- that activity is already inline in
-// the chat pane at that point, so this would just be the same line twice.
-func (m Model) renderChatterLine() string {
-	if m.showChatter || m.lastChatter == "" {
-		return ""
+// renderHintLines is the shortcuts row, leading with the mode indicator.
+// Found live 2026-09-07: Normal mode's full shortcut list combined onto
+// one line with the summary line routinely ran well past a narrow
+// terminal's width, clipping instead of wrapping legibly -- split across
+// 2 lines here instead. Also retires what used to be the mode
+// indicator's own separate status line: merging it into the hint row's
+// first line removes a line from the block for the same information,
+// rather than adding one. Insert mode's own hint list is short enough to
+// stay on one line; the ring pop-up already shows its own hints
+// (renderRingPopup), so needs none here.
+func (m Model) renderHintLines() []string {
+	mode := m.renderModeIndicator()
+	switch m.mode {
+	case ModeRingPopup:
+		return []string{mode}
+	case ModeInsert:
+		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
+	default:
+		return []string{
+			mode + "  " + dimStyle.Render("m: mesh view  i: compose  ctrl+e: $EDITOR"),
+			dimStyle.Render("v: verbose  e: expand  b: mute  q: quit"),
+		}
 	}
-	// m.lastChatter is already a rendered chatEntry line (its own
-	// time/tool styling) -- prefix only, don't re-wrap it in dimStyle,
-	// which would fight the ANSI codes already embedded in it.
-	return dimStyle.Render("last: ") + m.lastChatter
 }
 
+// renderSummaryLine is the mesh-state line: this instance's own identity
+// (when known), then the rooms/pending-rings/agents-seen counts and the
+// configured model. The identity segment is bold, in its own
+// deterministic color (agentBadgeStyle -- the same per-agent color
+// scheme the presence badge and room-message previews already use, see
+// identity.go), so it's the one thing on this line that visually stands
+// out; found live 2026-09-07 that bolding the whole line competed with
+// that instead of setting it apart, so the rest of the line
+// (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
-	line := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
+	rest := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
 		len(m.state.joined), len(m.state.pending), len(m.state.agents))
+	if m.agentModel != "" {
+		rest += " · " + m.agentModel
+	}
+	if m.muted {
+		rest += "  [muted]"
+	}
+	if !m.lastListeningAt.IsZero() {
+		rest += " · listening " + m.lastListeningAt.Format("15:04:05")
+	}
+	out := summaryStyle.Render(rest)
+
 	// Leads with "who am I" when known -- the dual-instance identity bug
 	// (two lazymesh instances silently sharing one mesh node_id, fixed in
 	// 8622117) was only visible by comparing raw node_ids or Presence
 	// panel rows across terminals; this makes distinctness confirmable at
 	// a glance, in the one place that's always on screen.
-	if petname := selfPetname(m.state.agents); petname != "" {
-		line = petname + " · " + line
+	if self, ok := selfAgent(m.state.agents); ok {
+		identity := identityKey(self.NodeID, self.Petname)
+		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
+		out = name + summaryStyle.Render(" · ") + out
 	}
-	if m.agentModel != "" {
-		line += " · " + m.agentModel
-	}
-	if m.muted {
-		line += "  [muted]"
-	}
-
-	hint := "m: mesh view  i: compose  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit"
-	if m.mode == ModeInsert {
-		hint = "esc: normal mode  enter: send  ctrl+e: edit in $EDITOR"
-	}
-
-	out := statusStripStyle.Render(line) + "  " + dimStyle.Render(hint)
 	if m.lastErr != nil {
 		out += "  " + errStyle.Render(fmt.Sprintf("(refresh error: %s)", m.lastErr))
 	}

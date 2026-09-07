@@ -52,6 +52,7 @@ func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	r := m.pendingRingPopup
 	if r == nil {
 		m.mode = ModeNormal
+		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, nil
 	}
 
@@ -60,21 +61,25 @@ func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.mode = ModeNormal
+		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, false, "")
 	case key.Matches(msg, DefaultKeyMap.Decline):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.mode = ModeNormal
+		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerDecline, false, "")
 	case key.Matches(msg, DefaultKeyMap.Trust):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.mode = ModeNormal
+		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, true, r.Peer)
 	case key.Matches(msg, DefaultKeyMap.Normal): // Esc
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.mode = ModeNormal
+		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, nil
 	}
 	return m, nil

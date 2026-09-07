@@ -99,15 +99,27 @@ func minInt(a, b int) int {
 	return b
 }
 
+// selfAgent finds the presence entry marked is_self, if any have been
+// fetched yet -- the one lookup selfNodeID/selfPetname/renderSummaryLine's
+// own identity styling all build on, rather than three separate scans
+// over the same slice.
+func selfAgent(agents []agentPresence) (agentPresence, bool) {
+	for _, a := range agents {
+		if a.IsSelf {
+			return a, true
+		}
+	}
+	return agentPresence{}, false
+}
+
 // selfNodeID finds the presence entry marked is_self, if any have been
 // fetched yet.
 func selfNodeID(agents []agentPresence) string {
-	for _, a := range agents {
-		if a.IsSelf {
-			return a.NodeID
-		}
+	self, ok := selfAgent(agents)
+	if !ok {
+		return ""
 	}
-	return ""
+	return self.NodeID
 }
 
 // selfPetname is this instance's own deterministic petname, the same
@@ -122,10 +134,9 @@ func selfNodeID(agents []agentPresence) string {
 // (see resizeComponents' own callers for the same "may not have data yet"
 // shape elsewhere in this package).
 func selfPetname(agents []agentPresence) string {
-	for _, a := range agents {
-		if a.IsSelf {
-			return displayName(a.NodeID, a.Petname)
-		}
+	self, ok := selfAgent(agents)
+	if !ok {
+		return ""
 	}
-	return ""
+	return displayName(self.NodeID, self.Petname)
 }

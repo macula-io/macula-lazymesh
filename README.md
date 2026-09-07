@@ -109,7 +109,7 @@ Vim-style modal input — **normal mode by default**:
 | `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
 | `m` | expand/collapse the full mesh view (rooms/rings/presence) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
-| `v` | toggle verbose mode (tool calls inline in chat vs. the status line) | (typed as text) |
+| `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
 | `i` | enter insert mode to compose a message | — |
 | `ctrl+e` | compose in `$EDITOR` (falls back to `vi`), lands in insert mode with the result | compose in `$EDITOR`, same as normal mode |
@@ -125,17 +125,23 @@ until you press `i` again.
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat
 pane or the full mesh view is showing — collapsing the mesh view never
-loses that ambient awareness. It grows from a minimum of two lines:
+loses that ambient awareness. Two or three lines:
 
-- a vim-style mode indicator (`-- NORMAL --` / `-- INSERT --`)
-- once the agent's made its first tool call, a line with the most recent
-  one (`mesh_call`, `mesh_say`, ...) — this is where routine tool-call
-  "chatter" goes by default, keeping the conversation pane to actual
-  dialogue; `v` toggles it back inline into the chat pane instead
-- the summary line — this instance's own petname once known (`swift-otter
-  · 3 rooms · 2 pending rings · 8 agents seen`, requires macula-mcp
-  >= 0.25.2), so two instances running side by side are distinguishable
-  at a glance instead of only under the hood — plus the current key hints
+- the shortcuts row, leading with a vim-style mode indicator
+  (`-- NORMAL --` / `-- INSERT --`). Normal mode's full shortcut list
+  splits across 2 lines so it doesn't clip on a narrower terminal;
+  Insert's shorter one fits on one.
+- the summary line: this instance's own petname once known, bold and in
+  its own color so it stands out (`swift-otter`, requires macula-mcp
+  >= 0.25.2 — see the room-message color coding above for the same
+  per-agent coloring), then the normal-weight room/ring/agent counts and
+  model (`3 rooms · 2 pending rings · 8 agents seen · deepseek/
+  deepseek-v4-flash`), then a `listening HH:MM:SS` heartbeat once the
+  agent loop's had its first idle cycle — an advancing clock is what
+  makes a frozen process distinguishable from a correctly-idle one.
+  Routine tool-call "chatter" (`mesh_call`, `mesh_say`, ...) is dropped
+  from here entirely by default; `v` shows it inline in the chat pane
+  instead for anyone who wants the full detail.
 
 **Audio cues**, plain terminal bell only (no audio library, no sound
 files): single bell for an ordinary room message from someone else,
