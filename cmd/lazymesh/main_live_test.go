@@ -28,7 +28,7 @@ func TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault(t *testing.T) {
 	}
 	defer client.Close()
 
-	tools, err := buildToolSource(config.Config{}, client)
+	tools, err := buildToolSource(config.Config{}, client, nil)
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -37,17 +37,17 @@ func TestLiveBuildToolSource_IncludesMeshServiceToolsByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	sawMeshHello, sawMeshService := false, false
+	sawMeshRooms, sawMeshService := false, false
 	for _, tool := range listed {
-		if tool.Name == "mesh_hello" {
-			sawMeshHello = true
+		if tool.Name == "mesh_rooms" {
+			sawMeshRooms = true
 		}
 		if strings.HasPrefix(tool.Name, "mesh_service_") {
 			sawMeshService = true
 		}
 	}
-	if !sawMeshHello {
-		t.Fatalf("expected mesh_hello among the default tools")
+	if !sawMeshRooms {
+		t.Fatalf("expected mesh_rooms among the default tools")
 	}
 	if !sawMeshService {
 		t.Fatalf("expected at least one mesh_service_* tool among the default tools -- Phase 3 should be on by default")
@@ -81,7 +81,7 @@ func TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalTools
 		// second, separate opt-in.
 	}
 
-	tools, err := buildToolSource(cfg, client)
+	tools, err := buildToolSource(cfg, client, nil)
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalTools
 	}
 	sawMesh, sawShell := false, false
 	for _, tool := range listed {
-		if tool.Name == "mesh_hello" {
+		if tool.Name == "mesh_rooms" {
 			sawMesh = true
 		}
 		if tool.Name == "shell_exec" {
@@ -100,7 +100,7 @@ func TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalTools
 		}
 	}
 	if !sawMesh {
-		t.Fatalf("expected mesh_hello to still be listed (it's on the default allowlist)")
+		t.Fatalf("expected mesh_rooms to still be listed (it's on the default allowlist)")
 	}
 	if sawShell {
 		t.Fatalf("shell_exec must NOT be listed under the default allowlist, even with local_tools.enabled")
@@ -134,7 +134,7 @@ func TestLiveBuildToolSource_ExplicitAllowlistOverrideExposesShellExec(t *testin
 		ToolAllowlist: []string{"mesh_hello", "shell_exec"},
 	}
 
-	tools, err := buildToolSource(cfg, client)
+	tools, err := buildToolSource(cfg, client, nil)
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

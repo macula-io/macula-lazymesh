@@ -20,6 +20,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 )
 
@@ -48,6 +49,8 @@ type oneShotWaitProvider struct {
 	waitReplySeconds int
 	round            int
 }
+
+func (p *oneShotWaitProvider) ContextWindow() int { return 1_000_000 }
 
 func (p *oneShotWaitProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	p.round++
@@ -100,7 +103,7 @@ func TestLiveOldDesign_HumanInputWasInvisibleDuringLongMeshSayWait(t *testing.T)
 	}
 
 	const waitReplySeconds = 8
-	tools, err := buildToolSource(config.Config{}, client) // deliberately unwrapped -- see doc comment
+	tools, err := buildToolSource(config.Config{}, client, nil) // deliberately unwrapped -- see doc comment
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -171,8 +174,9 @@ func TestLiveNewDesign_HumanInputSeenImmediatelyDuringRoomWait(t *testing.T) {
 	userInputCh := make(chan string, 1)
 	userInputCh <- "hello from a human, are you there?"
 
+	ringMgr := ringwaiter.New(nil, "") // unstarted -- this probe is about room-arrival vs. human-input priority, not rings
 	pushedAt := time.Now()
-	got, ok := nextEvent(ctx, userInputCh, mgr, ringCheckInterval)
+	got, ok := nextEvent(ctx, userInputCh, mgr, ringMgr)
 	elapsed := time.Since(pushedAt)
 
 	if !ok || got != "hello from a human, are you there?" {

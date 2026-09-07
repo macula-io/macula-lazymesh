@@ -103,6 +103,27 @@ func run(configPath, room, goalText string) error {
 	tuiEvents := make(chan agent.Event, 64)
 	userInputCh := make(chan string, 8)
 
+	// Moved ahead of buildToolSource (2026-09-07, R2): meshservices.Source
+	// needs a logger for its one-time discovery line, and buildToolSource
+	// is where that gets wired in.
+	logPath, err := agentLogPath()
+	if err != nil {
+		return fmt.Errorf("resolve agent log path: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open agent log %s: %w", logPath, err)
+	}
+	defer logFile.Close()
+	// Never write agent activity to stderr/stdout once the TUI's alt
+	// screen takes over the terminal -- interleaved log lines would
+	// corrupt the display. A separate file the operator can tail
+	// (fmt.Fprintln below, before the TUI starts) is the live view
+	// for agent internals; the chat pane shows a collapsed line per
+	// event live, but agent.log keeps the full verbose detail.
+	agentLog := log.New(logFile, "", log.LstdFlags)
+	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
+
 	// The agent loop always runs -- Raf's explicit product decision
 	// (macula-io/macula-lazymesh#1, 2026-09-06): "lazymesh should run
 	// without that arguments ceremony. lazymesh starts and uses the
@@ -112,11 +133,21 @@ func run(configPath, room, goalText string) error {
 	if err != nil {
 		return fmt.Errorf("build provider: %w", err)
 	}
-	tools, err := buildToolSource(cfg, client)
+	tools, err := buildToolSource(cfg, client, agentLog)
 	if err != nil {
 		return fmt.Errorf("build tool source: %w", err)
 	}
 	tools = agent.NewNoBlockingWaitSource(tools)
+
+	// Startup budget check (2026-09-07, R2): computed here, before
+	// anything else starts, so a genuinely undersized context window
+	// fails fast with a clear message instead of the same class of
+	// crash the runaway-context incident already produced once.
+	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle)
+	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
+		return err
+	}
 
 	// Loop-owned room listening (macula-io/macula-lazymesh#14/#15): the Go
 	// loop itself, not the model, blocks in mesh_wait_room per joined
@@ -138,24 +169,6 @@ func run(configPath, room, goalText string) error {
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
-	logPath, err := agentLogPath()
-	if err != nil {
-		return fmt.Errorf("resolve agent log path: %w", err)
-	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("open agent log %s: %w", logPath, err)
-	}
-	defer logFile.Close()
-	// Never write agent activity to stderr/stdout once the TUI's alt
-	// screen takes over the terminal -- interleaved log lines would
-	// corrupt the display. A separate file the operator can tail
-	// (fmt.Fprintln below, before the TUI starts) is the live view
-	// for agent internals; the chat pane shows a collapsed line per
-	// event live, but agent.log keeps the full verbose detail.
-	agentLog := log.New(logFile, "", log.LstdFlags)
-	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
-	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
 	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
@@ -267,8 +280,10 @@ func providerLabel(cfg config.Config) string {
 // exist. cfg.LocalTools.Enabled controls whether shell_exec/read_file/
 // write_file are wired up at all; it does NOT put them on the allowlist
 // by itself -- see config.ToolAllowlist and internal/agent/allowlist.go.
-func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSource, error) {
-	sources := []agent.ToolSource{client, meshservices.New(client)}
+func buildToolSource(cfg config.Config, client *mcpclient.Client, agentLog *log.Logger) (agent.ToolSource, error) {
+	meshSvc := meshservices.New(client)
+	meshSvc.SetLogger(agentLog)
+	sources := []agent.ToolSource{client, meshSvc}
 	if cfg.LocalTools.Enabled {
 		local, err := localtools.New(localtools.Config{
 			Enabled:      cfg.LocalTools.Enabled,
@@ -281,8 +296,13 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client) (agent.ToolSou
 		sources = append(sources, local)
 	}
 	combined := agent.NewMultiSource(sources...)
+	allowed := agent.NewAllowlistSource(combined, resolveAllowlist(cfg))
 
-	return agent.NewAllowlistSource(combined, resolveAllowlist(cfg)), nil
+	// Terse-ified last, after allowlisting -- see internal/agent/terse.go's
+	// own doc comment (R2, 2026-09-07): only shortens what actually
+	// reaches the model, never wastes work rewriting a tool the allowlist
+	// would filter out anyway.
+	return agent.NewTerseDescriptionSource(allowed), nil
 }
 
 // resolveAllowlist is the single place cfg.ToolAllowlist gets defaulted,
@@ -307,6 +327,77 @@ func allowlistIncludes(allowlist []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// fixedPrefixTargetTokens is R2's own design target (Fable's review,
+// 2026-09-07): what the fixed prefix (system prompt + tool schemas)
+// SHOULD fit under, engineered toward directly by the tool-schema work
+// in this same change (dropping mesh_hello, TerseDescriptionSource,
+// meshservices' once-per-session discovery). Not itself a hard-fail
+// threshold -- see checkStartupBudget's own doc comment for that -- just
+// what gets logged alongside the real measurement so a regression that
+// creeps back over it is visible without needing to know this number by
+// heart.
+const fixedPrefixTargetTokens = 1500
+
+// estimateTokens is a rough, deliberately-approximate byte/4 heuristic,
+// not a real tokenizer -- same reasoning as internal/agent's
+// maxHistoryBytes: no tokenizer dependency exists in this codebase, and
+// an approximate, provider-agnostic budget is the deliberate choice
+// (real per-provider token counts vary and would need one per backend).
+// Good enough for "is this roughly on target," not exact accounting.
+func estimateTokens(byteLen int) int {
+	return byteLen / 4
+}
+
+// checkStartupBudget computes the fixed prefix's real size (system
+// prompt + every tool's Description/InputSchema, marshaled exactly as
+// agent.Loop.Say sends them) against the configured provider's real
+// ContextWindow(), and refuses to start if it doesn't leave enough room
+// to function at all.
+//
+// Hard-fail, not just a log line (2026-09-07, Fable's own R2 spec: fail
+// when the actual budget check comes up short for whatever's
+// configured, don't hard-fail generically) -- conditional on the
+// PROVIDER's real window, not the fixedPrefixTargetTokens design target
+// above: neither DeepSeek nor NVIDIA (both ~1M tokens today) will ever
+// trip this, since even an untrimmed fixed prefix is a tiny fraction of
+// a million-token window. The threshold this actually enforces: the
+// fixed prefix must not consume more than half the configured window --
+// a genuine "would this even be able to hold one real exchange" floor,
+// not an optimization target, so a legitimately small-context model
+// (the whole reason this check exists) isn't refused just for being
+// small, only for being too small to function with what's currently
+// configured.
+func checkStartupBudget(ctx context.Context, systemPrompt string, tools agent.ToolSource, p provider.Provider, agentLog *log.Logger) error {
+	listed, err := tools.ListTools(ctx)
+	if err != nil {
+		return fmt.Errorf("startup budget check: list tools: %w", err)
+	}
+	specs := agent.ToolSpecsFrom(listed)
+	toolsJSON, err := json.Marshal(specs)
+	if err != nil {
+		return fmt.Errorf("startup budget check: marshal tool specs: %w", err)
+	}
+	fixedPrefixTokens := estimateTokens(len(systemPrompt) + len(toolsJSON))
+	window := p.ContextWindow()
+
+	line := fmt.Sprintf(
+		"[budget] fixed prefix ~%d tokens (target <%d) against a %d-token context window (%d tools)",
+		fixedPrefixTokens, fixedPrefixTargetTokens, window, len(listed),
+	)
+	if agentLog != nil {
+		agentLog.Print(line)
+	}
+
+	if window > 0 && fixedPrefixTokens*2 > window {
+		fmt.Fprintln(os.Stderr, "lazymesh:", line)
+		return fmt.Errorf(
+			"startup budget check failed: fixed prefix (~%d tokens) leaves too little of this model's %d-token context window to function -- reduce the tool allowlist or configure a larger-context model",
+			fixedPrefixTokens, window,
+		)
+	}
+	return nil
 }
 
 // agentLogPath is where agent activity is logged instead of stderr, since

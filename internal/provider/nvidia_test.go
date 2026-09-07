@@ -94,3 +94,14 @@ func TestNVIDIA_Defaults(t *testing.T) {
 		t.Fatalf("expected default model %q, got %q", NVIDIADefaultModel, n.Model)
 	}
 }
+
+// Covers R2 (2026-09-07): the startup budget check needs a real,
+// provider-reported window, not a guess. This is the empirical number
+// from a live instance's own 400 error during the runaway-context
+// incident, not a lookup.
+func TestNVIDIA_ContextWindowMatchesLiveObservedLimit(t *testing.T) {
+	n := NewNVIDIA("", "", "key", nil)
+	if got := n.ContextWindow(); got != 1_048_576 {
+		t.Fatalf("expected ContextWindow()==1048576 (the live-observed kimi-k3 limit), got %d", got)
+	}
+}

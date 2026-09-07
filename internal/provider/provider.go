@@ -80,6 +80,14 @@ type ChatResponse struct {
 // Provider is an LLM chat-completions backend. DeepSeek is the default
 // implementation; the interface exists so a second backend is a config
 // value, not a rewrite.
+//
+// ContextWindow added 2026-09-07 (R2, the runaway-context incident's
+// follow-up): a real, provider-reported number cmd/lazymesh's own
+// startup budget check compares the fixed prefix (system prompt + tool
+// schemas) against, so a genuinely small-context model gets a clear
+// refuse-to-start message instead of silently running until the same
+// class of crash this incident already produced once.
 type Provider interface {
 	ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error)
+	ContextWindow() int
 }

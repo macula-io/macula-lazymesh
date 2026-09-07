@@ -59,3 +59,20 @@ func NewNVIDIA(baseURL, model, apiKey string, httpClient *http.Client) *NVIDIA {
 func (n *NVIDIA) ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	return callOpenAICompatChatCompletions(ctx, n.HTTP, n.BaseURL, n.Model, n.APIKey, req)
 }
+
+// nvidiaKimiK3ContextWindow is NVIDIADefaultModel's (moonshotai/kimi-k3)
+// real context length -- not looked up, taken directly from a live
+// instance's own 400 error during the 2026-09-07 runaway-context
+// incident ("This model's maximum context length is 1048576 tokens"),
+// about as authoritative a source as exists: the backend reporting its
+// own configured limit. Tied to NVIDIADefaultModel specifically -- a
+// different model configured via NVIDIA_MODEL would need its own real
+// number, not this one assumed to still apply.
+const nvidiaKimiK3ContextWindow = 1_048_576
+
+// ContextWindow returns nvidiaKimiK3ContextWindow (see its own doc
+// comment) -- accurate for NVIDIADefaultModel, the only model this has
+// actually been verified against.
+func (n *NVIDIA) ContextWindow() int {
+	return nvidiaKimiK3ContextWindow
+}

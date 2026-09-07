@@ -1,8 +1,11 @@
 package meshservices
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,17 +96,22 @@ func TestListTools_UndiscoveredCuratedProcedureIsNotListed(t *testing.T) {
 	}
 }
 
-func TestListTools_CachesWithinTTL(t *testing.T) {
+// Covers R2 (2026-09-07): discovery resolves once per process lifetime,
+// not on a TTL -- Fable's review flagged a re-discovering tool schema
+// array as directly self-defeating for provider-side prompt caching.
+// Calls ListTools 5 times (not just twice) specifically to distinguish
+// "once per session, forever" from a TTL that just hasn't expired yet
+// within the test's own short runtime.
+func TestListTools_DiscoversOnceNeverAgain(t *testing.T) {
 	fake := &fakeMCP{discoveryResponses: []string{
 		discoveryRecordFor(testRealm, "hecate_agora.get_posts_page"),
 	}}
 	src := New(fake)
 
-	if _, err := src.ListTools(context.Background()); err != nil {
-		t.Fatalf("first ListTools returned error: %v", err)
-	}
-	if _, err := src.ListTools(context.Background()); err != nil {
-		t.Fatalf("second ListTools returned error: %v", err)
+	for i := 0; i < 5; i++ {
+		if _, err := src.ListTools(context.Background()); err != nil {
+			t.Fatalf("ListTools call %d returned error: %v", i, err)
+		}
 	}
 
 	discoveryCalls := 0
@@ -113,7 +121,31 @@ func TestListTools_CachesWithinTTL(t *testing.T) {
 		}
 	}
 	if discoveryCalls != 1 {
-		t.Fatalf("expected exactly 1 discovery call within the cache TTL, got %d", discoveryCalls)
+		t.Fatalf("expected exactly 1 discovery call across 5 ListTools calls, got %d", discoveryCalls)
+	}
+}
+
+// Covers the logging half of the same fix: SetLogger's line prints
+// exactly once, the moment discovery actually happens, not on every
+// call -- an operator watching agent.log needs to see this happened,
+// but not be spammed by it repeating on a source that never re-checks.
+func TestListTools_LogsDiscoveryExactlyOnce(t *testing.T) {
+	fake := &fakeMCP{discoveryResponses: []string{
+		discoveryRecordFor(testRealm, "hecate_agora.get_posts_page"),
+	}}
+	src := New(fake)
+	var buf bytes.Buffer
+	src.SetLogger(log.New(&buf, "", 0))
+
+	for i := 0; i < 3; i++ {
+		if _, err := src.ListTools(context.Background()); err != nil {
+			t.Fatalf("ListTools call %d returned error: %v", i, err)
+		}
+	}
+
+	got := buf.String()
+	if strings.Count(got, "mesh_service discovery") != 1 {
+		t.Fatalf("expected exactly one discovery log line across 3 calls, got: %q", got)
 	}
 }
 

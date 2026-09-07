@@ -12,7 +12,9 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
+	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 )
@@ -455,5 +457,87 @@ func TestNextEvent_ConsumesARealRingArrival(t *testing.T) {
 	}
 	if !strings.Contains(got, "r1") || !strings.Contains(got, "Nova") || !strings.Contains(got, "come help") {
 		t.Fatalf("expected the ring arrival's prompt to name the ring/peer/purpose, got %q", got)
+	}
+}
+
+func TestEstimateTokens_RoughlyOneQuarterOfByteLength(t *testing.T) {
+	if got := estimateTokens(400); got != 100 {
+		t.Fatalf("expected 400 bytes to estimate ~100 tokens, got %d", got)
+	}
+}
+
+// fakeBudgetToolSource lets a test control exactly how many tools (and
+// how large their combined schema is) checkStartupBudget sees, without a
+// real macula-mcp spawn.
+type fakeBudgetToolSource struct {
+	tools []mcpclient.Tool
+}
+
+func (f fakeBudgetToolSource) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
+	return f.tools, nil
+}
+
+func (f fakeBudgetToolSource) CallToolRaw(ctx context.Context, name, argumentsJSON string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+type fakeBudgetProvider struct {
+	window int
+}
+
+func (f fakeBudgetProvider) ContextWindow() int { return f.window }
+
+func (f fakeBudgetProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, fmt.Errorf("not implemented")
+}
+
+// Covers R2 (2026-09-07): both real backends (DeepSeek, NVIDIA) are
+// ~1M tokens, so a real fixed prefix (a few KB at most) is nowhere near
+// half the window -- the check must pass cleanly against realistic
+// numbers, not just an adversarially small one.
+func TestCheckStartupBudget_PassesForRealisticPrefixAgainstMillionTokenWindow(t *testing.T) {
+	tools := fakeBudgetToolSource{tools: []mcpclient.Tool{
+		{Name: "mesh_say", Description: strings.Repeat("x", 800), InputSchema: map[string]any{"type": "object"}},
+		{Name: "mesh_rooms", Description: "list rooms", InputSchema: map[string]any{"type": "object"}},
+	}}
+	p := fakeBudgetProvider{window: 1_000_000}
+
+	if err := checkStartupBudget(context.Background(), "a short system prompt", tools, p, nil); err != nil {
+		t.Fatalf("expected a realistic fixed prefix to pass against a 1M-token window, got: %v", err)
+	}
+}
+
+// Covers the actual point of R2's hard-fail requirement: a genuinely
+// small context window with a fixed prefix that would eat more than
+// half of it must refuse to start, not silently run into the same class
+// of crash the runaway-context incident already produced once.
+func TestCheckStartupBudget_FailsWhenFixedPrefixExceedsHalfASmallWindow(t *testing.T) {
+	bigDescription := strings.Repeat("x", 20_000) // ~5,000 estimated tokens
+	tools := fakeBudgetToolSource{tools: []mcpclient.Tool{
+		{Name: "mesh_say", Description: bigDescription, InputSchema: map[string]any{"type": "object"}},
+	}}
+	p := fakeBudgetProvider{window: 4_000} // half is 2,000 -- the ~5,000-token prefix must trip this
+
+	err := checkStartupBudget(context.Background(), "system prompt", tools, p, nil)
+	if err == nil {
+		t.Fatalf("expected checkStartupBudget to refuse to start against an undersized window")
+	}
+	if !strings.Contains(err.Error(), "budget check failed") {
+		t.Fatalf("expected a clear budget-check error message, got: %v", err)
+	}
+}
+
+// A provider that doesn't report a real window (ContextWindow()==0) must
+// never trip the hard-fail -- there is nothing to compare against, and
+// silently refusing to start on missing data would be worse than
+// skipping the check for that one backend.
+func TestCheckStartupBudget_ZeroWindowNeverFails(t *testing.T) {
+	tools := fakeBudgetToolSource{tools: []mcpclient.Tool{
+		{Name: "mesh_say", Description: strings.Repeat("x", 20_000), InputSchema: map[string]any{"type": "object"}},
+	}}
+	p := fakeBudgetProvider{window: 0}
+
+	if err := checkStartupBudget(context.Background(), "system prompt", tools, p, nil); err != nil {
+		t.Fatalf("expected a zero ContextWindow() to never trip the hard-fail, got: %v", err)
 	}
 }

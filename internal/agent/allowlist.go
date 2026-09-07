@@ -34,8 +34,18 @@ import (
 // allowed to reach it. Making local tools reachable is a separate,
 // explicit config.ToolAllowlist override the operator has to write
 // themselves (see config.go) -- never a side effect of one flag.
+// mesh_hello deliberately excluded (2026-09-07, R2): its own tool
+// description says presence auto-starts on any of mesh_say/
+// mesh_join_room/mesh_leave_room/mesh_rooms/mesh_answer_ring/
+// mesh_read_inbox -- every OTHER tool on this list -- and
+// agentInitialPrompt's very first instruction always calls one of them.
+// Confirmed nothing here relies on operator_name (mesh_hello's own
+// settable label): lazymesh's own status bar shows the deterministic
+// petname instead, computed from node_id regardless of whether
+// mesh_hello was ever called. This tool's own schema was also the single
+// largest line item in the fixed prefix sent on every request -- pure
+// cost with no remaining function once the auto-start covers it.
 var DefaultToolAllowlist = []string{
-	"mesh_hello",
 	"mesh_join_room",
 	"mesh_leave_room",
 	"mesh_say",

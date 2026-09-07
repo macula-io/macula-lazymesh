@@ -53,23 +53,33 @@ import "strings"
 // hecate-rag query field), which flows back into the conversation as a
 // normal tool result the model can read and retry against, exactly like
 // any other tool error in this codebase.
+// Description is deliberately terse (shortened 2026-09-07, R2 -- see
+// internal/agent/terse.go for the same reasoning applied to macula-mcp's
+// own tools): just enough for a small/cheap model to call each procedure
+// correctly, not the full inferred-vs-verified confidence narrative --
+// that context stays in this file's own comments above, for a human
+// maintainer, not resent to the model on every single request. A wrong
+// or missing argument still surfaces as a clean, specific error the
+// model can read and retry against (see the package doc comment above);
+// losing the "(inferred)" qualifier from what's sent to the model costs
+// nothing that error path doesn't already cover.
 var Curated = []CuratedProcedure{
-	{Domain: "hecate-rag", Method: "search_chunks_semantic", Description: "Semantic search over the shared corpus. Args (verified live): query_text (string, required) -- NOT `query`. top_k (integer, optional) limits results. Returns ranked chunks with score/source_path/content."},
-	{Domain: "hecate-rag", Method: "answer_query", Description: "Answer a natural-language question against the shared corpus (likely wraps search + synthesis). Args (inferred): query_text (string, required)."},
-	{Domain: "hecate-rag", Method: "get_chunk_by_id", Description: "Fetch one corpus chunk by its id. Args (inferred): chunk_id (string, required)."},
-	{Domain: "hecate-rag", Method: "get_source_by_id", Description: "Fetch one corpus source document's metadata by id. Args (inferred): source_id (string, required)."},
-	{Domain: "hecate-rag", Method: "list_sources_page", Description: "Page through the corpus's source documents. Args (inferred): page/page_size or a cursor, optional -- try with no args first."},
-	{Domain: "hecate-rag", Method: "list_chunks_by_source", Description: "List the chunks belonging to one source document. Args (inferred): source_id (string, required)."},
-	{Domain: "hecate-rag", Method: "get_document_verbatim", Description: "Fetch a source document's original, unchunked text. Args (inferred): source_id (string, required)."},
-	{Domain: "hecate-rag", Method: "rerank_results", Description: "Rerank a candidate result set against a query. Args (inferred): query_text (string) and a list of candidates -- shape not verified."},
-	{Domain: "hecate_agora", Method: "search_posts", Description: "Search forum/agora posts. Args (inferred): query (string, required)."},
-	{Domain: "hecate_agora", Method: "search_archive", Description: "Search the archived (older/retention-managed) subset of posts. Args (inferred): same shape as search_posts."},
-	{Domain: "hecate_agora", Method: "get_posts_page", Description: "Page through recent posts. Verified live: works with an empty args object -- try {} first before adding pagination args."},
-	{Domain: "hecate_agora", Method: "get_thread_by_post_id", Description: "Fetch a post's full thread by its post id. Args (inferred): post_id (string, required)."},
-	{Domain: "hecate_graph", Method: "resolve_entity", Description: "Resolve a knowledge-graph entity by name or id. Args (inferred): entity_id or name (string, required) -- a missing/wrong field surfaces as a clean error (e.g. missing_entity_id), read it and retry."},
-	{Domain: "hecate_graph", Method: "resolve_link", Description: "Resolve a knowledge-graph link/relation. Args (inferred): link id or endpoint pair, exact shape not verified."},
-	{Domain: "hecate_graph", Method: "narrate_entity", Description: "Produce a natural-language narration of a graph entity. Args (inferred): entity_id (string, required)."},
-	{Domain: "hecate_graph", Method: "narrate_link", Description: "Produce a natural-language narration of a graph link. Args (inferred): link id, exact shape not verified."},
+	{Domain: "hecate-rag", Method: "search_chunks_semantic", Description: "Semantic search over the shared corpus. query_text (string, required, not query). top_k (integer, optional)."},
+	{Domain: "hecate-rag", Method: "answer_query", Description: "Answer a question against the shared corpus. query_text (string, required)."},
+	{Domain: "hecate-rag", Method: "get_chunk_by_id", Description: "Fetch one corpus chunk by id. chunk_id (string, required)."},
+	{Domain: "hecate-rag", Method: "get_source_by_id", Description: "Fetch one corpus source document's metadata by id. source_id (string, required)."},
+	{Domain: "hecate-rag", Method: "list_sources_page", Description: "Page through corpus source documents. No required args -- try {} first."},
+	{Domain: "hecate-rag", Method: "list_chunks_by_source", Description: "List one source document's chunks. source_id (string, required)."},
+	{Domain: "hecate-rag", Method: "get_document_verbatim", Description: "Fetch a source document's original, unchunked text. source_id (string, required)."},
+	{Domain: "hecate-rag", Method: "rerank_results", Description: "Rerank candidate results against a query. query_text (string) plus a list of candidates."},
+	{Domain: "hecate_agora", Method: "search_posts", Description: "Search forum posts. query (string, required)."},
+	{Domain: "hecate_agora", Method: "search_archive", Description: "Search archived (older) posts. Same args as search_posts."},
+	{Domain: "hecate_agora", Method: "get_posts_page", Description: "Page through recent posts. No required args -- try {} first."},
+	{Domain: "hecate_agora", Method: "get_thread_by_post_id", Description: "Fetch a post's full thread by id. post_id (string, required)."},
+	{Domain: "hecate_graph", Method: "resolve_entity", Description: "Resolve a knowledge-graph entity by name or id. entity_id or name (string, required)."},
+	{Domain: "hecate_graph", Method: "resolve_link", Description: "Resolve a knowledge-graph link/relation. Exact args not verified -- read the error and retry."},
+	{Domain: "hecate_graph", Method: "narrate_entity", Description: "Narrate a graph entity in natural language. entity_id (string, required)."},
+	{Domain: "hecate_graph", Method: "narrate_link", Description: "Narrate a graph link in natural language. Exact args not verified -- read the error and retry."},
 }
 
 // CuratedProcedure describes one entry in Curated.

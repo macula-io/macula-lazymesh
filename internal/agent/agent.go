@@ -159,6 +159,23 @@ func truncateForHistory(s string) string {
 		s[:maxToolResultBytes], maxToolResultBytes, len(s))
 }
 
+// ToolSpecsFrom maps mcpclient.Tool (macula-mcp's own shape) to
+// provider.ToolSpec (what a ChatRequest actually sends) -- pulled out of
+// Say so cmd/lazymesh's own startup budget check (R2, 2026-09-07) can
+// build the exact same toolSpecs a real Say() call would, to measure the
+// fixed prefix's real size before ever making a real request.
+func ToolSpecsFrom(tools []mcpclient.Tool) []provider.ToolSpec {
+	specs := make([]provider.ToolSpec, 0, len(tools))
+	for _, t := range tools {
+		specs = append(specs, provider.ToolSpec{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	return specs
+}
+
 // Say adds a user message to the conversation and runs the loop until the
 // model produces a plain assistant reply with no further tool calls,
 // emitting an Event for every intermediate step along the way.
@@ -173,14 +190,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 	if err != nil {
 		return fmt.Errorf("list tools: %w", err)
 	}
-	toolSpecs := make([]provider.ToolSpec, 0, len(tools))
-	for _, t := range tools {
-		toolSpecs = append(toolSpecs, provider.ToolSpec{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
-	}
+	toolSpecs := ToolSpecsFrom(tools)
 
 	// A tool-calling conversation can run several rounds: assistant asks
 	// for tools, gets results, asks for more. Bounded so a misbehaving

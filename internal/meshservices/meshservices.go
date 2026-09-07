@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -55,15 +56,17 @@ var pinnedRealm = func() string {
 	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }()
 
-// discoveryCacheTTL bounds how often Source re-queries
-// mesh_find_records_by_type. DHT procedure_advertisement records expire
-// roughly every 2 minutes on their own (a teammate's survey, 2026-09-06),
-// and the raw discovery payload is large (hundreds of KB across the whole
-// mesh) -- re-querying on literally every agent conversation turn (Loop
-// calls ListTools once per Say()) would mean a full DHT dump every few
-// seconds during an active room. A minute-scale cache keeps this cheap
-// while still refreshing well inside that expiry window.
-const discoveryCacheTTL = 60 * time.Second
+// Discovery resolves ONCE per process lifetime, not on a TTL (changed
+// 2026-09-07, R2): re-querying mesh_find_records_by_type ever, even on a
+// minute-scale cache, meant the tool schema array Loop.Say() sends could
+// change shape between calls -- Fable's review flagged this as directly
+// self-defeating for provider-side prompt caching, and R2's whole point
+// is a byte-stable fixed prefix so a provider's KV-cache actually reuses
+// it. Real tradeoff, accepted deliberately: a mesh service that comes up
+// AFTER this process starts is invisible until restart -- ListTools logs
+// clearly (see Source.logger) exactly once, when discovery actually
+// happens, so this isn't a silent gap. Previously TTL'd at 60s; that
+// constant is gone, not tuned.
 
 // callTimeoutMS is passed explicitly to every mesh_call rather than left
 // to its own default (a required finding, 2026-09-06: an implicit
@@ -98,10 +101,11 @@ type Source struct {
 	limit *fixedWindowLimiter
 	nowFn func() time.Time
 
-	mu            sync.Mutex
-	index         map[string]string // tool name -> procedure ("domain.method"); realm is always pinnedRealm
-	cachedTools   []mcpclient.Tool
-	lastDiscovery time.Time
+	mu          sync.Mutex
+	index       map[string]string // tool name -> procedure ("domain.method"); realm is always pinnedRealm
+	cachedTools []mcpclient.Tool
+	discovered  bool // true once discovery has succeeded -- never re-queried after (see its own doc comment)
+	logger      *log.Logger
 }
 
 // New wraps mcp (typically a *mcpclient.Client already spawned for
@@ -114,9 +118,22 @@ func New(mcp mcpCaller) *Source {
 	}
 }
 
+// SetLogger sets where ListTools logs the one-time discovery event (see
+// its own doc comment) -- optional, a nil logger (the default, and every
+// existing test's own setup) just means that line is never printed;
+// production wiring (cmd/lazymesh's buildToolSource) is the only caller
+// that sets a real one, so this is a setter rather than a New parameter
+// specifically to avoid touching every one of this package's own
+// existing New(fake) call sites for an entirely optional capability.
+func (s *Source) SetLogger(l *log.Logger) {
+	s.mu.Lock()
+	s.logger = l
+	s.mu.Unlock()
+}
+
 func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 	s.mu.Lock()
-	if !s.lastDiscovery.IsZero() && time.Since(s.lastDiscovery) < discoveryCacheTTL {
+	if s.discovered {
 		tools := s.cachedTools
 		s.mu.Unlock()
 		return tools, nil
@@ -174,8 +191,13 @@ func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 	s.mu.Lock()
 	s.index = index
 	s.cachedTools = tools
-	s.lastDiscovery = time.Now()
+	s.discovered = true
+	logger := s.logger
 	s.mu.Unlock()
+
+	if logger != nil {
+		logger.Printf("[mesh_service discovery] resolved %d of %d curated procedures live on the mesh -- once per session, won't re-check even if the mesh changes", len(tools), len(Curated))
+	}
 	return tools, nil
 }
 

@@ -155,3 +155,20 @@ func toDSTools(specs []ToolSpec) []dsToolSpec {
 func (d *DeepSeek) ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	return callOpenAICompatChatCompletions(ctx, d.HTTP, d.BaseURL, d.Model, d.APIKey, req)
 }
+
+// deepSeekContextWindow is deepseek-v4-flash's and deepseek-v4-pro's
+// published context length -- verified 2026-09-07 (DeepSeek's own
+// "Towards Highly Efficient Million-Token Context Intelligence" release
+// materials; corroborating third-party listings agree), not guessed.
+// Both current models share this number; if a future DeepSeek model with
+// a different window is ever configured here, this would need updating
+// alongside it -- flagged rather than silently assumed to still apply.
+const deepSeekContextWindow = 1_000_000
+
+// ContextWindow reports deepSeekContextWindow regardless of which
+// DeepSeek model is actually configured (see its own doc comment) -- not
+// looked up per-model, since only the two current ones exist and both
+// share it.
+func (d *DeepSeek) ContextWindow() int {
+	return deepSeekContextWindow
+}

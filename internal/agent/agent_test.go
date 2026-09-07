@@ -36,6 +36,8 @@ type scriptedProvider struct {
 	calls     int
 }
 
+func (s *scriptedProvider) ContextWindow() int { return 1_000_000 }
+
 func (s *scriptedProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	if s.calls >= len(s.responses) {
 		return provider.ChatResponse{}, fmt.Errorf("scriptedProvider: no more responses scripted (call %d)", s.calls)

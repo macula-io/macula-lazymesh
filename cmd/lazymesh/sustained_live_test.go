@@ -13,6 +13,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
+	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 )
 
@@ -80,7 +81,7 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 	if err != nil {
 		t.Skipf("buildProvider (likely no deepseek key at %s): %v", keyPath, err)
 	}
-	tools, err := buildToolSource(cfg, client)
+	tools, err := buildToolSource(cfg, client, nil)
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -89,6 +90,10 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 	waiterMgr := roomwaiter.New(client, "")
 	defer waiterMgr.StopAll()
 	waiterMgr.Sync(ctx, rooms)
+
+	ringMgr := ringwaiter.New(client, "")
+	defer ringMgr.Stop()
+	ringMgr.Start(ctx)
 
 	systemPrompt := buildSystemPrompt("", "", false, false)
 	loop := agent.NewLoop(p, tools, systemPrompt)
@@ -164,7 +169,7 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 		}
 		events <- agent.Event{Kind: agent.EventListening}
 		var ok bool
-		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringCheckInterval)
+		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 		if !ok {
 			break
 		}

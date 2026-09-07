@@ -125,3 +125,12 @@ func TestDeepSeek_Defaults(t *testing.T) {
 		t.Fatalf("expected default model %q, got %q", DeepSeekDefaultModel, d.Model)
 	}
 }
+
+// Covers R2 (2026-09-07): the startup budget check needs a real,
+// provider-reported window.
+func TestDeepSeek_ContextWindowIsOneMillion(t *testing.T) {
+	d := NewDeepSeek("", "", "key", nil)
+	if got := d.ContextWindow(); got != 1_000_000 {
+		t.Fatalf("expected ContextWindow()==1000000, got %d", got)
+	}
+}
