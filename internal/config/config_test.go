@@ -128,6 +128,24 @@ func TestDefault_ContactPolicyFileIsIsolatedFromMaculaMCPDefault(t *testing.T) {
 	}
 }
 
+// Found live 2026-09-07: Default() used to set IdentityFile to a single
+// fixed path (~/.config/lazymesh/identity) with no per-instance scoping.
+// Every lazymesh instance on a machine passed that same path through as
+// MACULA_MCP_IDENTITY, which macula-mcp reads literally and
+// unconditionally -- bypassing its own already-correct default identity
+// scoping (by CLAUDE_CODE_SESSION_ID or PPID, added to macula-mcp
+// 2026-09-02) entirely. Two concurrent lazymesh instances with default
+// config ended up sharing one mesh node_id, showing as a single identical
+// entry in each other's Presence panel instead of two distinct agents.
+// IdentityFile must stay empty by default -- opt-in only, for the
+// legitimate "durable identity across a full harness restart" case
+// macula-mcp's own docs still call out.
+func TestDefault_IdentityFileIsEmptyByDefault(t *testing.T) {
+	if got := Default().IdentityFile; got != "" {
+		t.Fatalf("expected no default identity_file (opt-in only, see macula-io/macula-lazymesh identity-collision fix), got %q", got)
+	}
+}
+
 func TestDefault_RingPolicyIsAlwaysAsk(t *testing.T) {
 	if got := Default().RingPolicy; got != "always-ask" {
 		t.Fatalf("expected default ring_policy always-ask, got %q", got)

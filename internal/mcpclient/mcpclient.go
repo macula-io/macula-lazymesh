@@ -67,8 +67,14 @@ type SpawnOptions struct {
 	// DefaultMaculaMCPVersion.
 	Version string
 	// IdentityFile, if non-empty, is passed through as MACULA_MCP_IDENTITY
-	// so macula-mcp keeps a stable node_id across restarts instead of its
-	// default fresh-identity-per-launch behavior.
+	// so macula-mcp keeps a stable node_id across a full restart of this
+	// instance. Leave empty (config.Default()'s own default -- see its
+	// doc comment) unless you specifically need that: macula-mcp's own
+	// default identity logic already scopes by session-id/PPID, giving
+	// distinct identities to concurrently-running instances for free.
+	// Setting this to the SAME path across more than one concurrently-
+	// running instance collides them onto one node_id -- found live
+	// 2026-09-07, config.Default() used to do exactly that.
 	IdentityFile string
 	// ContactPolicyFile, if non-empty, is passed through as
 	// MACULA_MCP_CONTACT_POLICY_FILE. Without this, macula-mcp reads
@@ -79,7 +85,15 @@ type SpawnOptions struct {
 	// Goose) reads and writes that identical file. Pointing this at a
 	// lazymesh-specific path keeps its own contact policy and allowlist
 	// (mesh_trust_agent) isolated from every other session sharing the
-	// machine, the same way IdentityFile already isolates node identity.
+	// machine. Unlike IdentityFile above, config.Default() DOES set a
+	// default for this (one fixed path shared by every lazymesh instance
+	// on the machine) -- and unlike identity, that's not a protocol-level
+	// problem: contact policy has no equivalent of "two connections
+	// sharing one node ID get kicked by the station", it's just data, so
+	// two concurrent instances sharing one allowlist doesn't collide
+	// anything. Whether sharing it across instances (rather than also
+	// scoping it per-instance) is the right call long-term hasn't been
+	// revisited since -- flagging, not fixing here.
 	ContactPolicyFile string
 }
 

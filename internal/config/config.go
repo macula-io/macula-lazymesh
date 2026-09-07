@@ -29,9 +29,20 @@ type Config struct {
 	// convention. Never a literal key in this struct or on disk here.
 	APIKeyFile string `yaml:"api_key_file"`
 	// IdentityFile, if set, is passed to macula-mcp as MACULA_MCP_IDENTITY
-	// so this lazymesh instance keeps the same mesh node_id across
-	// restarts instead of macula-mcp's default fresh-identity-per-launch
-	// behavior.
+	// so this lazymesh instance keeps the same mesh node_id across a full
+	// harness restart (not just this process's own macula-mcp child
+	// dying and respawning). Empty by default, deliberately: macula-mcp's
+	// own default identity logic (session-id/PPID-scoped) already gives
+	// stable-across-restart AND distinct-across-concurrent-instances for
+	// free, with no override needed. Setting this to a FIXED path shared
+	// by more than one concurrently-running lazymesh instance collides
+	// them onto the same node_id -- macula-mcp's own docs call that
+	// "old-style shared-identity behavior". Found live 2026-09-07:
+	// Default() used to set this unconditionally, so any two lazymesh
+	// instances on one machine looked like the same agent to the mesh
+	// and to each other's Presence panel. Only set this yourself if you
+	// specifically need identity to survive a full restart of this one
+	// instance, and give it a path unique to that instance.
 	IdentityFile string `yaml:"identity_file,omitempty"`
 	// LocalTools is Phase 2's second, separately configurable tool source
 	// (shell_exec/read_file/write_file). Off by default -- the MVP's whole
@@ -197,15 +208,17 @@ type LocalTools struct {
 }
 
 // Default returns the MVP's default configuration: DeepSeek, its current
-// cheapest GA model, and lazymesh's own conventional key/identity paths
-// under the user's home directory.
+// cheapest GA model, and lazymesh's own conventional key path under the
+// user's home directory. IdentityFile is deliberately left empty -- see
+// its own doc comment on Config -- letting macula-mcp's own default
+// identity scoping take over rather than defaulting into a path that
+// collides two concurrently-running instances onto one node_id.
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
-		Provider:     "deepseek",
-		Model:        "deepseek-v4-flash",
-		APIKeyFile:   filepath.Join(home, ".ai-api-keys", ".deepseek-api-keys", "lazymesh"),
-		IdentityFile: filepath.Join(home, ".config", "lazymesh", "identity"),
+		Provider:   "deepseek",
+		Model:      "deepseek-v4-flash",
+		APIKeyFile: filepath.Join(home, ".ai-api-keys", ".deepseek-api-keys", "lazymesh"),
 		LocalTools: LocalTools{
 			Enabled:    false,
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
