@@ -535,11 +535,36 @@ func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, 
 		for ev := range events {
 			logEvent(agentLog, ev)
 			// Reactive room-churn detection (macula-io/macula-lazymesh#14,
-			// Vega's flagged requirement): piggyback on the mesh_rooms
-			// result the model already produces on its own normal cadence,
-			// never a poll loop of waiterMgr's own.
-			if waiterMgr != nil && ev.Kind == agent.EventToolResult && ev.ToolName == "mesh_rooms" {
-				waiterMgr.Sync(ctx, parseJoinedRooms(ev.Text))
+			// Vega's flagged requirement): piggyback on tool results the
+			// model already produces on its own normal cadence, never a
+			// poll loop of waiterMgr's own. mesh_rooms is authoritative
+			// (its own {"joined": [...]} list drives a full Sync, adding
+			// and removing); mesh_join_room/mesh_ring/mesh_answer_ring/
+			// mesh_leave_room each report exactly one room and only ever
+			// grow or shrink the watched set by that one room via Add/
+			// Remove -- found live 2026-09-08 (Raf): a ring's caller and
+			// its accepting callee both got a real room membership this
+			// package never learned about until the model happened to
+			// also call mesh_rooms, which a normal "I've said my piece,
+			// now I wait for their reply" turn never does on its own. See
+			// roomwaiter.Manager.Add's own doc comment for the full story.
+			if waiterMgr != nil && ev.Kind == agent.EventToolResult {
+				switch ev.ToolName {
+				case "mesh_rooms":
+					waiterMgr.Sync(ctx, parseJoinedRooms(ev.Text))
+				case "mesh_join_room", "mesh_ring":
+					if room := parseRoomTopic(ev.Text); room != "" {
+						waiterMgr.Add(ctx, room)
+					}
+				case "mesh_answer_ring":
+					if room, joined := parseAnsweredRingRoom(ev.Text); joined {
+						waiterMgr.Add(ctx, room)
+					}
+				case "mesh_leave_room":
+					if room := parseRoomTopic(ev.Text); room != "" {
+						waiterMgr.Remove(room)
+					}
+				}
 			}
 			// Non-blocking: the TUI is a slow, human-paced consumer and
 			// must never be able to stall the agent loop by not reading
@@ -768,6 +793,38 @@ func parseJoinedRooms(resultJSON string) []string {
 		rooms = append(rooms, j.RoomTopic)
 	}
 	return rooms
+}
+
+// parseRoomTopic extracts a top-level "room_topic" string field --
+// mesh_join_room/mesh_leave_room/mesh_ring's own result shape (unlike
+// mesh_rooms's own {"joined": [...]} array, each of these reports exactly
+// one room). "" on anything unparseable or absent, e.g. an error result
+// from a failed call -- never misfires waiterMgr.Add/Remove on those.
+func parseRoomTopic(resultJSON string) string {
+	var parsed struct {
+		RoomTopic string `json:"room_topic"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil {
+		return ""
+	}
+	return parsed.RoomTopic
+}
+
+// parseAnsweredRingRoom extracts mesh_answer_ring's own room_topic, but
+// only when answer 1 (accept) actually joined it -- ring_service.ts's
+// answerPendingRing always reports room_topic in its result, accept or
+// decline, but only calls joinRoom on accept. Reporting a decline's
+// room_topic here would tell waiterMgr to watch a room this agent was
+// never actually added to.
+func parseAnsweredRingRoom(resultJSON string) (string, bool) {
+	var parsed struct {
+		Answer    int    `json:"answer"`
+		RoomTopic string `json:"room_topic"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil || parsed.Answer != 1 || parsed.RoomTopic == "" {
+		return "", false
+	}
+	return parsed.RoomTopic, true
 }
 
 // seedInitialRooms calls mesh_rooms directly (bypassing the model, same

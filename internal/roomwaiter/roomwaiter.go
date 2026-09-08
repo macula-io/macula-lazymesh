@@ -135,6 +135,50 @@ func (m *Manager) Sync(ctx context.Context, joined []string) {
 	}
 }
 
+// Add starts watching room if it isn't already -- for a single room
+// learned from a mesh_join_room/mesh_ring/mesh_answer_ring result, where
+// (unlike mesh_rooms's own {"joined": [...]} array) only one room_topic
+// is known at a time, not the full joined set Sync needs to compute its
+// own add/remove diff against. Grow-only, mirrors Sync's additive half;
+// a no-op if room is already watched.
+//
+// Found live 2026-09-08 (Raf, two real agents dialed each other for a
+// chess game): Sync's own doc above already named mesh_join_room and
+// mesh_leave_room as tool traffic this package should react to, but
+// runAgent's actual event-stream trigger only ever checked for
+// mesh_rooms results -- mesh_ring/mesh_answer_ring were never mentioned
+// there at all, and mesh_join_room's own traffic was silently going
+// nowhere too. A ring's caller (mesh_ring opens+joins the room before
+// the network call even goes out) and its accepting callee
+// (mesh_answer_ring joins on accept) both got a real room membership
+// server-side that this package's own watched set never learned about,
+// so neither side's harness was ever woken for the other's reply --
+// both parties would end a ring-started conversation after one exchange
+// and never resume, regardless of how long they waited.
+func (m *Manager) Add(ctx context.Context, room string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.cancels[room]; ok {
+		return
+	}
+	roomCtx, cancel := context.WithCancel(ctx)
+	m.cancels[room] = cancel
+	go m.watch(roomCtx, room)
+}
+
+// Remove stops watching room, if it is currently watched -- for a single
+// room learned from a mesh_leave_room result, the same single-room
+// counterpart to Add above. A no-op if room isn't currently watched.
+func (m *Manager) Remove(room string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cancel, ok := m.cancels[room]; ok {
+		cancel()
+		delete(m.cancels, room)
+		delete(m.pending, room)
+	}
+}
+
 // StopAll cancels every running waiter -- call on shutdown, same teardown
 // discipline as #6's sayGoodbye (cancel this before, not after,
 // client.Close() tears down the subprocess these calls need).

@@ -414,6 +414,54 @@ func TestParseJoinedRooms_MalformedResultReturnsNil(t *testing.T) {
 	}
 }
 
+func TestParseRoomTopic_ExtractsFromMeshJoinRoomResult(t *testing.T) {
+	got := parseRoomTopic(`{"room_topic":"agents.room.a","already_joined":1}`)
+	if got != "agents.room.a" {
+		t.Fatalf("expected agents.room.a, got %q", got)
+	}
+}
+
+func TestParseRoomTopic_ExtractsFromMeshRingResult(t *testing.T) {
+	got := parseRoomTopic(`{"ring_id":"abc","to":"deadbeef","room_topic":"agents.room.b","answer":3,"answer_label":"deferred"}`)
+	if got != "agents.room.b" {
+		t.Fatalf("expected agents.room.b, got %q", got)
+	}
+}
+
+func TestParseRoomTopic_MalformedOrAbsentReturnsEmpty(t *testing.T) {
+	if got := parseRoomTopic("not json"); got != "" {
+		t.Fatalf("expected empty string for a malformed result, got %q", got)
+	}
+	if got := parseRoomTopic(`{"error":"mesh_ring failed: unreachable"}`); got != "" {
+		t.Fatalf("expected empty string for a result with no room_topic field, got %q", got)
+	}
+}
+
+func TestParseAnsweredRingRoom_AcceptReportsTheRoom(t *testing.T) {
+	room, joined := parseAnsweredRingRoom(`{"ring_id":"abc","answer":1,"peer":"deadbeef","room_topic":"agents.room.c","caller_notified":1}`)
+	if !joined || room != "agents.room.c" {
+		t.Fatalf("expected (agents.room.c, true), got (%q, %v)", room, joined)
+	}
+}
+
+// Reproduces the actual shape ring_service.ts's answerPendingRing
+// returns for a decline (macula-io/macula-mcp): room_topic is present in
+// BOTH cases, but joinRoom is only ever called on accept. Watching a
+// decline's room_topic here would tell roomwaiter to wait on a room this
+// agent was never actually added to.
+func TestParseAnsweredRingRoom_DeclineIsIgnoredDespiteHavingARoomTopic(t *testing.T) {
+	room, joined := parseAnsweredRingRoom(`{"ring_id":"abc","answer":2,"peer":"deadbeef","room_topic":"agents.room.c","caller_notified":1}`)
+	if joined || room != "" {
+		t.Fatalf("expected a decline to report no room to watch, got (%q, %v)", room, joined)
+	}
+}
+
+func TestParseAnsweredRingRoom_MalformedReturnsFalse(t *testing.T) {
+	if _, joined := parseAnsweredRingRoom("not json"); joined {
+		t.Fatalf("expected false for a malformed result")
+	}
+}
+
 func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "from the human"

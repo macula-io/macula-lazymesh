@@ -92,6 +92,106 @@ func TestManager_SyncStartsAndStopsWaiters(t *testing.T) {
 	}
 }
 
+// Reproduces the live 2026-09-08 bug (Raf, a ring-started chess game
+// where both sides stalled): Add must start watching a room learned from
+// a single mesh_ring/mesh_answer_ring/mesh_join_room result, growing the
+// watched set WITHOUT touching any room Sync already knows about --
+// unlike Sync, Add is never told the full joined list, so it must not
+// treat "not in my one argument" as "remove it."
+func TestManager_AddGrowsTheWatchedSetWithoutDisturbingSyncedRooms(t *testing.T) {
+	started := make(chan string, 4)
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		started <- room
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m.Sync(ctx, []string{"agents.room.a"})
+	<-started // room a's waiter has started
+
+	m.Add(ctx, "agents.room.b") // learned from a mesh_ring result, not mesh_rooms
+
+	select {
+	case r := <-started:
+		if r != "agents.room.b" {
+			t.Fatalf("expected agents.room.b's waiter to start, got %q", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for Add to start a waiter for the new room")
+	}
+	if got := m.Watching(); got != 2 {
+		t.Fatalf("expected Watching()==2 (room a from Sync, room b from Add), got %d", got)
+	}
+}
+
+func TestManager_AddIsIdempotentForAnAlreadyWatchedRoom(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m.Add(ctx, "agents.room.a")
+	time.Sleep(50 * time.Millisecond)
+	callsBefore := func() int { f.mu.Lock(); defer f.mu.Unlock(); return f.calls }()
+
+	m.Add(ctx, "agents.room.a") // already watched -- must not restart the waiter
+	time.Sleep(50 * time.Millisecond)
+	callsAfter := func() int { f.mu.Lock(); defer f.mu.Unlock(); return f.calls }()
+
+	if callsAfter != callsBefore {
+		t.Fatalf("expected a second Add for an already-watched room not to restart its waiter (calls %d -> %d)", callsBefore, callsAfter)
+	}
+	if got := m.Watching(); got != 1 {
+		t.Fatalf("expected Watching()==1, got %d", got)
+	}
+}
+
+func TestManager_RemoveStopsASingleWatchedRoom(t *testing.T) {
+	cancelled := make(chan string, 2)
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		cancelled <- room
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Sync(ctx, []string{"agents.room.a", "agents.room.b"})
+	time.Sleep(50 * time.Millisecond)
+
+	m.Remove("agents.room.a") // learned from a mesh_leave_room result
+
+	select {
+	case r := <-cancelled:
+		if r != "agents.room.a" {
+			t.Fatalf("expected agents.room.a's waiter to be cancelled, got %q", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for Remove to cancel the waiter")
+	}
+	if got := m.Watching(); got != 1 {
+		t.Fatalf("expected Watching()==1 (only room b left), got %d", got)
+	}
+}
+
+func TestManager_RemoveOfAnUnwatchedRoomIsANoOp(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	m.Remove("agents.room.never-watched") // must not panic on a missing cancel func
+	if got := m.Watching(); got != 0 {
+		t.Fatalf("expected Watching()==0, got %d", got)
+	}
+}
+
 func TestManager_StopAllCancelsEveryWaiter(t *testing.T) {
 	cancelled := make(chan string, 2)
 	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
