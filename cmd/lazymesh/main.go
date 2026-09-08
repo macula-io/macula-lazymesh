@@ -123,6 +123,12 @@ func run(configPath, room, goalText string) error {
 	// event live, but agent.log keeps the full verbose detail.
 	agentLog := log.New(logFile, "", log.LstdFlags)
 	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
+	// 2026-09-08: a respawn attempt/success/failure is otherwise
+	// completely invisible -- see mcpclient.Client's own doc comment on
+	// SetLogger for why that matters (same "quietly healthy" vs
+	// "silently failing" ambiguity today's ringwaiter/meshservices
+	// logging fixes already closed elsewhere).
+	client.SetLogger(agentLog)
 
 	// The agent loop always runs -- Raf's explicit product decision
 	// (macula-io/macula-lazymesh#1, 2026-09-06): "lazymesh should run

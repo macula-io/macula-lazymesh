@@ -1339,3 +1339,54 @@ still-running background goroutine after a test's own deferred restore,
 and a plain `bytes.Buffer` read/written across goroutines in a
 `SetLogger` test -- neither in production code, both in test-only
 synchronization).
+
+## mcpclient respawn: recovering from a dead mesh connection (2026-09-08)
+
+A full-codebase audit the same day found the biggest remaining
+reliability gap: if the macula-mcp subprocess ever died (crash, OOM, a
+network partition that never resolves), lazymesh had no reconnect logic
+anywhere -- every call failed forever, runAgent gave up after 8
+consecutive failures and just stopped, and the OS process itself never
+exited, so not even an external supervisor could help. Fixed entirely
+inside `internal/mcpclient.Client`, which every consumer (roomwaiter,
+ringwaiter, the TUI, the agent's own tool chain) already shared as one
+pointer -- so none of them needed to change.
+
+Found and fixed a real, pre-existing bug while scoping this: `CallTool`
+used to conflate a transport-level failure (the session/subprocess itself
+broken) with a normal, healthy `IsError` tool response (e.g. `mesh_ring`
+reporting "unreachable") into one opaque error. Only the former means the
+connection is dead; respawning on the latter would tear down a healthy
+subprocess -- and the mesh identity/presence it already established --
+for nothing. Now distinguished via an internal `errTransportFailure`
+wrap, checked with `errors.Is`.
+
+`Client.session` moved behind a mutex; on a detected transport failure,
+`tryRespawn` attempts exactly one respawn, gated by a singleflight-style
+in-flight guard (concurrent callers noticing the same dead session
+produce one respawn, not one each) and a cooldown (bounds how often an
+attempt is even tried; callers past cooldown just get the error and lean
+on their own existing backoff). A successful respawn is followed by one
+retry of the original call before anything surfaces to the caller --
+most transient deaths become fully invisible.
+
+Verified live, not assumed, that identity would NOT survive a respawn by
+default: macula-mcp's own identity scope key is
+`CLAUDE_CODE_SESSION_ID ?? ppid-${process.ppid}`, and since lazymesh
+launches macula-mcp via a fresh `npx` process every spawn, the effective
+PPID differs every respawn -- confirmed with two real spawns producing
+two different node_ids. Fixed with `resolveSpawnIdentity`: when the
+caller leaves `IdentityFile` empty (the common case), Client mints its
+own ephemeral path once and reuses it for every respawn attempt for that
+Client's whole lifetime -- an in-process respawn now looks like
+"reconnected," not "became a new agent," without touching
+`config.Config.IdentityFile`'s own separate, stronger, opt-in meaning
+(surviving a full lazymesh restart too).
+
+`mcpSession` (a 3-method local interface matching `*mcp.ClientSession`)
+makes the whole orchestration -- classification, dedup, cooldown,
+retry-once -- unit-testable with fakes, no subprocess needed; a real
+live test spawns genuine macula-mcp, kills the session out from under
+Client, and confirms both transparent recovery and identity preservation
+against the actual mesh. Full suite green both build tags, `-race` clean
+repo-wide.
