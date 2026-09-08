@@ -1,11 +1,17 @@
 package ringwaiter
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+var errFakePollFailure = errors.New("fake mesh_read_inbox failure")
 
 func TestParsePendingRings_ExtractsRingIDPurposeAndPetname(t *testing.T) {
 	got := parsePendingRings(`{"rings":{"pending":[{"ring_id":"abc123","purpose":"come help","peer_petname":"Nova","peer":"deadbeef"}],"recent":[]},"rooms":[]}`)
@@ -167,4 +173,71 @@ func TestManager_StartTwiceDoesNotStartASecondPoller(t *testing.T) {
 	if got == 0 {
 		t.Fatalf("expected at least one poll to have happened")
 	}
+}
+
+// Real gap found live 2026-09-08: a failed mesh_read_inbox call used to
+// be swallowed completely silently ("best-effort, the next tick tries
+// again"), which is the right RECOVERY behavior but left agent.log
+// looking identical to a genuinely healthy, quietly-idle ringwaiter --
+// indistinguishable without a live process to attach to. SetLogger closes
+// that gap; nil (the default, every other test in this file) must stay
+// silent so a caller that never sets one is unaffected.
+func TestManager_SetLogger_LogsAFailedPoll(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context) (string, error) {
+		return "", errFakePollFailure
+	}}
+	m := New(f, "")
+	var buf bytes.Buffer
+	m.SetLogger(log.New(&buf, "", 0))
+	orig := PollInterval
+	PollInterval = time.Millisecond
+	defer func() { PollInterval = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(buf.String(), "mesh_read_inbox failed") {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected a logged failure within 2s, got: %q", buf.String())
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestManager_SetLogger_LogsPollingStarted(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context) (string, error) {
+		return `{"rings":{"pending":[]}}`, nil
+	}}
+	m := New(f, "")
+	var buf bytes.Buffer
+	m.SetLogger(log.New(&buf, "", 0))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+
+	if got := buf.String(); !strings.Contains(got, "polling started") {
+		t.Fatalf("expected a polling-started log line immediately on Start, got: %q", got)
+	}
+}
+
+func TestManager_NoLoggerSetStaysSilentOnFailure(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context) (string, error) {
+		return "", errFakePollFailure
+	}}
+	m := New(f, "") // no SetLogger call
+	orig := PollInterval
+	PollInterval = time.Millisecond
+	defer func() { PollInterval = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+	time.Sleep(20 * time.Millisecond) // several failed polls -- must not panic on a nil logger
 }

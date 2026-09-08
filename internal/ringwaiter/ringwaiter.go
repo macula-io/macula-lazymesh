@@ -25,6 +25,7 @@ package ringwaiter
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"sync"
 	"time"
 )
@@ -75,6 +76,7 @@ type Manager struct {
 	mu       sync.Mutex
 	surfaced map[string]bool
 	cancel   context.CancelFunc
+	logger   *log.Logger
 
 	arrivals chan Ring
 }
@@ -89,6 +91,27 @@ func New(client Caller, host string) *Manager {
 		surfaced: make(map[string]bool),
 		arrivals: make(chan Ring, 16),
 	}
+}
+
+// SetLogger sets where Start's own confirmation line and a failed
+// mesh_read_inbox call get logged -- same optional-setter shape as
+// meshservices.Source.SetLogger (nil, the default, means silence; every
+// existing test's own New() call site is unaffected). Added 2026-09-08
+// after a real live incident was hard to diagnose from agent.log alone:
+// checkOnce's own error path used to swallow a failed mesh_read_inbox
+// call completely silently ("best-effort, the next tick tries again"),
+// which is the right RECOVERY behavior but left no trace at all if the
+// call kept failing -- indistinguishable, from the log alone, between
+// "ringwaiter is quietly healthy on an idle mesh" (R1's own stated goal:
+// a quiet mesh produces zero output) and "ringwaiter's poll has been
+// failing since startup." Also logs once when polling actually starts,
+// for the same reason: there was no way to confirm from agent.log alone
+// that Start(ctx) had even been called successfully, versus not running
+// at all.
+func (m *Manager) SetLogger(l *log.Logger) {
+	m.mu.Lock()
+	m.logger = l
+	m.mu.Unlock()
 }
 
 // Arrivals is the channel to select on alongside roomwaiter's own and
@@ -108,7 +131,11 @@ func (m *Manager) Start(ctx context.Context) {
 	}
 	pollCtx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
+	logger := m.logger
 	m.mu.Unlock()
+	if logger != nil {
+		logger.Printf("[ringwaiter] polling started, interval=%s", PollInterval)
+	}
 	go m.poll(pollCtx)
 }
 
@@ -152,6 +179,12 @@ func (m *Manager) checkOnce(ctx context.Context) {
 	}
 	result, err := m.client.CallTool(ctx, "mesh_read_inbox", args)
 	if err != nil {
+		m.mu.Lock()
+		logger := m.logger
+		m.mu.Unlock()
+		if logger != nil {
+			logger.Printf("[ringwaiter] mesh_read_inbox failed, will retry in %s: %v", PollInterval, err)
+		}
 		return // best-effort -- the next tick tries again, nothing to back off from (see package doc)
 	}
 	for _, r := range parsePendingRings(result) {

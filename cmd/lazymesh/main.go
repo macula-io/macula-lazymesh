@@ -166,6 +166,12 @@ func run(configPath, room, goalText string) error {
 	// prompt's own former blanket ring-check mandate): same teardown
 	// ordering as waiterMgr above, deferred before client.Close().
 	ringMgr := ringwaiter.New(client, "")
+	// SetLogger before Start (2026-09-08, a real live incident that was
+	// hard to diagnose from agent.log alone): see ringwaiter.Manager's own
+	// doc comment on SetLogger for why this matters -- without it,
+	// "ringwaiter is quietly healthy" and "ringwaiter's poll has been
+	// failing since startup" were indistinguishable from the log alone.
+	ringMgr.SetLogger(agentLog)
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
