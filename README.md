@@ -123,15 +123,15 @@ composing and step away from with `Esc` stays there, dimmed but not lost,
 until you press `i` again.
 
 The mesh view overlays the Rooms/Pending rings/Presence panels on top of
-the chat pane rather than replacing it outright: real conversation lines
-stay visible in a margin above and below the panels (the oldest visible
-lines above, the newest below — the panels effectively cover the middle
-of the conversation, like a card dropped onto a scrolled page), rather
-than hiding the whole conversation while you're looking at mesh state.
-A short conversation never repeats the same line in both margins — it
-splits what's there into two disjoint halves instead. On a terminal too
-short for the panels to fit with any margin left over, it falls back to
-the panels alone, same as before. The panels themselves render with a
+the chat pane rather than replacing it outright: the panels pin to the
+top of the body area, and whatever vertical space is left renders as a
+single margin of the newest chat lines below them, so the ambient
+conversation is still visible while you're looking at mesh state rather
+than hidden outright. Older lines (including anything from earlier in a
+long conversation) simply scroll out of view above the panels — there's
+no split margin above and below to keep in sync any more. On a terminal
+too short for the panels to fit with any margin left over, it falls back
+to the panels alone, same as before. The panels themselves render with a
 dim, muted border rather than a solid bright one, so the overlay reads
 as a light layer over the conversation rather than a popup taking it
 over.

@@ -599,7 +599,14 @@ func TestRenderMeshOverlay_ShortConversationNeverRepeatsALineInBothMargins(t *te
 // bottom margin grabbed blank filler instead of real content. Fixed via
 // chatContentLines (the unpadded entries, mirroring syncViewport's own
 // construction) instead of the padded viewport render.
-func TestRenderMeshOverlay_ShowsOldestChatAboveNewestBelow(t *testing.T) {
+// Pinned to the top of the body area (2026-09-08, Raf: once the panels'
+// own styling was lightened, the previous centered layout no longer
+// needed the visual balance a top+bottom margin split was providing) --
+// the panels render first, with a single margin of the newest chat lines
+// below them. Older lines (including anything from the covered middle
+// stretch of a long conversation) simply aren't shown; there's no top
+// margin at all anymore.
+func TestRenderMeshOverlay_ShowsNewestChatBelowThePanels(t *testing.T) {
 	m := newTestModel(t)
 	m.width, m.height = 90, 24
 	m.resizeComponents()
@@ -610,17 +617,20 @@ func TestRenderMeshOverlay_ShowsOldestChatAboveNewestBelow(t *testing.T) {
 	m.syncViewport()
 
 	view := m.View()
-	if !strings.Contains(view, "message number 0") {
-		t.Fatalf("expected the oldest chat line visible in the top margin, got:\n%s", view)
-	}
 	if !strings.Contains(view, "message number 19") {
-		t.Fatalf("expected the newest chat line visible in the bottom margin, got:\n%s", view)
+		t.Fatalf("expected the newest chat line visible below the panels, got:\n%s", view)
 	}
-	// A message from the covered middle stretch must not appear -- the
-	// margins show the ends of the conversation, not a scroll of the
-	// whole thing squeezed in.
+	if strings.Contains(view, "message number 0") {
+		t.Fatalf("expected the oldest chat line to be covered (no top margin anymore), got:\n%s", view)
+	}
 	if strings.Contains(view, "message number 10") {
 		t.Fatalf("expected a middle message to be covered by the panels, not visible, got:\n%s", view)
+	}
+	// The panels must actually be the first content lines of the body,
+	// not preceded by any chat.
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[0], "╭") {
+		t.Fatalf("expected the panel stack's own top border as the very first body line, got %q", lines[0])
 	}
 }
 

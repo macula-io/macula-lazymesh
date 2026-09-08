@@ -718,21 +718,24 @@ func (m Model) padToBodyHeight(content string) string {
 
 // renderMeshOverlay composites the mesh-view panels over the chat pane
 // rather than replacing it outright: real conversation lines stay
-// visible in a margin above and below the panels ("transparency", per
-// Raf 2026-09-08) instead of the panels eating the entire body area edge
-// to edge as before. Terminals can't do true alpha blending, so this is
-// the practical equivalent -- the actual chat text, not a blank or dimmed
+// visible in a margin below the panels ("transparency", per Raf
+// 2026-09-08) instead of the panels eating the entire body area edge to
+// edge as before. Terminals can't do true alpha blending, so this is the
+// practical equivalent -- the actual chat text, not a blank or dimmed
 // backdrop (dimming an already-styled multi-segment chat line correctly
 // would need re-emitting its ANSI state, not just wrapping it -- tried
 // live 2026-09-08, a naive Faint() wrap breaks at the line's own first
 // inner reset code, undimming everything after it).
 //
-// The top margin shows the oldest lines still in view, the bottom margin
-// the newest -- the panel effectively "covers" the middle of the
-// conversation, the same way a card dropped onto a scrolled page would.
-// A short conversation (fewer real lines than either margin needs) can
-// show the same lines in both margins, or blank-pad one -- accepted as a
-// harmless cosmetic edge case, not worth the complexity of preventing.
+// Pinned to the top of the body area (Raf, 2026-09-08, once the panels'
+// own styling was lightened enough that this stopped reading as a
+// centered popup): previously centered vertically with a margin split
+// above and below, which needed a "don't repeat the same short
+// conversation's lines in both margins" special case entirely of its
+// own. Pinning to the top removes that whole class of problem -- there's
+// only one margin now, below the panels, showing the newest chat lines
+// (the panel effectively "covers" everything older, the same way a card
+// dropped onto a scrolled page would).
 func (m Model) renderMeshOverlay() string {
 	mesh := strings.Split(m.renderExpandedMesh(), "\n")
 	target := m.height - len(m.statusLines()) - 2 // same target padToBodyHeight/resizeComponents use
@@ -746,27 +749,10 @@ func (m Model) renderMeshOverlay() string {
 
 	chat := m.chatContentLines()
 	margin := target - len(mesh)
-	top := margin / 2
-	bottom := margin - top
-
-	// Not enough real content to fill both margins without the same
-	// lines showing in both -- found live 2026-09-08 ("now it repeats"):
-	// independent [0:top] and [len-bottom:] windows into the SAME chat
-	// slice overlap once the conversation is shorter than top+bottom.
-	// Split into two disjoint halves instead when that's the case: the
-	// older half goes in the top margin, the newer half in the bottom,
-	// each blank-padded on its own rather than repeating what the other
-	// margin already shows.
-	topChat, bottomChat := chat, chat
-	if len(chat) < top+bottom {
-		mid := len(chat) / 2
-		topChat, bottomChat = chat[:mid], chat[mid:]
-	}
 
 	lines := make([]string, 0, target)
-	lines = append(lines, chatMarginLines(topChat, 0, top)...)
 	lines = append(lines, mesh...)
-	lines = append(lines, chatMarginLines(bottomChat, len(bottomChat)-bottom, len(bottomChat))...)
+	lines = append(lines, chatMarginLines(chat, len(chat)-margin, len(chat))...)
 	return strings.Join(lines, "\n")
 }
 
