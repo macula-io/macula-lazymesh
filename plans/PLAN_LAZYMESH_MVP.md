@@ -1277,3 +1277,65 @@ opted-in case unguarded. Live-verified with a real DeepSeek call
 that tool-selection still works correctly with the new default. Full
 suite green (`go test ./...` and `go test -tags live` both, `go vet`
 clean under both tags, `gofmt` clean).
+
+## Ring saga closed: mesh_wait_ring swap + the real macula-mcp bug it exposed (2026-09-08)
+
+Two threads, both closed today. **The gap:** `mesh_ring` was never on
+`agent.DefaultToolAllowlist` -- an agent could answer a ring
+(`mesh_answer_ring`) but never initiate one. Checked against this
+allowlist's own founding commit (9550c6f): no mention anywhere, an
+asymmetry nobody caught, not a considered exclusion. Added, with the
+same rigor as everything else in that file: `NoBlockingWaitSource`
+extended to clamp `mesh_ring`'s `wait_join_seconds` too (a real
+asymmetry from `mesh_say` found reading the source directly -- an
+*absent* `wait_join_seconds` still defaults to a 30s server-side wait,
+unlike `mesh_say`'s own omission meaning "don't wait"), and
+`internal/agent/terse.go` gained a schema override for it (its real,
+live description measured as the single largest of any allowlisted
+tool, 1,742 bytes -- untrimmed it would have regressed the fixed prefix
+back over R2's own 1,500-token ceiling).
+
+**The real bug, found investigating a live report that a ring never
+surfaced on the recipient's side:** `rings.sqlite3` is one file per
+MACHINE; one ring produces two legitimate rows in that shared file (the
+caller's own "out" row, written synchronously before the network call
+even goes out, and the callee's own "in" row, written when the call
+arrives) -- but the schema's `ring_id TEXT PRIMARY KEY` alone meant the
+second insert always silently no-op'd via `ON CONFLICT DO NOTHING`
+whenever caller and callee shared a machine (deterministic, not a race
+-- exactly Raf's own two-instances-side-by-side setup). Reproduced
+cleanly with two real macula-mcp processes and confirmed via the raw
+sqlite row, not theorized. Fixed upstream in macula-mcp 0.26.1
+(github-com-9a, composite `(ring_id, direction)` key + a second bug
+their own fix caught: `answerRing`'s update needed scoping by direction
+too, or one party's answer could silently overwrite the other's).
+Version pin bumped here (`config.MaculaMCPVersion` and
+`mcpclient.DefaultMaculaMCPVersion`, both to 0.26.1) with this file's
+own established "read every commit" discipline.
+
+**The swap, unblocked once 0.26.1 landed:** `internal/ringwaiter`
+replaced its polling loop (`mesh_read_inbox` on a 5s ticker -- built
+2026-09-07 because `mesh_wait_ring` didn't exist yet) with a real
+blocking `mesh_wait_ring` call, same continuous-call shape as
+`roomwaiter`'s own `mesh_wait_room` loop. Since `mesh_wait_ring`
+surfaces EVERY incoming ring (not just still-pending "ask" ones), a
+ring already resolved by open/closed/allowlist policy is deliberately
+NOT surfaced as something to answer (`parseWaitRingResult` checks the
+ring's own `answer` field). `checkOnce` (the old `mesh_read_inbox` read)
+survives as the startup catch-up (mesh_wait_ring's own cursor only ever
+reports the NEXT ring after a call starts, same as `mesh_wait_room`) and
+the post-error-backoff catch-up, mirroring roomwaiter's own established
+gap-closing pattern exactly.
+
+Real end-to-end live verification, not just unit tests:
+`TestLiveRingwaiterSurfacesARealRingViaMeshWaitRing` -- two real 0.26.1
+macula-mcp processes, a real ring, `ringwaiter.Manager` wired exactly as
+`main.go` wires it, confirms the arrival surfaces via `mesh_wait_ring`
+AND that `mesh_answer_ring` succeeds on the callee's own side (the exact
+symptom of the pre-0.26.1 bug). Full suite green under both build tags,
+`-race` clean (`internal/ringwaiter` -- two genuine data races found and
+fixed during this work: a shared `errorBackoff` var read by a
+still-running background goroutine after a test's own deferred restore,
+and a plain `bytes.Buffer` read/written across goroutines in a
+`SetLogger` test -- neither in production code, both in test-only
+synchronization).

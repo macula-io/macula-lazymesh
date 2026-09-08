@@ -150,6 +150,48 @@ type Config struct {
 	// (src/mesh_hello.ts), read directly: no other line touched, no
 	// behavior, no tool arg/response shape affected at all.
 	//
+	// 0.26.0 (two commits): 515f227 adds mesh_wait_ring, the blocking
+	// counterpart to polling mesh_read_inbox for a new ring -- purely
+	// additive, a new tool, nothing existing touched (this is what
+	// internal/ringwaiter switched to, replacing its own former polling
+	// loop -- see that package's own doc comment). d2a1744 adds
+	// MACULA_MCP_TERSE_TOOLS as an opt-in env var for shorter tool
+	// descriptions -- unset by default, so every existing tool's
+	// description is byte-for-byte unchanged unless an operator opts in;
+	// this codebase's own internal/agent.TerseDescriptionSource already
+	// does the equivalent client-side and doesn't set this var, so
+	// nothing here is affected either way.
+	//
+	// 0.26.1 (1849ff5, single commit, cut same-day as a correctness
+	// fix): a REAL bug, found live 2026-09-07/08 investigating why a
+	// ring never surfaced on the recipient's side of two same-machine
+	// lazymesh instances (credit to this investigation: reproduced with
+	// two real macula-mcp processes, confirmed via the raw sqlite row,
+	// not theorized). rings.sqlite3 is one file per MACHINE; one ring
+	// produces two legitimate rows in that shared file (the caller's own
+	// "out" bookkeeping, written synchronously before the network call
+	// even goes out, and the callee's own "in" bookkeeping, written when
+	// the call arrives) -- but the old schema's ring_id TEXT PRIMARY KEY
+	// alone meant the second insert always silently no-op'd via
+	// ON CONFLICT DO NOTHING, so the callee's own copy -- what
+	// mesh_read_inbox/mesh_wait_ring/mesh_answer_ring all read on ITS
+	// side -- simply never existed whenever caller and callee shared a
+	// machine (deterministic, not a race: the caller's local write always
+	// precedes the callee's network-triggered one). Fixed: primary key is
+	// now (ring_id, direction), and answerRing's own UPDATE is now scoped
+	// by direction too (the same collision would otherwise have let one
+	// party's answer silently overwrite the other's once two rows could
+	// share a ring_id). A real on-disk migration rebuilds an existing
+	// old-schema file, verified against one, not just a fresh in-memory
+	// db. No MCP tool's own argument or response shape changed --
+	// confirmed by reading the diff directly (src/mesh_ring.ts,
+	// src/ring_service.ts): every changed call site is an internal
+	// TypeScript function signature (answerRing gaining a direction
+	// parameter), nothing tool-schema-facing. Empirically re-verified
+	// live with two real 0.26.1 processes after the bump: the callee's
+	// own mesh_read_inbox now shows the pending ring, and
+	// mesh_answer_ring succeeds against it.
+	//
 	// Whoever next edits this default should do the same before bumping it, never
 	// bump just to "pick up whatever's newest." Kept in sync with (but not
 	// imported from, to
@@ -257,7 +299,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition:   "bottom",
-		MaculaMCPVersion:    "0.25.2",
+		MaculaMCPVersion:    "0.26.1",
 		ContactPolicyFile:   filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:          "always-ask",
 		ExpressiveStyle:     false,

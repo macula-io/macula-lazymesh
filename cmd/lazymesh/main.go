@@ -797,11 +797,12 @@ const (
 //
 // Still mentions rings explicitly, unlike everything after it (2026-09-07,
 // once internal/ringwaiter took over ongoing ring-checking): ringwaiter's
-// own first poll fires after PollInterval (a few seconds) from process
-// start, so a ring that arrived just before this process started could
-// otherwise sit uncaught for that brief window -- checking once here too
-// is a one-time, low-cost redundancy for startup correctness, not the
-// ongoing per-cycle waste that made the old blanket mandate a problem.
+// own watch() does the same startup catch-up read now too (2026-09-08,
+// switched from polling to a real blocking mesh_wait_ring call -- see
+// that package's own doc comment), but this stays as a second, one-time,
+// low-cost redundancy at the model level rather than being removed --
+// not the ongoing per-cycle waste that made the old blanket mandate a
+// problem, just startup-correctness belt and suspenders.
 //
 // Investigated 2026-09-06 after a live "ring stuck deferred" report -- that
 // specific incident turned out to be an instance Raf stopped himself

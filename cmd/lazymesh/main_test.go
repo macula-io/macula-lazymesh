@@ -477,6 +477,13 @@ func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
 // fakeRingWaiterCaller lets a test drive a real ringwaiter.Manager (via
 // Start) without a real macula-mcp spawn -- same reasoning as
 // fakeRoomWaiterCaller above.
+// fakeRingWaiterCaller answers every call (mesh_wait_ring, mesh_read_inbox,
+// or anything else) with the same mesh_read_inbox-shaped pending-ring
+// payload -- ringwaiter.Manager's own startup checkOnce (mesh_read_inbox)
+// picks it up before mesh_wait_ring is ever called, which is all this
+// test needs: proving nextEvent's own dispatch, not ringwaiter's
+// internals (those have their own exhaustive unit tests in
+// internal/ringwaiter).
 type fakeRingWaiterCaller struct{}
 
 func (fakeRingWaiterCaller) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -484,10 +491,6 @@ func (fakeRingWaiterCaller) CallTool(ctx context.Context, name string, args map[
 }
 
 func TestNextEvent_ConsumesARealRingArrival(t *testing.T) {
-	orig := ringwaiter.PollInterval
-	ringwaiter.PollInterval = time.Millisecond
-	defer func() { ringwaiter.PollInterval = orig }()
-
 	mgr := roomwaiter.New(nil, "")
 	ringMgr := ringwaiter.New(fakeRingWaiterCaller{}, "")
 	ctx, cancel := context.WithCancel(context.Background())
