@@ -410,3 +410,70 @@ func TestCallToolRaw_RefusesOverBudget(t *testing.T) {
 		t.Fatalf("expected the refused call to never actually reach mesh_call, got %d real attempts", attempts)
 	}
 }
+
+// A human opening internal/tui's MeshServices panel before the agent's
+// own first tool call must see "not yet checked", never a false
+// "confirmed not live" -- Snapshot must not trigger discovery itself.
+func TestSnapshot_BeforeDiscoveryEveryEntryIsUncheckedNotLive(t *testing.T) {
+	fake := &fakeMCP{}
+	src := New(fake)
+
+	entries, discovered := src.Snapshot()
+	if discovered {
+		t.Fatalf("expected discovered=false before ListTools has ever run")
+	}
+	if len(entries) != len(Curated) {
+		t.Fatalf("expected every curated entry present regardless, got %d want %d", len(entries), len(Curated))
+	}
+	for _, e := range entries {
+		if e.Live {
+			t.Fatalf("expected every entry's Live=false before discovery, got Live=true for %s", e.Procedure())
+		}
+	}
+	for _, call := range fake.calls {
+		t.Fatalf("expected Snapshot to make no mesh calls at all, got a call to %q", call.name)
+	}
+}
+
+func TestSnapshot_AfterDiscoveryMarksOnlyTheDiscoveredProcedureLive(t *testing.T) {
+	fake := &fakeMCP{discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")}}
+	src := New(fake)
+	if _, err := src.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	entries, discovered := src.Snapshot()
+	if !discovered {
+		t.Fatalf("expected discovered=true after a successful ListTools")
+	}
+	liveCount := 0
+	for _, e := range entries {
+		if e.Live {
+			liveCount++
+			if e.Procedure() != "hecate_agora.get_posts_page" {
+				t.Fatalf("expected only hecate_agora.get_posts_page marked live, also got %s", e.Procedure())
+			}
+		}
+	}
+	if liveCount != 1 {
+		t.Fatalf("expected exactly 1 live entry, got %d", liveCount)
+	}
+}
+
+// Snapshot's own read must be independent of ListTools's caching --
+// calling it twice must not re-trigger discovery or change the result.
+func TestSnapshot_CalledTwiceMakesNoAdditionalMeshCalls(t *testing.T) {
+	fake := &fakeMCP{discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")}}
+	src := New(fake)
+	if _, err := src.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	callsAfterListTools := len(fake.calls)
+
+	src.Snapshot()
+	src.Snapshot()
+
+	if len(fake.calls) != callsAfterListTools {
+		t.Fatalf("expected Snapshot to make no mesh calls of its own, calls went from %d to %d", callsAfterListTools, len(fake.calls))
+	}
+}

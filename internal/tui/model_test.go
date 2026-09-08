@@ -164,6 +164,65 @@ func TestInsertMode_MDoesNotToggleMeshView_TypesInstead(t *testing.T) {
 	}
 }
 
+func TestNormalMode_STogglesMeshServicesExpanded(t *testing.T) {
+	m := newTestModel(t)
+	if m.meshServicesExpanded {
+		t.Fatalf("expected mesh services view collapsed by default")
+	}
+	updated, _ := m.Update(runeKey('s'))
+	m = updated.(Model)
+	if !m.meshServicesExpanded {
+		t.Fatalf("expected 's' to expand the mesh services view")
+	}
+	updated, _ = m.Update(runeKey('s'))
+	m = updated.(Model)
+	if m.meshServicesExpanded {
+		t.Fatalf("expected a second 's' to collapse it again")
+	}
+}
+
+func TestInsertMode_SDoesNotToggleMeshServicesView_TypesInstead(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('i'))
+	m = updated.(Model)
+
+	updated, _ = m.Update(runeKey('s'))
+	m = updated.(Model)
+	if m.meshServicesExpanded {
+		t.Fatalf("'s' while composing must not toggle the mesh services view")
+	}
+	if m.input.Value() != "s" {
+		t.Fatalf("expected 's' to be typed into the input, got %q", m.input.Value())
+	}
+}
+
+// `m` and `s` are two different overlays over the same body area
+// (mesh STATE vs. available SERVICES) -- opening one must close the
+// other, never both stacked at once (see renderOverlay's own doc on
+// why: a second panel stacked on top would halve the already-tight
+// chat margin the pin-to-top layout keeps).
+func TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive(t *testing.T) {
+	m := newTestModel(t)
+
+	updated, _ := m.Update(runeKey('m'))
+	m = updated.(Model)
+	if !m.meshExpanded || m.meshServicesExpanded {
+		t.Fatalf("expected only meshExpanded after 'm', got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+	}
+
+	updated, _ = m.Update(runeKey('s'))
+	m = updated.(Model)
+	if m.meshExpanded || !m.meshServicesExpanded {
+		t.Fatalf("expected 's' to close the mesh view and open mesh services, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+	}
+
+	updated, _ = m.Update(runeKey('m'))
+	m = updated.(Model)
+	if !m.meshExpanded || m.meshServicesExpanded {
+		t.Fatalf("expected 'm' to close mesh services and reopen the mesh view, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+	}
+}
+
 func TestForceQuit_WorksInEitherMode(t *testing.T) {
 	m := newTestModel(t)
 	if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {

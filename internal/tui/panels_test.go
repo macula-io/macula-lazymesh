@@ -1,12 +1,47 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+
+	"crypto/sha256"
+	"encoding/hex"
 )
+
+// ioMaculaRealm mirrors meshservices.go's own unexported pinnedRealm
+// computation (sha256 of "io.macula", uppercase hex) -- the real value,
+// not a copy-pasted literal, so a future realm-name change can't drift
+// silently between the package and these tests.
+func ioMaculaRealm() string {
+	sum := sha256.Sum256([]byte("io.macula"))
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
+}
+
+// fakeMeshMCP satisfies meshservices' own (unexported) mcpCaller
+// interface structurally -- same technique internal/meshservices' own
+// tests use, needed here to construct a real *meshservices.Source
+// (rather than reasoning about its private fields) for the `s` panel's
+// enabled/discovered states.
+type fakeMeshMCP struct {
+	discoveryResponse string
+}
+
+func (f *fakeMeshMCP) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	if name == "mesh_find_records_by_type" {
+		if f.discoveryResponse == "" {
+			return `{"records":[]}`, nil
+		}
+		return f.discoveryResponse, nil
+	}
+	return "", fmt.Errorf("fakeMeshMCP: no handler for %s", name)
+}
 
 func TestColumnWidths_FlexColumnAbsorbsRemainder(t *testing.T) {
 	cases := []struct {
@@ -308,5 +343,78 @@ func TestTableStyles_SelectedRowNotMisaligned(t *testing.T) {
 	if row1Indent != headerIndent {
 		t.Fatalf("expected row 1 to align with the header (indent %d), got indent %d:\nheader=%q\nrow1=%q",
 			headerIndent, row1Indent, lines[0], lines[2])
+	}
+}
+
+// Three distinct states, per renderMeshServices' own doc comment -- a
+// human must never see "not live" collapse "disabled" and "not yet
+// checked" into the same claim.
+
+func TestRenderMeshServices_DisabledShowsCuratedCatalogMarkedInactive(t *testing.T) {
+	m := newTestModel(t) // meshServices is nil -- the default, cfg.MeshServicesEnabled false
+	m.width = 200        // wide enough that the longest curated procedure name isn't truncated -- this test checks for the full name, not table-truncation behavior (that's covered elsewhere)
+	got := m.renderMeshServices()
+
+	if !strings.Contains(got, fmt.Sprintf("%d curated", len(meshservices.Curated))) {
+		t.Fatalf("expected the title to report every curated entry even while disabled, got:\n%s", got)
+	}
+	if !strings.Contains(got, "disabled -- set mesh_services_enabled: true") {
+		t.Fatalf("expected the enable hint, got:\n%s", got)
+	}
+	if !strings.Contains(got, meshservices.Curated[0].Procedure()) {
+		t.Fatalf("expected the first curated procedure listed by name, got:\n%s", got)
+	}
+	if !strings.Contains(got, "inactive") {
+		t.Fatalf("expected every row marked inactive while disabled, got:\n%s", got)
+	}
+	if strings.Contains(got, "not live") || strings.Contains(got, "checking") {
+		t.Fatalf("expected the disabled state to read as its own thing, not 'not live'/'checking', got:\n%s", got)
+	}
+}
+
+func TestRenderMeshServices_EnabledNotYetDiscoveredShowsChecking(t *testing.T) {
+	m := newTestModel(t)
+	// A freshly-constructed Source, Snapshot never preceded by ListTools --
+	// exactly the shape of a human opening this panel before the agent's
+	// own first tool call (Discovery is lazy, see meshservices.go).
+	m.meshServices = meshservices.New(&fakeMeshMCP{})
+
+	got := m.renderMeshServices()
+	if strings.Contains(got, "disabled") {
+		t.Fatalf("expected no disabled messaging once meshServices is set, got:\n%s", got)
+	}
+	if !strings.Contains(got, "checking...") {
+		t.Fatalf("expected every row marked checking before discovery has resolved, got:\n%s", got)
+	}
+	if strings.Contains(got, "not live") {
+		t.Fatalf("expected 'not yet checked' to never read as 'confirmed not live', got:\n%s", got)
+	}
+}
+
+func TestRenderMeshServices_EnabledAndDiscoveredMarksOnlyTheDiscoveredProcedureLive(t *testing.T) {
+	m := newTestModel(t)
+	discovered := meshservices.Curated[0]
+	fake := &fakeMeshMCP{discoveryResponse: fmt.Sprintf(
+		`{"records":[{"procedure_advertisement":{"realm":%q,"procedure":%q}}]}`,
+		ioMaculaRealm(), discovered.Procedure(),
+	)}
+	src := meshservices.New(fake)
+	if _, err := src.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	m.meshServices = src
+
+	got := m.renderMeshServices()
+	if !strings.Contains(got, "live") {
+		t.Fatalf("expected at least one row marked live, got:\n%s", got)
+	}
+	if !strings.Contains(got, "not live") {
+		t.Fatalf("expected every other curated procedure marked not live, got:\n%s", got)
+	}
+	if strings.Contains(got, "checking") {
+		t.Fatalf("expected no row still marked checking once discovery has resolved, got:\n%s", got)
+	}
+	if !strings.Contains(got, fmt.Sprintf("%d live", 1)) {
+		t.Fatalf("expected the title's live count to be exactly 1, got:\n%s", got)
 	}
 }

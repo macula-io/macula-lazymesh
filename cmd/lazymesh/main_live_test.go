@@ -10,6 +10,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 )
 
 // TestLiveBuildToolSource_ExcludesMeshServiceToolsByDefault confirms
@@ -74,7 +75,13 @@ func TestLiveBuildToolSource_MeshServicesEnabledIncludesCuratedTools(t *testing.
 	}
 	defer client.Close()
 
-	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, nil)
+	// buildToolSource now expects the caller to construct meshSvc itself
+	// (2026-09-08, so the TUI's own `s` panel can share the identical
+	// Source instance) -- a bare nil here would mean MeshServicesEnabled
+	// is silently ignored, which is exactly the regression this test
+	// exists to catch, not something to reintroduce via the test's own
+	// setup.
+	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client))
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

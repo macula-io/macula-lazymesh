@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 )
 
 // panelInnerWidth is the content width available inside a panelStyle-
@@ -314,4 +316,99 @@ func (m Model) renderPresence() string {
 	}
 	b.WriteString(strings.Join(rows, "\n"))
 	return b.String()
+}
+
+// meshServiceStatusLabel is one curated procedure's row-level status, in
+// the same rendered form regardless of WHY it's that way -- disabled,
+// not-yet-discovered, and discovered-but-absent all read differently to
+// an operator (see renderMeshServices' own doc on why they must not
+// collapse into one "not live" reading).
+func meshServiceStatusLabel(enabled, discovered, live bool) string {
+	switch {
+	case !enabled:
+		return dimStyle.Render("inactive")
+	case !discovered:
+		return dimStyle.Render("checking...")
+	case live:
+		return statusStripStyle.Render("live")
+	default:
+		return dimStyle.Render("not live")
+	}
+}
+
+// renderMeshServices is the `s` panel: every curated mesh-service
+// procedure (internal/meshservices.Curated -- always all 16, static data
+// regardless of anything below), each tagged with its own current
+// standing. Three distinct states, never collapsed into one:
+//   - m.meshServices == nil: cfg.MeshServicesEnabled is false (the
+//     default, see config.MeshServicesEnabled's own doc comment on why)
+//     -- the catalog is shown anyway, as reference, every row "inactive",
+//     with a note on how to turn it on. Never a blank panel just because
+//     the feature happens to be off.
+//   - enabled but !discovered: discovery is lazy, resolved once on the
+//     agent's own first tool call (see meshservices.go's Discovery doc
+//     comment) -- a human can open this panel before that has happened.
+//     "checking..." is not the same claim as "confirmed not live" and
+//     must not be presented as one.
+//   - enabled and discovered: each entry's real Live/not-live standing,
+//     from the EXACT Source instance the agent's own tool calls go
+//     through (see Options.MeshServices' own doc comment on why this
+//     isn't a second, independently-polled query).
+func (m Model) renderMeshServices() string {
+	enabled := m.meshServices != nil
+	var entries []meshservices.ServiceStatus
+	var discovered bool
+	if enabled {
+		entries, discovered = m.meshServices.Snapshot()
+	} else {
+		entries = make([]meshservices.ServiceStatus, len(meshservices.Curated))
+		for i, cp := range meshservices.Curated {
+			entries[i] = meshservices.ServiceStatus{CuratedProcedure: cp}
+		}
+	}
+
+	liveCount := 0
+	for _, e := range entries {
+		if e.Live {
+			liveCount++
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf("MeshServices (%d curated, %d live)", len(entries), liveCount)) + "\n")
+	if !enabled {
+		b.WriteString(dimStyle.Render("disabled -- set mesh_services_enabled: true in config.yaml to enable") + "\n")
+	}
+
+	inner := m.panelInnerWidth()
+	// Procedure, not Description, is the flex column here -- unlike the
+	// sibling panels (Rooms' own flex column is likewise its identifying
+	// content), an operator scanning this list needs to know WHICH exact
+	// procedure a row is about more than the full text of its
+	// description; a truncated description is still useful, a truncated
+	// procedure name can hide which of several similarly-prefixed
+	// procedures (e.g. hecate-rag.search_chunks_semantic vs.
+	// hecate-rag.get_source_by_id) a row actually is.
+	widths := columnWidths(inner, []int{-1, 11, 40})
+	t := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "Procedure", Width: widths[0]},
+			{Title: "Status", Width: widths[1]},
+			{Title: "Description", Width: widths[2]},
+		}),
+		table.WithWidth(inner),
+		table.WithHeight(len(entries)+1),
+		table.WithStyles(tableStyles()),
+	)
+	rows := make([]table.Row, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, table.Row{
+			e.Procedure(),
+			meshServiceStatusLabel(enabled, discovered, e.Live),
+			e.Description,
+		})
+	}
+	t.SetRows(rows)
+	b.WriteString(t.View())
+	return strings.TrimRight(b.String(), "\n")
 }

@@ -21,6 +21,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 )
 
 // refreshInterval is how often the mesh-state panels re-poll macula-mcp.
@@ -73,11 +74,24 @@ type Options struct {
 	// empty when no --room agent is running -- there's nothing "actually
 	// running" to report in that case, just a configured-but-idle default.
 	AgentModel string
+
+	// MeshServices backs the `s` panel (renderMeshServicesOverlay) --
+	// nil when cfg.MeshServicesEnabled is false, in which case the panel
+	// still shows the curated catalog (it's static data, meshservices.
+	// Curated, not gated by this field) but marks it inactive rather
+	// than showing a blank screen. THE SAME Source instance runAgent's
+	// own tool chain calls through, not a second one -- so what a human
+	// sees here is exactly what the agent can actually reach, not an
+	// independent, potentially-diverging query (found while scoping,
+	// 2026-09-08: this Source used to be built and wrapped entirely
+	// inside cmd/lazymesh's buildToolSource, invisible outside it).
+	MeshServices *meshservices.Source
 }
 
 // Model is the bubbletea model for lazymesh's TUI.
 type Model struct {
-	mcp toolCaller
+	mcp          toolCaller
+	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
 
 	agentEvents <-chan agent.Event
 	userInputCh chan<- string
@@ -89,12 +103,13 @@ type Model struct {
 	state   meshState
 	lastErr error
 
-	mode              Mode
-	meshExpanded      bool
-	detailsExpanded   bool // global expand/collapse for tool-call detail in chat
-	muted             bool
-	statusBarPosition string // "top" or "bottom"
-	agentModel        string // see Options.AgentModel
+	mode                 Mode
+	meshExpanded         bool
+	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
+	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
+	muted                bool
+	statusBarPosition    string // "top" or "bottom"
+	agentModel           string // see Options.AgentModel
 
 	// showChatter controls whether routine tool-call activity (mesh
 	// operations) reaches the conversation pane at all. Off by default:
@@ -148,6 +163,7 @@ func New(client toolCaller, opts Options) Model {
 
 	return Model{
 		mcp:               client,
+		meshServices:      opts.MeshServices,
 		agentEvents:       opts.AgentEvents,
 		userInputCh:       opts.UserInputCh,
 		contactPolicyFile: opts.ContactPolicyFile,
@@ -328,7 +344,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
 		return m, m.input.Focus()
 	case key.Matches(msg, DefaultKeyMap.ToggleMesh):
+		// Mutually exclusive with meshServicesExpanded, not stacked --
+		// two overlays showing at once would halve the chat margin
+		// pin-to-top already keeps tight, for two concerns (mesh STATE
+		// vs. available SERVICES) that are never both what an operator
+		// wants to see in the same glance.
 		m.meshExpanded = !m.meshExpanded
+		if m.meshExpanded {
+			m.meshServicesExpanded = false
+		}
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleMeshServices):
+		m.meshServicesExpanded = !m.meshServicesExpanded
+		if m.meshServicesExpanded {
+			m.meshExpanded = false
+		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleQuiet):
 		m.muted = !m.muted
@@ -341,12 +371,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showChatter = !m.showChatter
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Up):
-		if !m.meshExpanded {
+		if !m.meshExpanded && !m.meshServicesExpanded {
 			m.chatViewport.LineUp(1)
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Down):
-		if !m.meshExpanded {
+		if !m.meshExpanded && !m.meshServicesExpanded {
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
@@ -565,9 +595,12 @@ func (m Model) View() string {
 	}
 
 	var body string
-	if m.meshExpanded {
+	switch {
+	case m.meshExpanded:
 		body = m.renderMeshOverlay()
-	} else {
+	case m.meshServicesExpanded:
+		body = m.renderMeshServicesOverlay()
+	default:
 		body = m.chatViewport.View()
 	}
 	input := m.renderInputLine()
@@ -620,7 +653,7 @@ func (m Model) renderHintLines() []string {
 	case ModeInsert:
 		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
 	default:
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  i: compose  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  i: compose  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
 	}
 }
 
@@ -716,16 +749,16 @@ func (m Model) padToBodyHeight(content string) string {
 	return content + strings.Repeat("\n", target-lines)
 }
 
-// renderMeshOverlay composites the mesh-view panels over the chat pane
-// rather than replacing it outright: real conversation lines stay
-// visible in a margin below the panels ("transparency", per Raf
-// 2026-09-08) instead of the panels eating the entire body area edge to
-// edge as before. Terminals can't do true alpha blending, so this is the
-// practical equivalent -- the actual chat text, not a blank or dimmed
-// backdrop (dimming an already-styled multi-segment chat line correctly
-// would need re-emitting its ANSI state, not just wrapping it -- tried
-// live 2026-09-08, a naive Faint() wrap breaks at the line's own first
-// inner reset code, undimming everything after it).
+// renderOverlay composites ANY panel content over the chat pane rather
+// than replacing it outright: real conversation lines stay visible in a
+// margin below the panel(s) ("transparency", per Raf 2026-09-08) instead
+// of the panel eating the entire body area edge to edge. Terminals can't
+// do true alpha blending, so this is the practical equivalent -- the
+// actual chat text, not a blank or dimmed backdrop (dimming an
+// already-styled multi-segment chat line correctly would need
+// re-emitting its ANSI state, not just wrapping it -- tried live
+// 2026-09-08, a naive Faint() wrap breaks at the line's own first inner
+// reset code, undimming everything after it).
 //
 // Pinned to the top of the body area (Raf, 2026-09-08, once the panels'
 // own styling was lightened enough that this stopped reading as a
@@ -733,27 +766,48 @@ func (m Model) padToBodyHeight(content string) string {
 // above and below, which needed a "don't repeat the same short
 // conversation's lines in both margins" special case entirely of its
 // own. Pinning to the top removes that whole class of problem -- there's
-// only one margin now, below the panels, showing the newest chat lines
+// only one margin now, below the panel, showing the newest chat lines
 // (the panel effectively "covers" everything older, the same way a card
 // dropped onto a scrolled page would).
-func (m Model) renderMeshOverlay() string {
-	mesh := strings.Split(m.renderExpandedMesh(), "\n")
+//
+// Shared by renderMeshOverlay (`m`) and renderMeshServicesOverlay (`s`,
+// 2026-09-08) -- they differ only in what panelContent is, not in how it
+// sits over the chat pane; extracted rather than duplicated once a
+// second overlay needed the identical layout.
+func (m Model) renderOverlay(panelContent string) string {
+	panel := strings.Split(panelContent, "\n")
 	target := m.height - len(m.statusLines()) - 2 // same target padToBodyHeight/resizeComponents use
-	if target < 1 || len(mesh) >= target {
-		// No room for a visible margin either way -- the panels alone
-		// already fill (or exceed) the available height. Falls back to
-		// the old full-bleed behavior rather than truncating them
-		// further; they have no scroll of their own.
-		return m.padToBodyHeight(strings.Join(mesh, "\n"))
+	if target < 1 || len(panel) >= target {
+		// No room for a visible margin either way -- the panel alone
+		// already fills (or exceeds) the available height. Falls back to
+		// the old full-bleed behavior rather than truncating it further;
+		// it has no scroll of its own.
+		return m.padToBodyHeight(strings.Join(panel, "\n"))
 	}
 
 	chat := m.chatContentLines()
-	margin := target - len(mesh)
+	margin := target - len(panel)
 
 	lines := make([]string, 0, target)
-	lines = append(lines, mesh...)
+	lines = append(lines, panel...)
 	lines = append(lines, chatMarginLines(chat, len(chat)-margin, len(chat))...)
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderMeshOverlay() string {
+	return m.renderOverlay(m.renderExpandedMesh())
+}
+
+// renderMeshServicesOverlay is the `s` panel's own overlay, same layout
+// as renderMeshOverlay (`m`) but showing internal/meshservices' curated
+// catalog instead of Rooms/Pending rings/Presence -- a deliberately
+// separate toggle, not a 4th panel merged into that stack: mesh STATE
+// (who's here, what rooms exist) and available SERVICES (what the agent
+// can call on the mesh) are different questions, and the existing
+// stack's own pin-to-top layout already has just enough margin left for
+// the chat pane without a 4th panel competing for it.
+func (m Model) renderMeshServicesOverlay() string {
+	return m.renderOverlay(panelStyle.Render(m.renderMeshServices()))
 }
 
 // chatContentLines is the chat pane's actual content, one entry per

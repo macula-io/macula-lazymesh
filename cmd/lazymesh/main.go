@@ -139,7 +139,19 @@ func run(configPath, room, goalText string) error {
 	if err != nil {
 		return fmt.Errorf("build provider: %w", err)
 	}
-	tools, err := buildToolSource(cfg, client, agentLog)
+	// Constructed here, not inside buildToolSource, so the TUI's own `s`
+	// (MeshServices panel) can read the exact same Source's Snapshot --
+	// found 2026-09-08 (Raf, via Jupiter): this used to be built and
+	// wrapped entirely inside buildToolSource, invisible to anything
+	// outside it. nil when cfg.MeshServicesEnabled is false, matching
+	// buildToolSource's own existing gate -- the panel handles a nil
+	// Source as its own disabled state, not a crash.
+	var meshSvc *meshservices.Source
+	if cfg.MeshServicesEnabled {
+		meshSvc = meshservices.New(client)
+		meshSvc.SetLogger(agentLog)
+	}
+	tools, err := buildToolSource(cfg, client, meshSvc)
 	if err != nil {
 		return fmt.Errorf("build tool source: %w", err)
 	}
@@ -191,6 +203,7 @@ func run(configPath, room, goalText string) error {
 		ContactPolicyFile: cfg.ContactPolicyFile,
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
 		AgentModel:        agentModelLabel,
+		MeshServices:      meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
 	})
 	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	_, err = program.Run()
@@ -288,10 +301,10 @@ func providerLabel(cfg config.Config) string {
 }
 
 // buildToolSource combines macula-mcp, Phase 3's mesh-service tools when
-// cfg.MeshServicesEnabled turns them on (real, curated, currently-
-// discovered mesh procedures, dogfooding the mesh's own service directory
-// per the plan's actual thesis -- but OFF by default since R2, 2026-09-07:
-// see config.MeshServicesEnabled's own doc comment for why), and Phase 2's
+// meshSvc is non-nil (real, curated, currently-discovered mesh
+// procedures, dogfooding the mesh's own service directory per the plan's
+// actual thesis -- but OFF by default since R2, 2026-09-07: see
+// config.MeshServicesEnabled's own doc comment for why), and Phase 2's
 // local shell/file tools when explicitly enabled -- then wraps whatever
 // that is in an AllowlistSource. The allowlist is the actual gate: an
 // agent's entire conversation can be steered by arbitrary mesh peers (room
@@ -300,11 +313,15 @@ func providerLabel(cfg config.Config) string {
 // controls whether shell_exec/read_file/write_file are wired up at all; it
 // does NOT put them on the allowlist by itself -- see config.ToolAllowlist
 // and internal/agent/allowlist.go.
-func buildToolSource(cfg config.Config, client *mcpclient.Client, agentLog *log.Logger) (agent.ToolSource, error) {
+//
+// meshSvc is constructed by the caller (run), not here, as of 2026-09-08 --
+// see run's own comment on why: the TUI's `s` panel needs the identical
+// Source instance to read via Snapshot, not a second one wrapping the
+// same client. Must be nil exactly when cfg.MeshServicesEnabled is false
+// (the caller's job to keep those in sync -- see run).
+func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source) (agent.ToolSource, error) {
 	sources := []agent.ToolSource{client}
-	if cfg.MeshServicesEnabled {
-		meshSvc := meshservices.New(client)
-		meshSvc.SetLogger(agentLog)
+	if meshSvc != nil {
 		sources = append(sources, meshSvc)
 	}
 	if cfg.LocalTools.Enabled {

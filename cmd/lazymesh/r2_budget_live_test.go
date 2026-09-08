@@ -11,6 +11,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 )
 
 // maxAcceptableFixedPrefixTokens is a real regression ceiling, not the
@@ -104,7 +105,10 @@ func TestLiveR2ToolSelectionMeshServicesEnabledStillFitsRegressionCeiling(t *tes
 	}
 	defer client.Close()
 
-	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, nil)
+	// See main_live_test.go's own comment on the same pattern: buildToolSource
+	// no longer constructs meshservices.Source internally, so a nil here
+	// would silently drop the very tools this test measures.
+	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client))
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

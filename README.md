@@ -108,6 +108,7 @@ Vim-style modal input — **normal mode by default**:
 |---|---|---|
 | `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
 | `m` | show/hide the mesh view (rooms/rings/presence) | (typed as text) |
+| `s` | show/hide the mesh services view (the curated catalog below) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
 | `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
@@ -135,6 +136,11 @@ to the panels alone, same as before. The panels themselves render with a
 dim, muted border rather than a solid bright one, so the overlay reads
 as a light layer over the conversation rather than a popup taking it
 over.
+
+The mesh services view (`s`, below) is the same overlay shape over a
+different panel, and the two are mutually exclusive — opening one closes
+the other rather than stacking, since two panels competing for the same
+tight chat margin would leave less room for either.
 
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat
@@ -169,7 +175,7 @@ A message typed while the agent is mid-call (in particular a long
 `mesh_say` wait) is picked up once that call returns, not instantly —
 no in-flight LLM call gets interrupted for it.
 
-### Mesh service tools (Phase 3, on by default)
+### Mesh service tools (Phase 3, off by default)
 
 Beyond the conversational mesh primitives, the agent can also call real
 mesh RPC procedures discovered live via `mesh_find_records_by_type` —
@@ -180,19 +186,33 @@ mesh survey: `hecate-rag` (semantic search, source/chunk lookups),
 resolution and narration). Only individually named, curated, currently-
 discovered procedures ever become tools — never a generic "call any mesh
 procedure" tool, which would reopen the same risk the tool allowlist
-exists to close. Discovery is real and dynamic (cached ~60s, not a fixed
-catalog): a curated procedure that isn't currently advertised on the mesh
-just doesn't show up as a tool that round. On by default, no config
-needed — unlike Phase 2's local tools below, this is read-only and scoped
-to a curated, reviewed set.
+exists to close. Discovery resolves once per process lifetime (not on a
+timer, and not re-checked even if the mesh changes underneath it — a
+deliberate R2 tradeoff for a byte-stable tool schema a provider's own
+prompt cache can actually reuse): a curated procedure not currently
+advertised at that one moment just never becomes a tool for the rest of
+this run.
+
+Set `mesh_services_enabled: true` in `config.yaml` to turn this on —
+**off by default** (R2, 2026-09-07): a room-chat-only agent usually never
+touches corpus search at all, and the catalog's own tool schemas are real
+fixed-prefix token cost every operator would otherwise pay whether they
+use it or not. Press `s` any time (on or off) to see the curated catalog
+itself — Procedure/Status/Description, each tagged `live` (currently
+discovered and callable), `not live` (curated but not currently
+advertised), `checking...` (enabled, discovery just hasn't resolved yet),
+or `inactive` (the feature itself is off) — reading from the exact same
+`Source` the agent's own tool calls go through, not a second, possibly-
+diverging query.
 
 ### Tool allowlist
 
 By default the agent can only see and call the conversational mesh
 primitives (`mesh_hello`, `join_room`, `leave_room`, `say`, `read_inbox`,
-`answer_ring`, `rooms`, `agents`) plus the mesh-service tools above —
-deny-by-default, enforced both in what gets offered to the model and at
-execution time. This exists because the agent's entire conversation can
+`answer_ring`, `rooms`, `agents`), plus the mesh-service tools above once
+`mesh_services_enabled: true` opts into them — deny-by-default, enforced
+both in what gets offered to the model and at execution time. This
+exists because the agent's entire conversation can
 be steered by arbitrary mesh peers (room messages, ring purposes are all
 peer-authored text that flows straight back into the model's context); a
 wider default tool set would mean any peer's room post could potentially

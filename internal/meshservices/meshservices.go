@@ -131,6 +131,39 @@ func (s *Source) SetLogger(l *log.Logger) {
 	s.mu.Unlock()
 }
 
+// ServiceStatus is one curated procedure's current standing, for a
+// human-facing view (internal/tui's MeshServices panel, `s`) rather than
+// the synthetic-tool shape ListTools returns. Live is only meaningful
+// once discovery has actually run -- see Snapshot's own doc on why a
+// caller must check the returned discovered bool first.
+type ServiceStatus struct {
+	CuratedProcedure
+	Live bool
+}
+
+// Snapshot reports every curated procedure's current standing for
+// display. Read-only and safe to call at any point in this Source's
+// lifetime, before or after ListTools has ever resolved -- it never
+// triggers discovery itself, only reads whatever ListTools last found
+// (see Discovery's own doc comment above: once per process lifetime,
+// not a refresh). discovered reports whether that has happened yet at
+// all; false means every entry's Live is "not yet checked", not
+// "confirmed absent" -- a human could open this panel before the
+// agent's own first tool call, and the two must not look the same.
+func (s *Source) Snapshot() (entries []ServiceStatus, discovered bool) {
+	s.mu.Lock()
+	index := s.index
+	discovered = s.discovered
+	s.mu.Unlock()
+
+	entries = make([]ServiceStatus, len(Curated))
+	for i, cp := range Curated {
+		_, live := index[cp.ToolName()]
+		entries[i] = ServiceStatus{CuratedProcedure: cp, Live: discovered && live}
+	}
+	return entries, discovered
+}
+
 func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 	s.mu.Lock()
 	if s.discovered {
