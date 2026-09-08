@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
 
 func runeKey(r rune) tea.KeyMsg {
@@ -223,6 +225,218 @@ func TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive(t *testing.T
 	}
 }
 
+func TestNormalMode_RTogglesRealmExpanded(t *testing.T) {
+	m := newTestModel(t)
+	if m.realmExpanded {
+		t.Fatalf("expected realms view collapsed by default")
+	}
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	if !m.realmExpanded {
+		t.Fatalf("expected 'r' to expand the realms view")
+	}
+	updated, _ = m.Update(runeKey('r'))
+	m = updated.(Model)
+	if m.realmExpanded {
+		t.Fatalf("expected a second 'r' to collapse it again")
+	}
+}
+
+// `r` joins the same mutual-exclusion group as `m`/`s` -- see
+// TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive above
+// for the pairwise version; this checks the third overlay closes both
+// of the other two, and that opening either of the other two closes it.
+func TestNormalMode_RealmsViewIsMutuallyExclusiveWithTheOtherTwoOverlays(t *testing.T) {
+	m := newTestModel(t)
+
+	updated, _ := m.Update(runeKey('m'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('r'))
+	m = updated.(Model)
+	if m.meshExpanded || !m.realmExpanded {
+		t.Fatalf("expected 'r' to close the mesh view, got meshExpanded=%v realmExpanded=%v", m.meshExpanded, m.realmExpanded)
+	}
+
+	updated, _ = m.Update(runeKey('s'))
+	m = updated.(Model)
+	if m.realmExpanded || !m.meshServicesExpanded {
+		t.Fatalf("expected 's' to close the realms view, got realmExpanded=%v meshServicesExpanded=%v", m.realmExpanded, m.meshServicesExpanded)
+	}
+}
+
+func TestInsertMode_RDoesNotToggleRealmsView_TypesInstead(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('i'))
+	m = updated.(Model)
+
+	updated, _ = m.Update(runeKey('r'))
+	m = updated.(Model)
+	if m.realmExpanded {
+		t.Fatalf("'r' while composing must not toggle the realms view")
+	}
+	if m.input.Value() != "r" {
+		t.Fatalf("expected 'r' to be typed into the input, got %q", m.input.Value())
+	}
+}
+
+// `i` means something different depending on which overlay is showing
+// (handleKey's own Insert case) -- with the realms view open and no
+// join result currently displayed, it must enter ModeRealmJoin, not the
+// normal compose mode.
+func TestNormalMode_IEntersRealmJoinModeWhenRealmsViewIsOpen(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	if m.mode != ModeRealmJoin {
+		t.Fatalf("expected ModeRealmJoin, got %v", m.mode)
+	}
+	if !m.realmJoinInput.Focused() {
+		t.Fatalf("expected the realm-join input to be focused")
+	}
+}
+
+func TestModeRealmJoin_EscCancelsWithoutStartingAJoin(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+
+	for _, r := range "io.macula" {
+		updated, _ = m.Update(runeKey(r))
+		m = updated.(Model)
+	}
+	updated, cmd := m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	if m.mode != ModeNormal {
+		t.Fatalf("expected Esc to return to Normal mode, got %v", m.mode)
+	}
+	if m.realmJoinInput.Value() != "" {
+		t.Fatalf("expected the draft realm name to be discarded on cancel, got %q", m.realmJoinInput.Value())
+	}
+	if m.realmJoinEvents != nil {
+		t.Fatalf("expected no join to have been started")
+	}
+	if cmd != nil {
+		t.Fatalf("expected no command from cancelling")
+	}
+}
+
+func TestModeRealmJoin_SubmittingEmptyInputDoesNothing(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+
+	updated, cmd := m.Update(typeKey(tea.KeyEnter))
+	m = updated.(Model)
+	if m.mode != ModeNormal {
+		t.Fatalf("expected Enter on an empty realm name to return to Normal mode, got %v", m.mode)
+	}
+	if m.realmJoinEvents != nil || cmd != nil {
+		t.Fatalf("expected no join to have been started for an empty name")
+	}
+}
+
+// The actual wiring test: Enter with real text calls realmJoinFunc with
+// exactly what was typed and the Model's own configured
+// version/identity, and starts listening on whatever channel it
+// returns -- substituting realmJoinFunc so this never risks a real
+// npx/macula-mcp-realm spawn (internal/realmjoin's own test suite
+// already covers that machinery).
+func TestModeRealmJoin_SubmitCallsRealmJoinFuncWithTheTypedNameAndStartsListening(t *testing.T) {
+	original := realmJoinFunc
+	defer func() { realmJoinFunc = original }()
+
+	var gotVersion, gotIdentity, gotRealm string
+	ch := make(chan realmjoin.Event, 1)
+	realmJoinFunc = func(ctx context.Context, version, identityFile, realmName string) (<-chan realmjoin.Event, error) {
+		gotVersion, gotIdentity, gotRealm = version, identityFile, realmName
+		return ch, nil
+	}
+
+	m := newTestModel(t)
+	m.maculaMCPVersion = "0.27.0"
+	m.realmIdentityFile = "/tmp/identity.seed"
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	for _, r := range "io.macula" {
+		updated, _ = m.Update(runeKey(r))
+		m = updated.(Model)
+	}
+	updated, cmd := m.Update(typeKey(tea.KeyEnter))
+	m = updated.(Model)
+
+	if gotVersion != "0.27.0" || gotIdentity != "/tmp/identity.seed" || gotRealm != "io.macula" {
+		t.Fatalf("expected realmJoinFunc called with (0.27.0, /tmp/identity.seed, io.macula), got (%q, %q, %q)", gotVersion, gotIdentity, gotRealm)
+	}
+	if m.mode != ModeNormal {
+		t.Fatalf("expected Normal mode after submitting, got %v", m.mode)
+	}
+	if cmd == nil {
+		t.Fatalf("expected a command to start listening for events")
+	}
+}
+
+func TestHandleRealmJoinEvent_NonTerminalEventReArmsListening(t *testing.T) {
+	m := newTestModel(t)
+	ch := make(chan realmjoin.Event, 1)
+	m.realmJoinEvents = ch
+
+	updated, cmd := m.Update(realmJoinEventMsg{Kind: "session", Realm: "io.macula", JoinURL: "https://realm.macula.io/join/s1"})
+	m = updated.(Model)
+	if m.realmJoinLatest == nil || m.realmJoinLatest.Kind != "session" {
+		t.Fatalf("expected realmJoinLatest set to the session event, got %+v", m.realmJoinLatest)
+	}
+	if m.realmJoinEvents == nil {
+		t.Fatalf("expected the events channel to stay set (still listening) after a non-terminal event")
+	}
+	if cmd == nil {
+		t.Fatalf("expected a command re-arming the listener")
+	}
+}
+
+func TestHandleRealmJoinEvent_TerminalEventStopsListening(t *testing.T) {
+	m := newTestModel(t)
+	ch := make(chan realmjoin.Event, 1)
+	m.realmJoinEvents = ch
+
+	updated, cmd := m.Update(realmJoinEventMsg{Kind: "confirmed", Realm: "io.macula", Handle: "rgfaber"})
+	m = updated.(Model)
+	if m.realmJoinLatest == nil || m.realmJoinLatest.Kind != "confirmed" {
+		t.Fatalf("expected realmJoinLatest set to the confirmed event, got %+v", m.realmJoinLatest)
+	}
+	if m.realmJoinEvents != nil {
+		t.Fatalf("expected the events channel cleared (stopped listening) after a terminal event")
+	}
+	if cmd != nil {
+		t.Fatalf("expected no further command after a terminal event")
+	}
+}
+
+func TestNormalMode_EscDismissesAFinishedRealmJoinBackToTheList(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	ev := realmjoin.Event{Kind: "confirmed", Realm: "io.macula", Handle: "rgfaber"}
+	m.realmJoinLatest = &ev
+
+	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	if m.realmJoinLatest != nil {
+		t.Fatalf("expected Esc to dismiss the finished join's status, got %+v", m.realmJoinLatest)
+	}
+	if !m.realmExpanded {
+		t.Fatalf("expected Esc to only dismiss the join status, not close the realms panel itself")
+	}
+}
+
 func TestForceQuit_WorksInEitherMode(t *testing.T) {
 	m := newTestModel(t)
 	if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
@@ -341,7 +555,7 @@ func TestRenderHintLines_AlwaysOneLine(t *testing.T) {
 func TestRenderHintLines_NormalModeStillListsEveryShortcut(t *testing.T) {
 	m := newTestModel(t)
 	combined := strings.Join(m.renderHintLines(), " ")
-	for _, want := range []string{"m:", "i:", "ctrl+e:", "v:", "e:", "b:", "q:"} {
+	for _, want := range []string{"m:", "s:", "r:", "i:", "ctrl+e:", "v:", "e:", "b:", "q:"} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("expected shortcut %q somewhere in the hint lines, got %q", want, combined)
 		}

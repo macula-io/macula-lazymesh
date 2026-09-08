@@ -33,7 +33,7 @@ import (
 // package with no cross-package awareness, matching how every other
 // cross-cutting default in this codebase is resolved at the call site
 // rather than via an import.
-const DefaultMaculaMCPVersion = "0.26.1"
+const DefaultMaculaMCPVersion = "0.27.0"
 
 // launchCommand starts macula-mcp the same way every other MCP config in
 // this workspace does (npx -p @macula-io/mcp macula-mcp), pinned to the
@@ -286,6 +286,20 @@ func Spawn(ctx context.Context, opts SpawnOptions) (*Client, error) {
 		opts:    resolved,
 		spawnFn: realSpawnSession,
 	}, nil
+}
+
+// IdentityFile returns the exact MACULA_MCP_IDENTITY path this Client's
+// own macula-mcp subprocess is running under -- the RESOLVED value
+// (resolveSpawnIdentity's own doc comment: an operator-set path, or the
+// ephemeral one this package minted when SpawnOptions.IdentityFile was
+// left empty), not whatever the original SpawnOptions happened to say.
+// internal/realmjoin's own subprocess needs this exact path, not a
+// second guess at it: joining under any OTHER identity would mint a
+// credential for a node_id nobody's actual mesh presence ever uses.
+// c.opts is set once at construction (Spawn) and never reassigned after
+// (tryRespawn reuses it, doesn't replace it), so this needs no lock.
+func (c *Client) IdentityFile() string {
+	return c.opts.IdentityFile
 }
 
 // SetLogger sets where a respawn attempt (start, success, or failure)

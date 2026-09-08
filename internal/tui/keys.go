@@ -10,6 +10,7 @@ type KeyMap struct {
 	Down               key.Binding
 	ToggleMesh         key.Binding
 	ToggleMeshServices key.Binding
+	ToggleRealm        key.Binding
 	ToggleQuiet        key.Binding
 	ToggleDetails      key.Binding
 	Insert             key.Binding
@@ -31,6 +32,7 @@ var DefaultKeyMap = KeyMap{
 	Down:               key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/↓", "scroll down")),
 	ToggleMesh:         key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "toggle mesh view")),
 	ToggleMeshServices: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "toggle mesh services view")),
+	ToggleRealm:        key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "toggle realms view")),
 	ToggleQuiet:        key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "mute/unmute bell")),
 	ToggleDetails:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "expand/collapse tool-call detail")),
 	Insert:             key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "compose message")),

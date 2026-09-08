@@ -204,6 +204,17 @@ func run(configPath, room, goalText string) error {
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
 		AgentModel:        agentModelLabel,
 		MeshServices:      meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
+		// The `r` panel execs macula-mcp-realm directly (internal/realmjoin),
+		// never through client -- MaculaMCPVersion pins it to the exact
+		// same @macula-io/mcp release the persistent server is already
+		// running, and client.IdentityFile() is the RESOLVED identity
+		// path that server actually ended up using (not cfg.IdentityFile,
+		// which config.Default() deliberately leaves empty most of the
+		// time -- see mcpclient.Client.IdentityFile's own doc comment),
+		// so a fresh join's credential lands under the same node_id this
+		// operator's agent is actually presenting on the mesh.
+		MaculaMCPVersion:  cfg.MaculaMCPVersion,
+		RealmIdentityFile: client.IdentityFile(),
 	})
 	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	_, err = program.Run()

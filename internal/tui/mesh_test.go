@@ -125,11 +125,26 @@ func (f *fakeToolCaller) CallTool(ctx context.Context, name string, args map[str
 	return f.responses[name], nil
 }
 
+const fixtureMeshListRealms = `{
+  "realms": [
+    {
+      "realm": "io.macula",
+      "org_identity": "mri:org:io.macula/rgfaber",
+      "handle": "rgfaber",
+      "account": "raf@example.com",
+      "joined_at": "2026-09-08T00:00:00Z",
+      "tier": "citizen",
+      "has_ucan": true
+    }
+  ]
+}`
+
 func TestFetchMeshState_ParsesRealCapturedShapes(t *testing.T) {
 	fake := &fakeToolCaller{responses: map[string]string{
-		"mesh_rooms":      fixtureMeshRooms,
-		"mesh_read_inbox": fixtureMeshReadInbox,
-		"mesh_agents":     fixtureMeshAgents,
+		"mesh_rooms":       fixtureMeshRooms,
+		"mesh_read_inbox":  fixtureMeshReadInbox,
+		"mesh_agents":      fixtureMeshAgents,
+		"mesh_list_realms": fixtureMeshListRealms,
 	}}
 
 	state, err := fetchMeshState(context.Background(), fake)
@@ -169,7 +184,14 @@ func TestFetchMeshState_ParsesRealCapturedShapes(t *testing.T) {
 		t.Fatalf("expected second agent to be is_self")
 	}
 
-	wantCalls := []string{"mesh_rooms", "mesh_read_inbox", "mesh_agents"}
+	if len(state.realms) != 1 || state.realms[0].Realm != "io.macula" {
+		t.Fatalf("unexpected realms: %+v", state.realms)
+	}
+	if !state.realms[0].HasUCAN {
+		t.Fatalf("expected has_ucan to parse true, got %+v", state.realms[0])
+	}
+
+	wantCalls := []string{"mesh_rooms", "mesh_read_inbox", "mesh_agents", "mesh_list_realms"}
 	if len(fake.calls) != len(wantCalls) {
 		t.Fatalf("expected calls %v, got %v", wantCalls, fake.calls)
 	}
@@ -261,9 +283,10 @@ const fixtureMeshAgentsWithPetnames = `{
 
 func TestFetchMeshState_ParsesPetnameAndPurposeFields(t *testing.T) {
 	fake := &fakeToolCaller{responses: map[string]string{
-		"mesh_rooms":      fixtureMeshRoomsWithPetnames,
-		"mesh_read_inbox": fixtureMeshReadInboxWithPetnames,
-		"mesh_agents":     fixtureMeshAgentsWithPetnames,
+		"mesh_rooms":       fixtureMeshRoomsWithPetnames,
+		"mesh_read_inbox":  fixtureMeshReadInboxWithPetnames,
+		"mesh_agents":      fixtureMeshAgentsWithPetnames,
+		"mesh_list_realms": fixtureMeshListRealms,
 	}}
 
 	state, err := fetchMeshState(context.Background(), fake)

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
 
 // panelInnerWidth is the content width available inside a panelStyle-
@@ -411,4 +412,117 @@ func (m Model) renderMeshServices() string {
 	t.SetRows(rows)
 	b.WriteString(t.View())
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderRealms is the `r` panel: exactly one of three things at a time,
+// never stacked -- typing a realm name to join (ModeRealmJoin), an
+// in-flight or just-finished join's own status (m.realmJoinLatest), or
+// the plain membership list. Found live rendering this with real state
+// before committing: the ModeRealmJoin case was originally missing
+// entirely -- pressing `i` silently left the list showing with no visible
+// sign typing was even happening, since realmJoinInput was never
+// rendered anywhere. Same reasoning as the ring pop-up taking over
+// rather than sitting alongside the mesh view.
+func (m Model) renderRealms() string {
+	if m.mode == ModeRealmJoin {
+		return m.renderRealmJoinInput()
+	}
+	if m.realmJoinLatest != nil {
+		return m.renderRealmJoinProgress(*m.realmJoinLatest)
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Realms (%d joined)", len(m.state.realms))) + "\n")
+	if len(m.state.realms) == 0 {
+		b.WriteString(m.panelPlaceholder("no realms joined yet -- i: join one"))
+		return b.String()
+	}
+
+	inner := m.panelInnerWidth()
+	// Realm is the flex column, same reasoning as MeshServices' own
+	// Procedure column: a truncated handle/tier/date is still useful, a
+	// truncated realm name can hide which of several similarly-prefixed
+	// realms (net.beam-campus vs. net.beam-campus.sales) a row is.
+	widths := columnWidths(inner, []int{-1, 18, 9, 20})
+	t := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "Realm", Width: widths[0]},
+			{Title: "Handle", Width: widths[1]},
+			{Title: "Tier", Width: widths[2]},
+			{Title: "Joined", Width: widths[3]},
+		}),
+		table.WithWidth(inner),
+		table.WithHeight(len(m.state.realms)+1),
+		table.WithStyles(tableStyles()),
+	)
+	rows := make([]table.Row, 0, len(m.state.realms))
+	for _, r := range m.state.realms {
+		rows = append(rows, table.Row{r.Realm, r.Handle, r.Tier, r.JoinedAt})
+	}
+	t.SetRows(rows)
+	b.WriteString(t.View())
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// realmJoinStatusLine renders one Event as its own human-readable line --
+// pulled out from renderRealmJoinProgress so each kind's own wording has
+// a direct test independent of the panel's surrounding layout.
+func realmJoinStatusLine(ev realmjoin.Event) string {
+	switch ev.Kind {
+	case "already_joined":
+		return fmt.Sprintf("already joined %s as %s (joined %s)", ev.Realm, displayHandle(ev), ev.JoinedAt)
+	case "confirmed":
+		return statusStripStyle.Render(fmt.Sprintf("✓ joined %s as %s", ev.Realm, displayHandle(ev)))
+	case "expired":
+		return errStyle.Render(fmt.Sprintf("session for %s expired before it was confirmed -- i: try again", ev.Realm))
+	case "timeout":
+		return errStyle.Render(fmt.Sprintf("gave up waiting for %s -- i: try again", ev.Realm))
+	case "error", "spawn_error":
+		return errStyle.Render(fmt.Sprintf("error joining %s: %s", ev.Realm, ev.Message))
+	default: // "session" -- interim, still polling
+		return dimStyle.Render(fmt.Sprintf("waiting for confirmation (session expires %s)...", ev.ExpiresAt))
+	}
+}
+
+func displayHandle(ev realmjoin.Event) string {
+	if ev.Handle != "" {
+		return ev.Handle
+	}
+	return ev.OrgIdentity
+}
+
+// renderRealmJoinProgress shows one join's own status -- the link and
+// QR while a session is pending (ev.QRTerminal is already ANSI-free
+// plain text, same as macula-mcp's own realm.ts qrTerminal renders in
+// its own tool output, so it's safe to drop straight into this bordered
+// panel), then whatever the terminal outcome was once it resolves.
+// Esc (handleKey's own ToggleRealm-closing and Normal-mode-within-the-
+// panel paths) clears m.realmJoinLatest to get back to the plain list.
+func (m Model) renderRealmJoinProgress(ev realmjoin.Event) string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Realms -- joining %s", ev.Realm)) + "\n")
+	if ev.Kind == "session" {
+		if ev.JoinURL != "" {
+			b.WriteString(ev.JoinURL + "\n\n")
+		}
+		if ev.QRTerminal != "" {
+			b.WriteString(ev.QRTerminal + "\n\n")
+		}
+	}
+	b.WriteString(realmJoinStatusLine(ev))
+	return b.String()
+}
+
+// renderRealmJoinInput is ModeRealmJoin's own view -- the text input a
+// human types a realm name into. Deliberately no live preview of the
+// resolved host or validation-as-you-type here: an invalid name's
+// rejection reason (macula-mcp-realm's own parseRealmName, server side)
+// surfaces as this join's own "error" event once submitted, the same
+// path any other failure takes (realmJoinStatusLine), rather than
+// duplicating that grammar client-side.
+func (m Model) renderRealmJoinInput() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Realms -- join which realm?") + "\n\n")
+	b.WriteString(m.realmJoinInput.View())
+	return b.String()
 }

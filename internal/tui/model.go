@@ -22,6 +22,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
 
 // refreshInterval is how often the mesh-state panels re-poll macula-mcp.
@@ -49,6 +50,13 @@ const (
 	ModeNormal Mode = iota
 	ModeInsert
 	ModeRingPopup
+	// ModeRealmJoin: typing a realm name to join, in the `r` panel --
+	// its own mode, not a repurposed ModeInsert, because `i` means
+	// something different depending on which overlay is showing (compose
+	// a message normally; type a realm name while the realm panel is
+	// open) and the two draft inputs (realmJoinInput vs. the main
+	// compose input) must never share state.
+	ModeRealmJoin
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -86,6 +94,18 @@ type Options struct {
 	// 2026-09-08: this Source used to be built and wrapped entirely
 	// inside cmd/lazymesh's buildToolSource, invisible outside it).
 	MeshServices *meshservices.Source
+
+	// MaculaMCPVersion and RealmIdentityFile back the `r` panel's own
+	// join affordance -- passed straight to internal/realmjoin.Join, never
+	// through m.mcp/the MCP session at all (see that package's own doc
+	// comment for why joining a realm must never be a tool call).
+	// RealmIdentityFile MUST be the exact MACULA_MCP_IDENTITY the running
+	// macula-mcp server (m.mcp) is using -- main.go gets this from
+	// mcpclient.Client.IdentityFile(), not a second guess at it, or a
+	// fresh join would mint a credential for a node_id nobody's actual
+	// mesh presence uses.
+	MaculaMCPVersion  string
+	RealmIdentityFile string
 }
 
 // Model is the bubbletea model for lazymesh's TUI.
@@ -106,6 +126,7 @@ type Model struct {
 	mode                 Mode
 	meshExpanded         bool
 	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
+	realmExpanded        bool // `r` -- see renderRealmsOverlay
 	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
 	muted                bool
 	statusBarPosition    string // "top" or "bottom"
@@ -138,6 +159,21 @@ type Model struct {
 
 	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
 
+	// The `r` panel's own join affordance -- realmjoin.Join is called
+	// directly from here, never through m.mcp/the agent's own tool
+	// chain (see internal/realmjoin's own doc comment). realmJoinInput
+	// is a SEPARATE textinput.Model from the main compose `input` below
+	// -- deliberately never shares a draft with it, even though both are
+	// "type some text and press enter" -- one is a message to the
+	// agent, the other is a security-sensitive realm name a human is
+	// meant to type deliberately (see realm_name.ts's own doc comment
+	// on macula-mcp's side for why that must stay a distinct action).
+	maculaMCPVersion  string
+	realmIdentityFile string
+	realmJoinInput    textinput.Model
+	realmJoinEvents   <-chan realmjoin.Event // nil when no join is in flight
+	realmJoinLatest   *realmjoin.Event       // the most recent event for the in-flight (or just-finished) join, nil once dismissed
+
 	chatEntries  []chatEntry
 	chatViewport viewport.Model
 	input        textinput.Model
@@ -156,6 +192,11 @@ func New(client toolCaller, opts Options) Model {
 	ti.CharLimit = 2000
 	ti.Prompt = "> "
 
+	realmInput := textinput.New()
+	realmInput.Placeholder = "io.macula"
+	realmInput.CharLimit = 253 // realm_name.ts's own MAX_LENGTH -- reject client-side at the same bound, not just server-side
+	realmInput.Prompt = "join realm: "
+
 	statusBarPosition := opts.StatusBarPosition
 	if statusBarPosition != "top" {
 		statusBarPosition = "bottom"
@@ -164,6 +205,8 @@ func New(client toolCaller, opts Options) Model {
 	return Model{
 		mcp:               client,
 		meshServices:      opts.MeshServices,
+		maculaMCPVersion:  opts.MaculaMCPVersion,
+		realmIdentityFile: opts.RealmIdentityFile,
 		agentEvents:       opts.AgentEvents,
 		userInputCh:       opts.UserInputCh,
 		contactPolicyFile: opts.ContactPolicyFile,
@@ -173,6 +216,7 @@ func New(client toolCaller, opts Options) Model {
 		statusBarPosition: statusBarPosition,
 		agentModel:        opts.AgentModel,
 		input:             ti,
+		realmJoinInput:    realmInput,
 		chatViewport:      viewport.New(80, 20),
 		// Bell defaults ON: Fable's finding #3 is specifically that a
 		// wedged agent looks identical to a healthy one on screen: a cue
@@ -264,6 +308,63 @@ func sendUserInput(ch chan<- string, text string) tea.Cmd {
 	}
 }
 
+// realmJoinEventMsg wraps one internal/realmjoin.Event for bubbletea's
+// own message loop.
+type realmJoinEventMsg realmjoin.Event
+
+// waitForRealmJoinEvent blocks for the next event on ch -- same shape as
+// waitForAgentEvent, re-armed by handleRealmJoinEvent below after every
+// non-terminal ("session") event, so the whole join is driven by this
+// one channel read at a time, never a poll.
+func waitForRealmJoinEvent(ch <-chan realmjoin.Event) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return realmJoinEventMsg(ev)
+	}
+}
+
+// realmJoinFunc is internal/realmjoin.Join, called through a package var
+// -- same override-for-tests convention realmjoin.newCommand itself
+// uses -- so a test can substitute a fake without ever risking a real
+// npx/macula-mcp-realm spawn (realmjoin's own test suite already covers
+// the subprocess machinery itself; this package's tests only need to
+// verify startRealmJoin's OWN wiring: right args in, right Model/Cmd
+// out). Never reassigned outside a test.
+var realmJoinFunc = realmjoin.Join
+
+// startRealmJoin execs internal/realmjoin.Join directly -- NEVER a call
+// through m.mcp -- and starts listening for its events. Returns m
+// unchanged (just m.realmJoinLatest set to a synthetic "starting" state
+// isn't needed; the first real event, "session", arrives fast enough
+// that there's nothing useful to show in between) plus the command that
+// begins listening.
+func (m Model) startRealmJoin(realmName string) (Model, tea.Cmd) {
+	ctx := context.Background() // this join's own lifetime is independent of any single request/response cycle -- it runs until the session resolves or the process exits
+	events, err := realmJoinFunc(ctx, m.maculaMCPVersion, m.realmIdentityFile, realmName)
+	if err != nil {
+		ev := realmjoin.Event{Kind: "spawn_error", Realm: realmName, Message: err.Error()}
+		m.realmJoinLatest = &ev
+		return m, nil
+	}
+	m.realmJoinEvents = events
+	return m, waitForRealmJoinEvent(events)
+}
+
+// handleRealmJoinEvent updates the panel with the latest event and, for
+// a non-terminal one, re-arms the listener for the next.
+func (m Model) handleRealmJoinEvent(msg realmJoinEventMsg) (Model, tea.Cmd) {
+	ev := realmjoin.Event(msg)
+	m.realmJoinLatest = &ev
+	if ev.Terminal() {
+		m.realmJoinEvents = nil
+		return m, nil
+	}
+	return m, waitForRealmJoinEvent(m.realmJoinEvents)
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -288,6 +389,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case editorFinishedMsg:
 		return m.handleEditorFinished(msg)
+
+	case realmJoinEventMsg:
+		return m.handleRealmJoinEvent(msg)
 	}
 	return m, nil
 }
@@ -307,6 +411,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Insert with the edited text loaded either way.
 	if key.Matches(msg, DefaultKeyMap.OpenEditor) {
 		return m, openEditorCmd(m.input.Value())
+	}
+
+	if m.mode == ModeRealmJoin {
+		switch {
+		case key.Matches(msg, DefaultKeyMap.Normal):
+			m.realmJoinInput.Blur()
+			m.realmJoinInput.Reset() // unlike the main compose input, no draft is kept -- a realm name is a one-shot action, not something to resume composing
+			m.mode = ModeNormal
+			m.resizeComponents()
+			return m, nil
+		case key.Matches(msg, DefaultKeyMap.Submit):
+			name := strings.TrimSpace(m.realmJoinInput.Value())
+			m.realmJoinInput.Reset()
+			m.realmJoinInput.Blur()
+			m.mode = ModeNormal
+			m.resizeComponents()
+			if name == "" {
+				return m, nil
+			}
+			return m.startRealmJoin(name)
+		default:
+			var cmd tea.Cmd
+			m.realmJoinInput, cmd = m.realmJoinInput.Update(msg)
+			return m, cmd
+		}
 	}
 
 	if m.mode == ModeInsert {
@@ -339,25 +468,60 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, DefaultKeyMap.Quit):
 		return m, tea.Quit
+	case key.Matches(msg, DefaultKeyMap.Normal):
+		// Esc's only meaning in Normal mode: dismiss a finished/errored
+		// join's status (renderRealmJoinProgress) back to the plain
+		// membership list, without leaving the `r` panel itself. A no-op
+		// everywhere else -- Normal mode has nothing else for Esc to do.
+		if m.realmExpanded && m.realmJoinLatest != nil {
+			m.realmJoinLatest = nil
+		}
+		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Insert):
+		// `i` means something different depending on which overlay is
+		// showing: compose a message to the agent normally, or type a
+		// realm name while the `r` panel is open -- but only when
+		// there's a membership list to act on, not while a previous
+		// join's QR/status is still showing (dismiss that with Esc
+		// first, so a stray `i` can never fire a second join on top of
+		// one still in flight).
+		if m.realmExpanded && m.realmJoinLatest == nil {
+			m.mode = ModeRealmJoin
+			m.resizeComponents()
+			return m, m.realmJoinInput.Focus()
+		}
 		m.mode = ModeInsert
 		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
 		return m, m.input.Focus()
 	case key.Matches(msg, DefaultKeyMap.ToggleMesh):
-		// Mutually exclusive with meshServicesExpanded, not stacked --
-		// two overlays showing at once would halve the chat margin
-		// pin-to-top already keeps tight, for two concerns (mesh STATE
-		// vs. available SERVICES) that are never both what an operator
-		// wants to see in the same glance.
+		// Mutually exclusive with the other two overlays, not stacked --
+		// more than one showing at once would halve (or worse) the chat
+		// margin pin-to-top already keeps tight, for concerns (mesh
+		// STATE vs. available SERVICES vs. realm MEMBERSHIP) that are
+		// never all what an operator wants to see in the same glance.
 		m.meshExpanded = !m.meshExpanded
 		if m.meshExpanded {
 			m.meshServicesExpanded = false
+			m.realmExpanded = false
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleMeshServices):
 		m.meshServicesExpanded = !m.meshServicesExpanded
 		if m.meshServicesExpanded {
 			m.meshExpanded = false
+			m.realmExpanded = false
+		}
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleRealm):
+		m.realmExpanded = !m.realmExpanded
+		if m.realmExpanded {
+			m.meshExpanded = false
+			m.meshServicesExpanded = false
+		} else {
+			// Leaving the panel entirely also dismisses whatever join
+			// status was showing -- reopening starts from the plain
+			// membership list, not a stale QR/error from last time.
+			m.realmJoinLatest = nil
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleQuiet):
@@ -371,12 +535,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showChatter = !m.showChatter
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Up):
-		if !m.meshExpanded && !m.meshServicesExpanded {
+		if !m.meshExpanded && !m.meshServicesExpanded && !m.realmExpanded {
 			m.chatViewport.LineUp(1)
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Down):
-		if !m.meshExpanded && !m.meshServicesExpanded {
+		if !m.meshExpanded && !m.meshServicesExpanded && !m.realmExpanded {
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
@@ -600,6 +764,8 @@ func (m Model) View() string {
 		body = m.renderMeshOverlay()
 	case m.meshServicesExpanded:
 		body = m.renderMeshServicesOverlay()
+	case m.realmExpanded:
+		body = m.renderRealmsOverlay()
 	default:
 		body = m.chatViewport.View()
 	}
@@ -630,6 +796,8 @@ func (m Model) renderModeIndicator() string {
 		return statusStripStyle.Render("-- INSERT --")
 	case ModeRingPopup:
 		return statusStripStyle.Render("-- RING --")
+	case ModeRealmJoin:
+		return statusStripStyle.Render("-- REALM --")
 	default:
 		return dimStyle.Render("-- NORMAL --")
 	}
@@ -652,8 +820,21 @@ func (m Model) renderHintLines() []string {
 		return []string{mode}
 	case ModeInsert:
 		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
+	case ModeRealmJoin:
+		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
 	default:
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  i: compose  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
+		// `i` and `esc` both mean something different depending on which
+		// overlay is showing -- see handleKey's own Insert and Normal
+		// cases -- so the hint names the actual action, not a fixed label.
+		insertHint := "i: compose"
+		if m.realmExpanded {
+			if m.realmJoinLatest != nil {
+				insertHint = "esc: dismiss"
+			} else {
+				insertHint = "i: join a realm"
+			}
+		}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
 	}
 }
 
@@ -808,6 +989,12 @@ func (m Model) renderMeshOverlay() string {
 // the chat pane without a 4th panel competing for it.
 func (m Model) renderMeshServicesOverlay() string {
 	return m.renderOverlay(panelStyle.Render(m.renderMeshServices()))
+}
+
+// renderRealmsOverlay is the `r` panel's own overlay, same shape as `m`/
+// `s` and mutually exclusive with both.
+func (m Model) renderRealmsOverlay() string {
+	return m.renderOverlay(panelStyle.Render(m.renderRealms()))
 }
 
 // chatContentLines is the chat pane's actual content, one entry per

@@ -109,6 +109,7 @@ Vim-style modal input — **normal mode by default**:
 | `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
 | `m` | show/hide the mesh view (rooms/rings/presence) | (typed as text) |
 | `s` | show/hide the mesh services view (the curated catalog below) | (typed as text) |
+| `r` | show/hide the realms view (memberships, and joining a new one below) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
 | `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
@@ -137,10 +138,11 @@ dim, muted border rather than a solid bright one, so the overlay reads
 as a light layer over the conversation rather than a popup taking it
 over.
 
-The mesh services view (`s`, below) is the same overlay shape over a
-different panel, and the two are mutually exclusive — opening one closes
-the other rather than stacking, since two panels competing for the same
-tight chat margin would leave less room for either.
+The mesh services view (`s`, below) and the realms view (`r`, below) are
+the same overlay shape over their own panels, and all three (mesh, mesh
+services, realms) are mutually exclusive — opening one closes the others
+rather than stacking, since two panels competing for the same tight chat
+margin would leave less room for either.
 
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat
@@ -204,6 +206,37 @@ advertised), `checking...` (enabled, discovery just hasn't resolved yet),
 or `inactive` (the feature itself is off) — reading from the exact same
 `Source` the agent's own tool calls go through, not a second, possibly-
 diverging query.
+
+### Realms (`r`)
+
+Press `r` to see which mesh realms this identity has joined — a small
+table of realm/handle/tier/joined-at, sourced from macula-mcp's
+`mesh_list_realms` tool alongside the other three `mesh_*` state calls the
+overlay panels already poll.
+
+Joining a **new** realm is deliberately not something the agent (or any
+mesh peer's room text) can trigger — there is no `mesh_join_realm`-style
+tool with a realm parameter reachable from the model's own tool-calling
+loop, on purpose: any parameter on any MCP tool is reachable by whichever
+peer can steer the conversation, not just by the operator typing at the
+keyboard. Instead, with the realms view open, press `i` to type a realm
+name directly and `Enter` to start the join — this runs
+`macula-mcp-realm`, a separate CLI never registered as an MCP tool,
+inheriting the same identity file the running macula-mcp server already
+uses. A join in progress shows its own session (link/QR code) and status
+inline in the same panel; press `Esc` once it's finished (confirmed,
+expired, or failed) to return to the membership list.
+
+Realm names are dotted-hierarchical (`io.macula`, `net.beam-campus.sales`)
+and must be typed, never picked from a list — a populated list of realms
+to join is spoofable in a way that typing the name yourself isn't, the
+same reasoning as typing a URL rather than trusting a link. The name
+resolves to a host by reversing its labels (`io.macula` → `macula.io` →
+`realm.macula.io`), a fixed convention with no discovery hop, so there's
+no intermediate lookup step to poison either.
+
+Requires `macula-mcp` >= 0.27.0 (`mesh_list_realms` and the
+`macula-mcp-realm` CLI).
 
 ### Tool allowlist
 

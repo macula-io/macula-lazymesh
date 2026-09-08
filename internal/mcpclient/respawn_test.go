@@ -381,3 +381,15 @@ func TestClient_SetLoggerLogsRespawnAttempts(t *testing.T) {
 		t.Fatalf("expected both a respawn-started and a respawn-succeeded log line, got: %q", got)
 	}
 }
+
+// internal/realmjoin needs this Client's own RESOLVED identity path
+// (resolveSpawnIdentity's own doc comment: an operator-set path, or the
+// ephemeral one this package minted), not a second guess at it -- a
+// wrong guess would mint a realm credential for a node_id nobody's
+// actual mesh presence uses.
+func TestClient_IdentityFileReturnsTheResolvedPath(t *testing.T) {
+	c := &Client{session: &fakeSession{}, opts: SpawnOptions{IdentityFile: "/tmp/lazymesh-identity-123-abc.seed"}}
+	if got := c.IdentityFile(); got != "/tmp/lazymesh-identity-123-abc.seed" {
+		t.Fatalf("expected the resolved IdentityFile, got %q", got)
+	}
+}

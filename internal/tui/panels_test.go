@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 
 	"crypto/sha256"
 	"encoding/hex"
@@ -416,5 +417,90 @@ func TestRenderMeshServices_EnabledAndDiscoveredMarksOnlyTheDiscoveredProcedureL
 	}
 	if !strings.Contains(got, fmt.Sprintf("%d live", 1)) {
 		t.Fatalf("expected the title's live count to be exactly 1, got:\n%s", got)
+	}
+}
+
+func TestRenderRealms_EmptyShowsPlaceholder(t *testing.T) {
+	m := newTestModel(t)
+	got := m.renderRealms()
+	if !strings.Contains(got, "no realms joined yet") {
+		t.Fatalf("expected the empty-state placeholder, got %q", got)
+	}
+}
+
+func TestRenderRealms_TableContainsMembershipFields(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.state.realms = []realmMembership{
+		{Realm: "net.beam-campus.sales", Handle: "rgfaber", Tier: "citizen", JoinedAt: "2026-09-08T00:00:00Z"},
+	}
+	got := m.renderRealms()
+	for _, want := range []string{"net.beam-campus.sales", "rgfaber", "citizen"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected rendered realms table to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// A join in progress replaces the plain list entirely, same as the ring
+// pop-up takes over rather than sitting alongside other panels -- not
+// both shown at once.
+// Found live rendering this before committing: ModeRealmJoin originally
+// had no branch in renderRealms at all, so pressing `i` silently left
+// the membership list (or empty placeholder) showing with realmJoinInput
+// typed into but never displayed anywhere -- a human would type a realm
+// name and see nothing happen until pressing Enter.
+func TestRenderRealms_ModeRealmJoinShowsTheInputBoxNotTheList(t *testing.T) {
+	m := newTestModel(t)
+	m.state.realms = []realmMembership{{Realm: "io.macula", Handle: "rgfaber"}}
+	m.mode = ModeRealmJoin
+	m.realmJoinInput.SetValue("net.beam-campus")
+
+	got := m.renderRealms()
+	if !strings.Contains(got, "net.beam-campus") {
+		t.Fatalf("expected the in-progress typed realm name visible, got:\n%s", got)
+	}
+	if strings.Contains(got, "io.macula") {
+		t.Fatalf("expected the membership list NOT shown while typing a new realm name, got:\n%s", got)
+	}
+}
+
+func TestRenderRealms_AJoinInProgressReplacesTheListEntirely(t *testing.T) {
+	m := newTestModel(t)
+	m.state.realms = []realmMembership{{Realm: "io.macula", Handle: "rgfaber"}}
+	ev := realmjoin.Event{Kind: "session", Realm: "net.beam-campus", JoinURL: "https://realm.beam-campus.net/join/s1"}
+	m.realmJoinLatest = &ev
+
+	got := m.renderRealms()
+	if strings.Contains(got, "io.macula") {
+		t.Fatalf("expected the plain membership list NOT shown while a join is in progress, got:\n%s", got)
+	}
+	if !strings.Contains(got, "net.beam-campus") || !strings.Contains(got, "https://realm.beam-campus.net/join/s1") {
+		t.Fatalf("expected the in-progress join's own realm and link, got:\n%s", got)
+	}
+}
+
+func TestRealmJoinStatusLine_EachEventKindGetsItsOwnWording(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   realmjoin.Event
+		want string
+	}{
+		{"session", realmjoin.Event{Kind: "session", ExpiresAt: "2026-09-08T20:00:00Z"}, "waiting for confirmation"},
+		{"already_joined prefers handle", realmjoin.Event{Kind: "already_joined", Realm: "io.macula", Handle: "rgfaber"}, "already joined io.macula as rgfaber"},
+		{"already_joined falls back to org_identity", realmjoin.Event{Kind: "already_joined", Realm: "io.macula", OrgIdentity: "mri:org:io.macula/rgfaber"}, "as mri:org:io.macula/rgfaber"},
+		{"confirmed", realmjoin.Event{Kind: "confirmed", Realm: "io.macula", Handle: "rgfaber"}, "joined io.macula as rgfaber"},
+		{"expired", realmjoin.Event{Kind: "expired", Realm: "io.macula"}, "expired"},
+		{"timeout", realmjoin.Event{Kind: "timeout", Realm: "io.macula"}, "gave up waiting"},
+		{"error", realmjoin.Event{Kind: "error", Realm: "io.macula", Message: "boom"}, "boom"},
+		{"spawn_error", realmjoin.Event{Kind: "spawn_error", Realm: "io.macula", Message: "npx not found"}, "npx not found"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := realmJoinStatusLine(c.ev)
+			if !strings.Contains(got, c.want) {
+				t.Fatalf("expected %q to contain %q, got %q", got, c.want, got)
+			}
+		})
 	}
 }

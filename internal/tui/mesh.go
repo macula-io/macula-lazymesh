@@ -87,20 +87,37 @@ type meshAgentsResult struct {
 	Agents []agentPresence `json:"agents"`
 }
 
-// meshState is one refreshed snapshot of everything the TUI's three panels
+type realmMembership struct {
+	Realm       string `json:"realm"`
+	OrgIdentity string `json:"org_identity"`
+	Handle      string `json:"handle"`
+	Account     string `json:"account"`
+	JoinedAt    string `json:"joined_at"`
+	Tier        string `json:"tier"`
+	HasUCAN     bool   `json:"has_ucan"`
+}
+
+type meshListRealmsResult struct {
+	Realms []realmMembership `json:"realms"`
+}
+
+// meshState is one refreshed snapshot of everything the TUI's four panels
 // render.
 type meshState struct {
 	joined  []joinedRoom
 	pending []pendingRing
 	recent  map[string][]roomMessage // room_topic -> recent messages
 	agents  []agentPresence
+	realms  []realmMembership
 }
 
 // fetchMeshState calls macula-mcp's own read tools -- mesh_rooms,
-// mesh_read_inbox, mesh_agents -- through the same MCP connection the
-// agent loop uses. These are documented by macula-mcp itself as instant
-// local reads that never block, so calling all three on every tick is
-// cheap.
+// mesh_read_inbox, mesh_agents, mesh_list_realms -- through the same MCP
+// connection the agent loop uses. These are documented by macula-mcp
+// itself as instant local reads that never block, so calling all four
+// on every tick is cheap. mesh_list_realms is deliberately the read-only
+// half of realm membership only -- JOINING a realm never goes through
+// this client at all, see internal/realmjoin's own doc comment.
 func fetchMeshState(ctx context.Context, client toolCaller) (meshState, error) {
 	var state meshState
 
@@ -137,6 +154,16 @@ func fetchMeshState(ctx context.Context, client toolCaller) (meshState, error) {
 		return state, fmt.Errorf("decode mesh_agents: %w", err)
 	}
 	state.agents = agents.Agents
+
+	realmsText, err := client.CallTool(ctx, "mesh_list_realms", nil)
+	if err != nil {
+		return state, fmt.Errorf("mesh_list_realms: %w", err)
+	}
+	var realms meshListRealmsResult
+	if err := json.Unmarshal([]byte(realmsText), &realms); err != nil {
+		return state, fmt.Errorf("decode mesh_list_realms: %w", err)
+	}
+	state.realms = realms.Realms
 
 	return state, nil
 }

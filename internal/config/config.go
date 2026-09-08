@@ -192,6 +192,19 @@ type Config struct {
 	// own mesh_read_inbox now shows the pending ring, and
 	// mesh_answer_ring succeeds against it.
 	//
+	// 0.27.0 (2026-09-08): adds mesh_list_realms (confirmed realm
+	// memberships, an ordinary read-only tool) -- backs the `r` panel's
+	// own listing (internal/tui/mesh.go's fetchMeshState). Also adds
+	// mesh_join_realm's own multi-realm counterpart, macula-mcp-realm
+	// (a separate CLI binary, deliberately NEVER an MCP tool -- see
+	// internal/realmjoin's own doc comment for why), which this bump
+	// makes available via npx at the SAME pinned version the persistent
+	// macula-mcp server already runs, so a fresh join's credential lands
+	// under the same @macula-io/mcp release's own schema/behavior.
+	// mesh_join_realm's own existing shape is completely unchanged.
+	// Confirmed by reading the diff directly, not assumed: no other tool
+	// schema changed.
+	//
 	// Whoever next edits this default should do the same before bumping it, never
 	// bump just to "pick up whatever's newest." Kept in sync with (but not
 	// imported from, to
@@ -299,7 +312,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition:   "bottom",
-		MaculaMCPVersion:    "0.26.1",
+		MaculaMCPVersion:    "0.27.0",
 		ContactPolicyFile:   filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:          "always-ask",
 		ExpressiveStyle:     false,
