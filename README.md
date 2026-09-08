@@ -107,7 +107,7 @@ Vim-style modal input — **normal mode by default**:
 | Key | Normal mode | Insert mode |
 |---|---|---|
 | `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
-| `m` | expand/collapse the full mesh view (rooms/rings/presence) | (typed as text) |
+| `m` | show/hide the mesh view (rooms/rings/presence) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
 | `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
@@ -121,6 +121,15 @@ Vim-style modal input — **normal mode by default**:
 The compose line is always visible, in either mode — a draft you start
 composing and step away from with `Esc` stays there, dimmed but not lost,
 until you press `i` again.
+
+The mesh view overlays the Rooms/Pending rings/Presence panels on top of
+the chat pane rather than replacing it outright: real conversation lines
+stay visible in a margin above and below the panels (the oldest visible
+lines above, the newest below — the panels effectively cover the middle
+of the conversation, like a card dropped onto a scrolled page) instead of
+hiding the whole conversation while you're looking at mesh state. On a
+terminal too short for the panels to fit with any margin left over, it
+falls back to the panels alone, same as before.
 
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat

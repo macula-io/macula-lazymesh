@@ -569,6 +569,63 @@ func TestView_MeshExpanded_StatusAnchorsToTopEdge(t *testing.T) {
 	}
 }
 
+// Raf's ask, 2026-09-08: mesh view used to fully replace the chat pane;
+// now it overlays the panels on top with real conversation still visible
+// in a margin above and below ("transparency"). Found live while
+// verifying this: chatViewport.View() pads a short conversation with
+// blank filler at the bottom (anchored-top rendering, always exactly
+// chatViewport.Height lines) -- slicing THAT for the "newest lines"
+// bottom margin grabbed blank filler instead of real content. Fixed via
+// chatContentLines (the unpadded entries, mirroring syncViewport's own
+// construction) instead of the padded viewport render.
+func TestRenderMeshOverlay_ShowsOldestChatAboveNewestBelow(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 90, 24
+	m.resizeComponents()
+	m.meshExpanded = true
+	for i := 0; i < 20; i++ {
+		m.chatEntries = append(m.chatEntries, youChatEntry(fmt.Sprintf("message number %d", i)))
+	}
+	m.syncViewport()
+
+	view := m.View()
+	if !strings.Contains(view, "message number 0") {
+		t.Fatalf("expected the oldest chat line visible in the top margin, got:\n%s", view)
+	}
+	if !strings.Contains(view, "message number 19") {
+		t.Fatalf("expected the newest chat line visible in the bottom margin, got:\n%s", view)
+	}
+	// A message from the covered middle stretch must not appear -- the
+	// margins show the ends of the conversation, not a scroll of the
+	// whole thing squeezed in.
+	if strings.Contains(view, "message number 10") {
+		t.Fatalf("expected a middle message to be covered by the panels, not visible, got:\n%s", view)
+	}
+}
+
+// A terminal too short for the panels to fit AND leave any visible
+// margin falls back to the pre-overlay full-bleed behavor (the panels
+// alone, anchored to the screen edge) rather than truncating them
+// further -- they have no scroll of their own.
+func TestRenderMeshOverlay_FallsBackToFullBleedWhenNoRoomForMargin(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 90, 15
+	m.resizeComponents()
+	m.meshExpanded = true
+	m.chatEntries = []chatEntry{youChatEntry("this must not appear")}
+	m.syncViewport()
+
+	view := m.View()
+	if strings.Contains(view, "this must not appear") {
+		t.Fatalf("expected no room for a chat margin at this height, got:\n%s", view)
+	}
+	// Not asserting an exact total line count here: the panels (12 lines,
+	// empty state) exceed this height's target (10) before any margin is
+	// even considered, so padToBodyHeight's own documented "never
+	// truncate" behavior legitimately lets the total exceed m.height --
+	// pre-existing since #12, not something this change affects.
+}
+
 // Raf's ask, tied directly to the dual-instance identity bug fixed in
 // 8622117: once two lazymesh instances actually have distinct mesh
 // identities, that distinctness should be confirmable at a glance in the

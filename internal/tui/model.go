@@ -557,7 +557,7 @@ func (m Model) View() string {
 
 	var body string
 	if m.meshExpanded {
-		body = m.padToBodyHeight(m.renderExpandedMesh())
+		body = m.renderMeshOverlay()
 	} else {
 		body = m.chatViewport.View()
 	}
@@ -690,14 +690,10 @@ func (m Model) renderExpandedMesh() string {
 // padToBodyHeight fills content with trailing blank lines up to the same
 // body height resizeComponents already targets for the chat viewport
 // (m.height - len(statusLines()) - 2, the "-2" being the input line plus
-// one line of slack) -- without this, the mesh-expanded view's status bar
-// landed wherever the panel stack's natural height happened to end,
-// rather than anchored to the screen edge, for either statusBarPosition
-// setting (issue #12: View()'s meshExpanded branch was a plain
-// strings.Join with no height accounting at all, unlike the normal chat
-// view). Never truncates -- a panel stack taller than the available body
-// height is left as-is; the mesh view has no scroll of its own, a
-// separate, pre-existing limitation this doesn't attempt to fix.
+// one line of slack) -- anchors a shorter block to the screen edge
+// (issue #12) rather than leaving the status bar wherever the block's own
+// natural height happened to end. Never truncates -- a block taller than
+// the available body height is left as-is.
 func (m Model) padToBodyHeight(content string) string {
 	target := m.height - len(m.statusLines()) - 2
 	if target < 1 {
@@ -708,6 +704,95 @@ func (m Model) padToBodyHeight(content string) string {
 		return content
 	}
 	return content + strings.Repeat("\n", target-lines)
+}
+
+// renderMeshOverlay composites the mesh-view panels over the chat pane
+// rather than replacing it outright: real conversation lines stay
+// visible in a margin above and below the panels ("transparency", per
+// Raf 2026-09-08) instead of the panels eating the entire body area edge
+// to edge as before. Terminals can't do true alpha blending, so this is
+// the practical equivalent -- the actual chat text, not a blank or dimmed
+// backdrop (dimming an already-styled multi-segment chat line correctly
+// would need re-emitting its ANSI state, not just wrapping it -- tried
+// live 2026-09-08, a naive Faint() wrap breaks at the line's own first
+// inner reset code, undimming everything after it).
+//
+// The top margin shows the oldest lines still in view, the bottom margin
+// the newest -- the panel effectively "covers" the middle of the
+// conversation, the same way a card dropped onto a scrolled page would.
+// A short conversation (fewer real lines than either margin needs) can
+// show the same lines in both margins, or blank-pad one -- accepted as a
+// harmless cosmetic edge case, not worth the complexity of preventing.
+func (m Model) renderMeshOverlay() string {
+	mesh := strings.Split(m.renderExpandedMesh(), "\n")
+	target := m.height - len(m.statusLines()) - 2 // same target padToBodyHeight/resizeComponents use
+	if target < 1 || len(mesh) >= target {
+		// No room for a visible margin either way -- the panels alone
+		// already fill (or exceed) the available height. Falls back to
+		// the old full-bleed behavior rather than truncating them
+		// further; they have no scroll of their own.
+		return m.padToBodyHeight(strings.Join(mesh, "\n"))
+	}
+
+	chat := m.chatContentLines()
+	margin := target - len(mesh)
+	top := margin / 2
+	bottom := margin - top
+
+	lines := make([]string, 0, target)
+	lines = append(lines, chatMarginLines(chat, 0, top)...)
+	lines = append(lines, mesh...)
+	lines = append(lines, chatMarginLines(chat, len(chat)-bottom, len(chat))...)
+	return strings.Join(lines, "\n")
+}
+
+// chatContentLines is the chat pane's actual content, one entry per
+// rendered line -- deliberately NOT chatViewport.View()'s output, which
+// pads a short conversation with blank filler lines at the bottom
+// (anchored-top rendering, always exactly chatViewport.Height lines
+// regardless of how much real content there is). Using that padded
+// output here made renderMeshOverlay's bottom margin -- meant to be the
+// newest chat lines -- slice into that blank filler instead, found live
+// 2026-09-08 rendering an actual conversation. Mirrors syncViewport's own
+// construction exactly, so it's always consistent with what the normal
+// (non-overlay) chat pane would show.
+func (m Model) chatContentLines() []string {
+	lines := make([]string, 0, len(m.chatEntries))
+	for _, e := range m.chatEntries {
+		lines = append(lines, e.render(m.detailsExpanded))
+	}
+	joined := strings.Join(lines, "\n")
+	if joined == "" {
+		return nil
+	}
+	return strings.Split(joined, "\n")
+}
+
+// chatMarginLines returns lines[max(from,0):min(to,len(lines))],
+// blank-padded up to the requested (to-from) count when the chat pane
+// itself doesn't have that many lines yet (a fresh or short
+// conversation). from may be negative (the caller computing a "last N"
+// window on a short slice) -- handled the same as an out-of-range clamp,
+// not a special case.
+func chatMarginLines(lines []string, from, to int) []string {
+	want := to - from
+	if want <= 0 {
+		return nil
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to > len(lines) {
+		to = len(lines)
+	}
+	out := make([]string, 0, want)
+	if from < to {
+		out = append(out, lines[from:to]...)
+	}
+	for len(out) < want {
+		out = append(out, "")
+	}
+	return out
 }
 
 func shortID(id string) string {
