@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
@@ -252,14 +251,16 @@ func TestRenderStatusStrip_ShowsModeIndicator(t *testing.T) {
 	}
 }
 
-// Found live 2026-09-07: Normal mode's full shortcut list combined with
-// everything else on one line routinely clipped on a narrow terminal.
-// Split across 2 lines in Normal mode (mode indicator leads the first);
-// Insert/Ring's own much shorter hints fit on one.
-func TestRenderHintLines_SplitsAcrossTwoLinesInNormalModeOnly(t *testing.T) {
+// Briefly split across 2 lines in Normal mode (2026-09-07, a narrow
+// terminal clipped the combined line); reverted to 1 line 2026-09-08
+// (Raf's own call: the vertical space matters more day to day than the
+// clipping risk). Every mode gets exactly 1 hint line; the ring pop-up
+// shows its own hints (renderRingPopup) so needs none here beyond the
+// mode indicator itself.
+func TestRenderHintLines_AlwaysOneLine(t *testing.T) {
 	m := newTestModel(t)
-	if got := len(m.renderHintLines()); got != 2 {
-		t.Fatalf("expected 2 hint lines in Normal mode, got %d: %v", got, m.renderHintLines())
+	if got := len(m.renderHintLines()); got != 1 {
+		t.Fatalf("expected 1 hint line in Normal mode, got %d: %v", got, m.renderHintLines())
 	}
 
 	updated, _ := m.Update(runeKey('i'))
@@ -273,13 +274,11 @@ func TestRenderHintLines_SplitsAcrossTwoLinesInNormalModeOnly(t *testing.T) {
 	m2.pendingRingPopup = &ring
 	m2.mode = ModeRingPopup
 	if got := len(m2.renderHintLines()); got != 1 {
-		t.Fatalf("expected 1 hint line during a ring pop-up (it shows its own hints), got %d: %v", got, m2.renderHintLines())
+		t.Fatalf("expected 1 hint line during a ring pop-up, got %d: %v", got, m2.renderHintLines())
 	}
 }
 
-// Every shortcut that used to appear on the single combined line must
-// still appear somewhere across the (now up to 2) hint lines -- the
-// split must not silently drop one.
+// Every shortcut must still appear on the combined line.
 func TestRenderHintLines_NormalModeStillListsEveryShortcut(t *testing.T) {
 	m := newTestModel(t)
 	combined := strings.Join(m.renderHintLines(), " ")
@@ -287,25 +286,6 @@ func TestRenderHintLines_NormalModeStillListsEveryShortcut(t *testing.T) {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("expected shortcut %q somewhere in the hint lines, got %q", want, combined)
 		}
-	}
-}
-
-// Found live 2026-09-08 (Raf, actually looking at it): the second hint
-// line started flush left while the first line's own shortcuts started
-// after the mode indicator -- two shortcut lines with mismatched left
-// edges read as a jagged, unrelated pair rather than one coherent list.
-// The second line's shortcuts must start at the same visible column as
-// the first line's.
-func TestRenderHintLines_SecondLineAlignsUnderFirstLinesShortcuts(t *testing.T) {
-	m := newTestModel(t)
-	lines := m.renderHintLines()
-	if len(lines) != 2 {
-		t.Fatalf("expected 2 hint lines in Normal mode, got %d: %v", len(lines), lines)
-	}
-	wantIndent := lipgloss.Width(m.renderModeIndicator()) + 2 // +2 for the "  " gap after the mode indicator
-	gotIndent := len(lines[1]) - len(strings.TrimLeft(lines[1], " "))
-	if gotIndent != wantIndent {
-		t.Fatalf("expected the second hint line indented %d spaces to align under the first line's shortcuts, got %d: %q", wantIndent, gotIndent, lines[1])
 	}
 }
 
@@ -317,7 +297,7 @@ func TestRenderHintLines_SecondLineAlignsUnderFirstLinesShortcuts(t *testing.T) 
 // agents/model) is normal weight, same blue as before.
 func TestRenderSummaryLine_PetnameStandsOutFromNormalWeightRest(t *testing.T) {
 	if summaryStyle.GetBold() {
-		t.Fatalf("expected the summary segment (rooms/rings/agents/model) to be normal weight, got bold")
+		t.Fatalf("expected the rooms/rings/agents-seen segment to be normal weight, got bold")
 	}
 	identity := identityKey("deadbeefcafe", "swift-otter")
 	badge := agentBadgeStyle(identity)
@@ -326,6 +306,28 @@ func TestRenderSummaryLine_PetnameStandsOutFromNormalWeightRest(t *testing.T) {
 	}
 	if badge.GetForeground() == summaryStyle.GetForeground() {
 		t.Fatalf("expected the petname's color to be distinct from the rest of the summary line, both were %v", badge.GetForeground())
+	}
+}
+
+// Raf's ask, 2026-09-08: give the provider/model segment its own
+// treatment too, similar to petname's. His choice between a new color or
+// bold: bold (statusStripStyle, the weight this whole line shared before
+// 2026-09-07) -- same blue as the rest of the line, not a new color that
+// would risk reading as another per-agent identity.
+func TestRenderSummaryLine_ModelIsBoldUnlikeTheRestOfTheLine(t *testing.T) {
+	if !statusStripStyle.GetBold() {
+		t.Fatalf("expected statusStripStyle (used for the model segment) to be bold")
+	}
+	if statusStripStyle.GetForeground() != summaryStyle.GetForeground() {
+		t.Fatalf("expected the model segment to share the rest of the line's color, just bolder -- got %v vs %v", statusStripStyle.GetForeground(), summaryStyle.GetForeground())
+	}
+
+	m := newTestModel(t)
+	m.agentModel = "deepseek/deepseek-v4-flash"
+	got := m.renderSummaryLine()
+	want := statusStripStyle.Render("deepseek/deepseek-v4-flash")
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected the model rendered bold in the summary line, got %q", got)
 	}
 }
 
@@ -566,6 +568,25 @@ func TestView_MeshExpanded_StatusAnchorsToTopEdge(t *testing.T) {
 	wantHead := m.renderStatusStrip()
 	if gotHead != wantHead {
 		t.Fatalf("expected the status block anchored to the first %d lines (top position), got:\n%q\nwant:\n%q", statusLineCount, gotHead, wantHead)
+	}
+}
+
+// Found live 2026-09-08 ("now it repeats"): a conversation short enough
+// that top+bottom margins overlap the same lines showed the SAME chat
+// line in both margins. Fixed by splitting into two disjoint halves
+// (older to the top margin, newer to the bottom) instead of taking
+// independent, possibly-overlapping windows into the same slice.
+func TestRenderMeshOverlay_ShortConversationNeverRepeatsALineInBothMargins(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 90, 24
+	m.resizeComponents()
+	m.meshExpanded = true
+	m.chatEntries = []chatEntry{youChatEntry("only message")}
+	m.syncViewport()
+
+	view := m.View()
+	if got := strings.Count(view, "only message"); got != 1 {
+		t.Fatalf("expected \"only message\" to appear exactly once, got %d times:\n%s", got, view)
 	}
 }
 

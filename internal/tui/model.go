@@ -519,14 +519,23 @@ func (m *Model) syncViewport() {
 }
 
 // Colors match the macula brand palette (see chat.go's own comment) --
-// structural chrome (panel borders, titles, the status strip) uses the
-// same brand blue as every macula-*-full-*.svg logo, not lipgloss's
-// generic 256-color example palette (panelStyle/titleStyle/
-// statusStripStyle were ANSI 62/212/212 -- an arbitrary purple and an
-// arbitrary pink, no connection to this project's brand).
+// structural chrome (the status strip) uses the same brand blue as every
+// macula-*-full-*.svg logo, not lipgloss's generic 256-color example
+// palette (panelStyle/titleStyle/statusStripStyle were ANSI 62/212/212 --
+// an arbitrary purple and an arbitrary pink, no connection to this
+// project's brand).
+//
+// panelStyle/titleStyle specifically were also brand blue and bold until
+// 2026-09-08: once the mesh view started overlaying the panels on top of
+// the chat pane instead of replacing it (renderMeshOverlay, "transparency"
+// per Raf), a solid bright-blue bordered box read as a popup taking over
+// the screen rather than a light layer over the conversation still
+// mostly visible around it -- lightened to a dim, muted border/title
+// (matching dimStyle) to read as a lighter overlay instead, same
+// proportions/sizing as before, just visually quieter.
 var (
-	panelStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#38BDF8")).Padding(0, 1)
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38BDF8"))
+	panelStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	titleStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	statusStripStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38BDF8"))
@@ -594,14 +603,14 @@ func (m Model) renderModeIndicator() string {
 }
 
 // renderHintLines is the shortcuts row, leading with the mode indicator.
-// Found live 2026-09-07: Normal mode's full shortcut list combined onto
-// one line with the summary line routinely ran well past a narrow
-// terminal's width, clipping instead of wrapping legibly -- split across
-// 2 lines here instead. Also retires what used to be the mode
-// indicator's own separate status line: merging it into the hint row's
-// first line removes a line from the block for the same information,
-// rather than adding one. Insert mode's own hint list is short enough to
-// stay on one line; the ring pop-up already shows its own hints
+// Briefly split across 2 lines (2026-09-07) after the combined line
+// routinely ran well past a narrow terminal's width; reverted back to 1
+// line 2026-09-08 (Raf's own call, after weighing it directly: the extra
+// row of vertical space matters more day to day than the clipping risk
+// on a narrow terminal). Also retires what used to be the mode
+// indicator's own separate status line: merging it into this line
+// removes a line from the block for the same information, rather than
+// adding one. The ring pop-up already shows its own hints
 // (renderRingPopup), so needs none here.
 func (m Model) renderHintLines() []string {
 	mode := m.renderModeIndicator()
@@ -611,18 +620,7 @@ func (m Model) renderHintLines() []string {
 	case ModeInsert:
 		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
 	default:
-		// The second line is indented to align under the first line's own
-		// shortcuts, not flush left -- found live 2026-09-08 (Raf, actually
-		// looking at it): two shortcut lines with mismatched left edges
-		// read as a jagged, unrelated pair rather than one coherent list.
-		// lipgloss.Width (ANSI-aware) rather than a hardcoded column count,
-		// so this stays correct if the mode indicator's own text ever
-		// changes length.
-		indent := strings.Repeat(" ", lipgloss.Width(mode)+2)
-		return []string{
-			mode + "  " + dimStyle.Render("m: mesh view  i: compose  ctrl+e: $EDITOR"),
-			indent + dimStyle.Render("v: verbose  e: expand  b: mute  q: quit"),
-		}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  i: compose  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
 	}
 }
 
@@ -636,18 +634,30 @@ func (m Model) renderHintLines() []string {
 // that instead of setting it apart, so the rest of the line
 // (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
-	rest := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
+	counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
 		len(m.state.joined), len(m.state.pending), len(m.state.agents))
+	out := summaryStyle.Render(counts)
+
 	if m.agentModel != "" {
-		rest += " · " + m.agentModel
+		// Bold (statusStripStyle -- the weight this whole line shared
+		// before 2026-09-07) rather than a new color: Raf's own choice
+		// between the two, 2026-09-08. Distinct enough from the rest of
+		// the line without picking a color that would visually read as
+		// another per-agent identity (agentBadgeStyle's own deterministic
+		// palette below is reserved for that).
+		out += summaryStyle.Render(" · ") + statusStripStyle.Render(m.agentModel)
 	}
+
+	var tail string
 	if m.muted {
-		rest += "  [muted]"
+		tail += "  [muted]"
 	}
 	if !m.lastListeningAt.IsZero() {
-		rest += " · listening " + m.lastListeningAt.Format("15:04:05")
+		tail += " · listening " + m.lastListeningAt.Format("15:04:05")
 	}
-	out := summaryStyle.Render(rest)
+	if tail != "" {
+		out += summaryStyle.Render(tail)
+	}
 
 	// Leads with "who am I" when known -- the dual-instance identity bug
 	// (two lazymesh instances silently sharing one mesh node_id, fixed in
@@ -739,10 +749,24 @@ func (m Model) renderMeshOverlay() string {
 	top := margin / 2
 	bottom := margin - top
 
+	// Not enough real content to fill both margins without the same
+	// lines showing in both -- found live 2026-09-08 ("now it repeats"):
+	// independent [0:top] and [len-bottom:] windows into the SAME chat
+	// slice overlap once the conversation is shorter than top+bottom.
+	// Split into two disjoint halves instead when that's the case: the
+	// older half goes in the top margin, the newer half in the bottom,
+	// each blank-padded on its own rather than repeating what the other
+	// margin already shows.
+	topChat, bottomChat := chat, chat
+	if len(chat) < top+bottom {
+		mid := len(chat) / 2
+		topChat, bottomChat = chat[:mid], chat[mid:]
+	}
+
 	lines := make([]string, 0, target)
-	lines = append(lines, chatMarginLines(chat, 0, top)...)
+	lines = append(lines, chatMarginLines(topChat, 0, top)...)
 	lines = append(lines, mesh...)
-	lines = append(lines, chatMarginLines(chat, len(chat)-bottom, len(chat))...)
+	lines = append(lines, chatMarginLines(bottomChat, len(bottomChat)-bottom, len(bottomChat))...)
 	return strings.Join(lines, "\n")
 }
 

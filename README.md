@@ -126,28 +126,32 @@ The mesh view overlays the Rooms/Pending rings/Presence panels on top of
 the chat pane rather than replacing it outright: real conversation lines
 stay visible in a margin above and below the panels (the oldest visible
 lines above, the newest below — the panels effectively cover the middle
-of the conversation, like a card dropped onto a scrolled page) instead of
-hiding the whole conversation while you're looking at mesh state. On a
-terminal too short for the panels to fit with any margin left over, it
-falls back to the panels alone, same as before.
+of the conversation, like a card dropped onto a scrolled page), rather
+than hiding the whole conversation while you're looking at mesh state.
+A short conversation never repeats the same line in both margins — it
+splits what's there into two disjoint halves instead. On a terminal too
+short for the panels to fit with any margin left over, it falls back to
+the panels alone, same as before. The panels themselves render with a
+dim, muted border rather than a solid bright one, so the overlay reads
+as a light layer over the conversation rather than a popup taking it
+over.
 
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat
 pane or the full mesh view is showing — collapsing the mesh view never
-loses that ambient awareness. Two or three lines:
+loses that ambient awareness. Two lines:
 
 - the shortcuts row, leading with a vim-style mode indicator
-  (`-- NORMAL --` / `-- INSERT --`). Normal mode's full shortcut list
-  splits across 2 lines so it doesn't clip on a narrower terminal;
-  Insert's shorter one fits on one.
+  (`-- NORMAL --` / `-- INSERT --`).
 - the summary line: this instance's own petname once known, bold and in
   its own color so it stands out (`swift-otter`, requires macula-mcp
   >= 0.25.2 — see the room-message color coding above for the same
-  per-agent coloring), then the normal-weight room/ring/agent counts and
-  model (`3 rooms · 2 pending rings · 8 agents seen · deepseek/
-  deepseek-v4-flash`), then a `listening HH:MM:SS` heartbeat once the
-  agent loop's had its first idle cycle — an advancing clock is what
-  makes a frozen process distinguishable from a correctly-idle one.
+  per-agent coloring), then the normal-weight room/ring/agent counts,
+  the configured model in bold (`3 rooms · 2 pending rings · 8 agents
+  seen · deepseek/deepseek-v4-flash`), then a `listening HH:MM:SS`
+  heartbeat once the agent loop's had its first idle cycle — an
+  advancing clock is what makes a frozen process distinguishable from a
+  correctly-idle one.
   Routine tool-call "chatter" (`mesh_call`, `mesh_say`, ...) is dropped
   from here entirely by default; `v` shows it inline in the chat pane
   instead for anyone who wants the full detail.
