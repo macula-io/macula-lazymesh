@@ -224,6 +224,42 @@ func TestRenderPresence_TableContainsAgentFields(t *testing.T) {
 	}
 }
 
+// session_name exists specifically to tell apart two sessions run by the
+// SAME operator (e.g. two Claude Code windows both self-reporting "Raf
+// Lefever") -- it folds into the Name column rather than taking a column
+// of its own.
+func TestRenderPresence_FoldsSessionNameIntoNameColumn(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.state.agents = []agentPresence{
+		{NodeID: "n1", OperatorName: "Raf Lefever", SessionName: "Jupiter", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 5, IsSelf: false},
+		{NodeID: "n2", OperatorName: "Raf Lefever", SessionName: "Mercury", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 0, IsSelf: true},
+	}
+	got := m.renderPresence()
+	for _, want := range []string{"Raf Lefever (Jupiter)", "Raf Lefever (Mercury) (you)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected rendered presence table to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// No session_name (the common case, omitted from the JSON when unset) must
+// render exactly as before -- no stray parens.
+func TestRenderPresence_NoSessionNameOmitsParens(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.state.agents = []agentPresence{
+		{NodeID: "n1", OperatorName: "goose", ConnectedVia: "goose-cli 1.48.0", SecondsSinceSeen: 0},
+	}
+	got := m.renderPresence()
+	if !strings.Contains(got, "goose") {
+		t.Fatalf("expected rendered presence table to contain %q, got:\n%s", "goose", got)
+	}
+	if strings.Contains(got, "goose (") {
+		t.Fatalf("expected no parenthetical after 'goose' when session_name is unset, got:\n%s", got)
+	}
+}
+
 // Issue #11: renderPresence originally reused columnWidths, which was
 // written for bubbles/table's padding model (Padding(0,1) adds 2 columns
 // of rendered width BEYOND declared Width). presenceCol's plain lipgloss

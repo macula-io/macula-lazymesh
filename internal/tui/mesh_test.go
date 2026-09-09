@@ -102,6 +102,7 @@ const fixtureMeshAgents = `{
     },
     {
       "node_id": "a8384a55fde899ba2c44e91e572669ad229241b1eae407a784f88953ec14c01b",
+      "session_name": "Mercury",
       "connected_via": "claude-code 2.1.261",
       "first_seen": "2026-09-05T23:48:18.301Z",
       "last_seen": "2026-09-06T07:27:18.699Z",
@@ -182,6 +183,12 @@ func TestFetchMeshState_ParsesRealCapturedShapes(t *testing.T) {
 	}
 	if !state.agents[1].IsSelf {
 		t.Fatalf("expected second agent to be is_self")
+	}
+	if state.agents[1].SessionName != "Mercury" {
+		t.Fatalf("expected second agent session_name 'Mercury', got %q", state.agents[1].SessionName)
+	}
+	if state.agents[0].SessionName != "" {
+		t.Fatalf("expected first agent session_name to be empty (omitted field), got %q", state.agents[0].SessionName)
 	}
 
 	if len(state.realms) != 1 || state.realms[0].Realm != "io.macula" {

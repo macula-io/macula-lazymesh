@@ -297,6 +297,13 @@ func (m Model) renderPresence() string {
 		if name == "" {
 			name = shortID(a.NodeID)
 		}
+		// session_name disambiguates two rows sharing one operator_name
+		// (e.g. two Claude Code sessions both run by "Raf Lefever") --
+		// fold it into the Name column rather than spend a whole column
+		// on it.
+		if a.SessionName != "" {
+			name += " (" + a.SessionName + ")"
+		}
 		if a.IsSelf {
 			name += " (you)"
 		}

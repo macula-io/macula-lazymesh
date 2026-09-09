@@ -76,6 +76,7 @@ type agentPresence struct {
 	NodeID           string `json:"node_id"`
 	Petname          string `json:"petname"`
 	OperatorName     string `json:"operator_name"`
+	SessionName      string `json:"session_name"`
 	Model            string `json:"model"`
 	ConnectedVia     string `json:"connected_via"`
 	SecondsSinceSeen int    `json:"seconds_since_seen"`
