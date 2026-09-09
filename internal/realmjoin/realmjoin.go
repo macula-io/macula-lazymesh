@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -129,10 +130,30 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 			// has anything useful to say beyond what the CLI's own
 			// "error" event already reported (that one already flowed
 			// through above, if it happened).
-			events <- Event{Kind: "spawn_error", Realm: realmName, Message: waitErr.Error()}
+			events <- Event{Kind: "spawn_error", Realm: realmName, Message: exitMessage(waitErr)}
 		}
 	}()
 	return events, nil
+}
+
+// exitMessage renders waitErr's message, appending a hint when the
+// subprocess exited 127 -- the shell's own "command not found", and
+// empirically (reproduced live, not assumed) exactly what npx itself
+// produces when the -p-named bin doesn't exist in the resolved package
+// version: `npx -y -p @macula-io/mcp@<pre-0.27.0 version> macula-mcp-realm`
+// runs npx fine (Start succeeds) but its child shell can't find a bin
+// that release never shipped, and that shell is what exits 127. The one
+// most common, self-diagnosable cause of this exact exit code -- worth
+// naming inline rather than leaving operators to trace a bare Go error
+// string back to a stale config value by hand, as happened live 2026-09-09.
+// Not the only possible cause of 127, so this is a hint, not a claim.
+func exitMessage(waitErr error) string {
+	msg := waitErr.Error()
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 127 {
+		msg += " -- often means macula_mcp_version in config.yaml is pinned older than 0.27.0 (the release that added macula-mcp-realm); check/bump it and restart"
+	}
+	return msg
 }
 
 // spawnEnv builds the subprocess environment -- pulled out as its own

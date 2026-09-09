@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,6 +190,53 @@ func TestJoin_ARealCLIErrorEventFollowedByNonZeroExitIsNotDoubleReported(t *test
 	}
 	if got[0].Kind != "error" || got[0].Message != "boom" {
 		t.Fatalf("expected the real CLI-reported error preserved as-is, got %+v", got[0])
+	}
+}
+
+// Exit 127 is the shell's own "command not found" -- reproduced live
+// against the real npx/macula-mcp-realm invocation (not assumed) by
+// pinning a version older than 0.27.0, the release that added the
+// macula-mcp-realm bin: npx finds and runs fine, its own child shell
+// then can't find the -p-named bin inside that older package, and that
+// shell is what actually exits 127, with nothing printed to stdout --
+// exactly this fixture. A bare "exit status 127" told a real operator
+// nothing about why; this is the one specific, common, self-diagnosable
+// cause worth naming inline rather than leaving as an opaque Go error
+// string.
+func TestJoin_Exit127HintsAtAStaleVersionPin(t *testing.T) {
+	script := fakeScript(t, nil, 127) // exits 127, prints nothing -- same shape npx's own missing-bin shell produces
+	withFakeCommand(t, script)
+
+	events, err := Join(context.Background(), "0.27.0", "/tmp/identity.seed", "io.macula")
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	got := drain(t, events, 5*time.Second)
+	if len(got) != 1 || got[0].Kind != "spawn_error" {
+		t.Fatalf("expected exactly one spawn_error event, got %+v", got)
+	}
+	if !strings.Contains(got[0].Message, "macula_mcp_version") {
+		t.Fatalf("expected the exit-127 hint pointing at macula_mcp_version, got message: %q", got[0].Message)
+	}
+}
+
+// A non-127 non-zero exit (network hiccup, some other real failure)
+// must NOT get the version-pin hint tacked on -- it would be actively
+// misleading for a cause this specific.
+func TestJoin_NonZeroNon127ExitGetsNoVersionHint(t *testing.T) {
+	script := fakeScript(t, nil, 1)
+	withFakeCommand(t, script)
+
+	events, err := Join(context.Background(), "0.27.0", "/tmp/identity.seed", "io.macula")
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	got := drain(t, events, 5*time.Second)
+	if len(got) != 1 || got[0].Kind != "spawn_error" {
+		t.Fatalf("expected exactly one spawn_error event, got %+v", got)
+	}
+	if strings.Contains(got[0].Message, "macula_mcp_version") {
+		t.Fatalf("expected no version-pin hint for a plain exit 1, got message: %q", got[0].Message)
 	}
 }
 
