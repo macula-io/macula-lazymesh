@@ -469,6 +469,8 @@ func (m Model) renderRealms() string {
 // a direct test independent of the panel's surrounding layout.
 func realmJoinStatusLine(ev realmjoin.Event) string {
 	switch ev.Kind {
+	case "starting":
+		return dimStyle.Render(fmt.Sprintf("starting join for %s...", ev.Realm))
 	case "already_joined":
 		return fmt.Sprintf("already joined %s as %s (joined %s)", ev.Realm, displayHandle(ev), ev.JoinedAt)
 	case "confirmed":

@@ -26,11 +26,13 @@ import (
 // Event mirrors macula-mcp's own bin/realm.ts SessionEvent shape --
 // exactly the fields that shape actually emits, nothing invented on this
 // side. Kind is one of "already_joined", "session", "confirmed",
-// "expired", "timeout", "error" -- plus "spawn_error", added here for a
-// failure this package's own caller needs to distinguish (the subprocess
-// never started at all, or its stdout produced something that isn't a
-// valid Event) that has no equivalent event on the CLI's own side, since
-// the CLI can't report a failure to run itself.
+// "expired", "timeout", "error" -- plus two kinds this package's own
+// caller constructs directly, with no equivalent on the CLI's own side:
+// "spawn_error" (the subprocess never started at all, or its stdout
+// produced something that isn't a valid Event -- the CLI can't report a
+// failure to run itself) and "starting" (set the instant a join begins,
+// before the subprocess has necessarily emitted anything at all -- see
+// internal/tui's startRealmJoin for why that matters).
 type Event struct {
 	Kind        string `json:"event"`
 	Realm       string `json:"realm"`
@@ -46,11 +48,12 @@ type Event struct {
 }
 
 // Terminal reports whether ev ends the stream -- no further Event will
-// ever follow it for the same Join call. Every kind except "session" is
-// terminal: "session" is the interim "here's the link, still polling"
-// event, the only one with more to come.
+// ever follow it for the same Join call. Every kind except "session" and
+// "starting" is terminal: "session" is the interim "here's the link,
+// still polling" event, "starting" the even-earlier "just began, nothing
+// from the subprocess yet" one -- both have more to come.
 func (ev Event) Terminal() bool {
-	return ev.Kind != "session" && ev.Kind != ""
+	return ev.Kind != "session" && ev.Kind != "starting" && ev.Kind != ""
 }
 
 // envAllowlist mirrors mcpclient's own -- see that package's identical

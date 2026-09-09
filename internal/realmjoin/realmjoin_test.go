@@ -17,6 +17,7 @@ func TestEvent_Terminal(t *testing.T) {
 		want bool
 	}{
 		{"session", false},
+		{"starting", false},
 		{"confirmed", true},
 		{"already_joined", true},
 		{"expired", true},

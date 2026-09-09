@@ -336,11 +336,24 @@ func waitForRealmJoinEvent(ch <-chan realmjoin.Event) tea.Cmd {
 var realmJoinFunc = realmjoin.Join
 
 // startRealmJoin execs internal/realmjoin.Join directly -- NEVER a call
-// through m.mcp -- and starts listening for its events. Returns m
-// unchanged (just m.realmJoinLatest set to a synthetic "starting" state
-// isn't needed; the first real event, "session", arrives fast enough
-// that there's nothing useful to show in between) plus the command that
-// begins listening.
+// through m.mcp -- and starts listening for its events. Sets
+// m.realmJoinLatest to a synthetic "starting" event in this SAME Update
+// cycle, before returning -- not left nil until the first real event
+// arrives. Found live 2026-09-09 (Raf: "'join one' does...nothing after
+// entering io.macula"): renderRealms falls back to the plain
+// list/placeholder whenever m.realmJoinLatest is nil, so leaving it nil
+// for however long npx takes to resolve and exec macula-mcp-realm (a
+// cold fetch with no local npx cache is genuinely seconds, not
+// instant) read as "typed a realm name, nothing happened" -- the
+// previous version of this comment assumed the first real event would
+// always arrive "fast enough that there's nothing useful to show in
+// between," which is exactly the assumption that broke. Setting it
+// immediately also closes a second, related gap: the `i`-key guard
+// above (`m.realmExpanded && m.realmJoinLatest == nil`) that's meant to
+// stop a stray `i` from starting a second join on top of one already in
+// flight only actually held once the first real event arrived -- during
+// this same gap it did nothing, so a second `i` press could fire a
+// second concurrent join.
 func (m Model) startRealmJoin(realmName string) (Model, tea.Cmd) {
 	ctx := context.Background() // this join's own lifetime is independent of any single request/response cycle -- it runs until the session resolves or the process exits
 	events, err := realmJoinFunc(ctx, m.maculaMCPVersion, m.realmIdentityFile, realmName)
@@ -349,6 +362,8 @@ func (m Model) startRealmJoin(realmName string) (Model, tea.Cmd) {
 		m.realmJoinLatest = &ev
 		return m, nil
 	}
+	starting := realmjoin.Event{Kind: "starting", Realm: realmName}
+	m.realmJoinLatest = &starting
 	m.realmJoinEvents = events
 	return m, waitForRealmJoinEvent(events)
 }

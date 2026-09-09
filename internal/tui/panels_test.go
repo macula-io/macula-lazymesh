@@ -487,6 +487,7 @@ func TestRealmJoinStatusLine_EachEventKindGetsItsOwnWording(t *testing.T) {
 		want string
 	}{
 		{"session", realmjoin.Event{Kind: "session", ExpiresAt: "2026-09-08T20:00:00Z"}, "waiting for confirmation"},
+		{"starting", realmjoin.Event{Kind: "starting", Realm: "io.macula"}, "starting join for io.macula"},
 		{"already_joined prefers handle", realmjoin.Event{Kind: "already_joined", Realm: "io.macula", Handle: "rgfaber"}, "already joined io.macula as rgfaber"},
 		{"already_joined falls back to org_identity", realmjoin.Event{Kind: "already_joined", Realm: "io.macula", OrgIdentity: "mri:org:io.macula/rgfaber"}, "as mri:org:io.macula/rgfaber"},
 		{"confirmed", realmjoin.Event{Kind: "confirmed", Realm: "io.macula", Handle: "rgfaber"}, "joined io.macula as rgfaber"},

@@ -384,6 +384,87 @@ func TestModeRealmJoin_SubmitCallsRealmJoinFuncWithTheTypedNameAndStartsListenin
 	}
 }
 
+// The exact bug found live 2026-09-09 (Raf: "'join one' does...nothing
+// after entering io.macula"): m.realmJoinLatest stayed nil from Submit
+// until the first real event arrived on the channel, so for however
+// long npx took to resolve, renderRealms fell back to the plain
+// list/placeholder -- looked identical to nothing having happened.
+// Fixed: a synthetic "starting" event is set in the SAME Update cycle as
+// Submit, before waitForRealmJoinEvent's own command has even run once.
+func TestModeRealmJoin_SubmitSetsRealmJoinLatestImmediately(t *testing.T) {
+	original := realmJoinFunc
+	defer func() { realmJoinFunc = original }()
+	ch := make(chan realmjoin.Event, 1) // never fed -- this test is only about state BEFORE any event arrives
+	realmJoinFunc = func(ctx context.Context, version, identityFile, realmName string) (<-chan realmjoin.Event, error) {
+		return ch, nil
+	}
+
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	for _, r := range "io.macula" {
+		updated, _ = m.Update(runeKey(r))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(typeKey(tea.KeyEnter))
+	m = updated.(Model)
+
+	if m.realmJoinLatest == nil {
+		t.Fatalf("expected realmJoinLatest set immediately on submit, before any event arrives -- got nil")
+	}
+	if m.realmJoinLatest.Kind != "starting" || m.realmJoinLatest.Realm != "io.macula" {
+		t.Fatalf("expected a synthetic starting event for io.macula, got %+v", m.realmJoinLatest)
+	}
+	if got := m.renderRealms(); strings.Contains(got, "no realms joined yet") {
+		t.Fatalf("expected the panel to show the in-progress join, not fall back to the empty-list placeholder, got:\n%s", got)
+	}
+}
+
+// The `i`-guard (handleKey: `i` only starts a new join when
+// m.realmJoinLatest == nil) is only real protection if realmJoinLatest
+// is set the INSTANT a join starts, not once the first event arrives --
+// otherwise a stray second `i` during that gap fires a second concurrent
+// join on top of the first. Directly exercises the race the fix above
+// also closes.
+func TestNormalMode_IWhileAJoinIsStartingDoesNotFireASecondJoin(t *testing.T) {
+	original := realmJoinFunc
+	defer func() { realmJoinFunc = original }()
+	calls := 0
+	ch := make(chan realmjoin.Event, 1)
+	realmJoinFunc = func(ctx context.Context, version, identityFile, realmName string) (<-chan realmjoin.Event, error) {
+		calls++
+		return ch, nil
+	}
+
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('r'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	for _, r := range "io.macula" {
+		updated, _ = m.Update(runeKey(r))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(typeKey(tea.KeyEnter))
+	m = updated.(Model)
+	if calls != 1 {
+		t.Fatalf("expected exactly one call after the first submit, got %d", calls)
+	}
+
+	// Before any event has arrived on ch, a stray `i` must be a no-op --
+	// realmJoinLatest is already non-nil (the synthetic starting event).
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	if m.mode == ModeRealmJoin {
+		t.Fatalf("expected `i` to be a no-op while a join is already in flight, entered ModeRealmJoin instead")
+	}
+	if calls != 1 {
+		t.Fatalf("expected still exactly one realmJoinFunc call, a second `i` started another: %d", calls)
+	}
+}
+
 func TestHandleRealmJoinEvent_NonTerminalEventReArmsListening(t *testing.T) {
 	m := newTestModel(t)
 	ch := make(chan realmjoin.Event, 1)
