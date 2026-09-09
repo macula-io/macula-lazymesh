@@ -224,28 +224,30 @@ func TestRenderPresence_TableContainsAgentFields(t *testing.T) {
 	}
 }
 
-// session_name exists specifically to tell apart two sessions run by the
-// SAME operator (e.g. two Claude Code windows both self-reporting "Raf
-// Lefever") -- it folds into the Name column rather than taking a column
-// of its own.
-func TestRenderPresence_FoldsSessionNameIntoNameColumn(t *testing.T) {
+// session_name and model are each self-reported fields decoded into
+// agentPresence -- both get their own column rather than being folded
+// into Name (or, for Model, left unrendered as it was before this).
+func TestRenderPresence_SessionAndModelGetOwnColumns(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 100
 	m.state.agents = []agentPresence{
-		{NodeID: "n1", OperatorName: "Raf Lefever", SessionName: "Jupiter", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 5, IsSelf: false},
-		{NodeID: "n2", OperatorName: "Raf Lefever", SessionName: "Mercury", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 0, IsSelf: true},
+		{NodeID: "n1", OperatorName: "Raf Lefever", SessionName: "Jupiter", Model: "claude-sonnet-5", ConnectedVia: "claude-code 2.1.261", SecondsSinceSeen: 5, IsSelf: false},
 	}
 	got := m.renderPresence()
-	for _, want := range []string{"Raf Lefever (Jupiter)", "Raf Lefever (Mercury) (you)"} {
+	for _, want := range []string{"Session", "Model", "Jupiter", "claude-sonnet-5"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected rendered presence table to contain %q, got:\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "Raf Lefever (Jupiter)") {
+		t.Fatalf("expected session_name in its own column, not folded into Name, got:\n%s", got)
+	}
 }
 
-// No session_name (the common case, omitted from the JSON when unset) must
-// render exactly as before -- no stray parens.
-func TestRenderPresence_NoSessionNameOmitsParens(t *testing.T) {
+// Both fields are optional/self-reported and omitted from the JSON when
+// unset -- must render as blank cells, not a stray "(...)" on the Name
+// column and not a missing row.
+func TestRenderPresence_BlankSessionAndModelRenderCleanly(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 100
 	m.state.agents = []agentPresence{

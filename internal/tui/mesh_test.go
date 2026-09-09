@@ -181,6 +181,9 @@ func TestFetchMeshState_ParsesRealCapturedShapes(t *testing.T) {
 	if state.agents[0].OperatorName != "goose" {
 		t.Fatalf("expected first agent operator_name 'goose', got %q", state.agents[0].OperatorName)
 	}
+	if state.agents[0].Model != "goose" {
+		t.Fatalf("expected first agent model 'goose', got %q", state.agents[0].Model)
+	}
 	if !state.agents[1].IsSelf {
 		t.Fatalf("expected second agent to be is_self")
 	}

@@ -270,16 +270,23 @@ func (m Model) renderPresence() string {
 
 	inner := m.panelInnerWidth()
 	// badge is a fixed 4-column slot (Padding(0,1) + 2-char initials);
-	// the rest split the remaining width the same "one flex column"
-	// shape as the sibling panels -- via presenceColumnWidths, NOT
-	// columnWidths (see its own doc comment: reusing columnWidths here
-	// under-budgeted every row by 2*n columns, issue #11).
-	widths := presenceColumnWidths(inner, []int{4, -1, 20, 12})
+	// Session (14) and Model (16) are fixed-width like Connected via/Last
+	// seen -- both are short, low-cardinality self-reported strings, not
+	// identifying content worth flexing for. Name is the one flex column,
+	// same "one flex column absorbs the rest" shape as the sibling panels
+	// -- via presenceColumnWidths, NOT columnWidths (see its own doc
+	// comment: reusing columnWidths here under-budgeted every row by 2*n
+	// columns, issue #11). On a narrow terminal distributeColumnWidths
+	// shrinks every column (fixed ones included) proportionally, so this
+	// degrades the same way the 4-column layout did.
+	widths := presenceColumnWidths(inner, []int{4, -1, 14, 16, 20, 12})
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		presenceCol("", widths[0], true),
 		presenceCol("Name", widths[1], true),
-		presenceCol("Connected via", widths[2], true),
-		presenceCol("Last seen", widths[3], true),
+		presenceCol("Session", widths[2], true),
+		presenceCol("Model", widths[3], true),
+		presenceCol("Connected via", widths[4], true),
+		presenceCol("Last seen", widths[5], true),
 	)
 	b.WriteString(header + "\n")
 
@@ -297,13 +304,6 @@ func (m Model) renderPresence() string {
 		if name == "" {
 			name = shortID(a.NodeID)
 		}
-		// session_name disambiguates two rows sharing one operator_name
-		// (e.g. two Claude Code sessions both run by "Raf Lefever") --
-		// fold it into the Name column rather than spend a whole column
-		// on it.
-		if a.SessionName != "" {
-			name += " (" + a.SessionName + ")"
-		}
 		if a.IsSelf {
 			name += " (you)"
 		}
@@ -318,8 +318,10 @@ func (m Model) renderPresence() string {
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top,
 			presenceCol(badge, widths[0], false),
 			presenceCol(name, widths[1], false),
-			presenceCol(a.ConnectedVia, widths[2], false),
-			presenceCol(fmt.Sprintf("%ds ago", a.SecondsSinceSeen), widths[3], false),
+			presenceCol(a.SessionName, widths[2], false),
+			presenceCol(a.Model, widths[3], false),
+			presenceCol(a.ConnectedVia, widths[4], false),
+			presenceCol(fmt.Sprintf("%ds ago", a.SecondsSinceSeen), widths[5], false),
 		))
 	}
 	b.WriteString(strings.Join(rows, "\n"))
