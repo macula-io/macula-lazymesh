@@ -33,7 +33,7 @@ import (
 // package with no cross-package awareness, matching how every other
 // cross-cutting default in this codebase is resolved at the call site
 // rather than via an import.
-const DefaultMaculaMCPVersion = "0.27.0"
+const DefaultMaculaMCPVersion = "0.28.1"
 
 // launchCommand starts macula-mcp the same way every other MCP config in
 // this workspace does (npx -p @macula-io/mcp macula-mcp), pinned to the

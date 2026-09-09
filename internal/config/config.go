@@ -312,7 +312,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition:   "bottom",
-		MaculaMCPVersion:    "0.27.0",
+		MaculaMCPVersion:    "0.28.1",
 		ContactPolicyFile:   filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:          "always-ask",
 		ExpressiveStyle:     false,
