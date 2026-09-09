@@ -355,18 +355,30 @@ func meshServiceStatusLabel(enabled, discovered, live bool) string {
 //     from the EXACT Source instance the agent's own tool calls go
 //     through (see Options.MeshServices' own doc comment on why this
 //     isn't a second, independently-polled query).
-func (m Model) renderMeshServices() string {
-	enabled := m.meshServices != nil
-	var entries []meshservices.ServiceStatus
-	var discovered bool
-	if enabled {
-		entries, discovered = m.meshServices.Snapshot()
-	} else {
+//
+// meshServiceEntries returns the same list renderMeshServices renders,
+// pulled out so Up/Down cursor clamping (handleKey) and direct invocation
+// (starting in ModeMeshServiceCall) see exactly the row the operator is
+// actually looking at -- computing this twice with subtly different logic
+// is how a cursor ends up pointing at a different row than the one drawn.
+func (m Model) meshServiceEntries() (entries []meshservices.ServiceStatus, discovered bool) {
+	if m.meshServices == nil {
 		entries = make([]meshservices.ServiceStatus, len(meshservices.Curated))
 		for i, cp := range meshservices.Curated {
 			entries[i] = meshservices.ServiceStatus{CuratedProcedure: cp}
 		}
+		return entries, false
 	}
+	return m.meshServices.Snapshot()
+}
+
+func (m Model) renderMeshServices() string {
+	if m.mode == ModeMeshServiceCall {
+		return m.renderMeshServiceCallInput()
+	}
+
+	enabled := m.meshServices != nil
+	entries, discovered := m.meshServiceEntries()
 
 	liveCount := 0
 	for _, e := range entries {
@@ -399,7 +411,18 @@ func (m Model) renderMeshServices() string {
 		}),
 		table.WithWidth(inner),
 		table.WithHeight(len(entries)+1),
-		table.WithStyles(tableStyles()),
+		// meshServiceTableStyles, not the shared tableStyles() every OTHER
+		// panel uses -- see that function's own comment: renderRow applies
+		// Selected to the cursor row UNCONDITIONALLY (cursor defaults to 0
+		// regardless of table.Focused, and nothing in this app ever calls
+		// a table's own Update -- every panel rebuilds its table fresh per
+		// render, so Focused has no behavioral effect here either way).
+		// tableStyles() blanks Selected so that default cursor=0 doesn't
+		// highlight row 0 of every read-only panel for no reason a viewer
+		// could make sense of; this is the one panel with a row an
+		// operator actually picks (see ModeMeshServiceCall), so it needs
+		// the real thing back.
+		table.WithStyles(meshServiceTableStyles()),
 	)
 	rows := make([]table.Row, 0, len(entries))
 	for _, e := range entries {
@@ -410,8 +433,29 @@ func (m Model) renderMeshServices() string {
 		})
 	}
 	t.SetRows(rows)
+	if len(entries) > 0 {
+		t.SetCursor(m.meshServicesCursor)
+	}
 	b.WriteString(t.View())
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// meshServiceTableStyles is tableStyles() with a real Selected style --
+// see the table.New call site in renderMeshServices for why this table,
+// alone among this app's panels, needs one.
+func meshServiceTableStyles() table.Styles {
+	s := tableStyles()
+	s.Selected = lipgloss.NewStyle().Reverse(true)
+	return s
+}
+
+// renderMeshServiceCallInput mirrors renderRealmJoinInput's own shape --
+// same reasoning, see ModeMeshServiceCall's own doc comment (model.go).
+func (m Model) renderMeshServiceCallInput() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("MeshServices -- call "+m.meshServiceCallProcedure) + "\n\n")
+	b.WriteString(m.meshServiceCallInput.View())
+	return b.String()
 }
 
 // renderRealms is the `r` panel: exactly one of three things at a time,

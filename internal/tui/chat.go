@@ -77,6 +77,23 @@ func youChatEntry(text string) chatEntry {
 	return chatEntry{kind: chatYou, at: time.Now(), text: text}
 }
 
+// directMeshServiceCallEntry converts a meshServiceCallResultMsg (a human,
+// not the AI, invoked this -- see plans/PLAN_DIRECT_MESH_SERVICE_CALLS.md)
+// into a chat line. "[direct]" in the tool field, not a separate
+// chatEntryKind: reuses chatToolCall/chatError's own existing render
+// cases and truncateForChat convention exactly, distinguished only by that
+// prefix -- an operator scanning the transcript for "did the AI do this"
+// needs to see the marker, not a different color scheme.
+func directMeshServiceCallEntry(msg meshServiceCallResultMsg) chatEntry {
+	now := time.Now()
+	tool := "[direct] " + msg.procedure
+	if msg.err != nil {
+		errText := msg.err.Error()
+		return chatEntry{kind: chatError, at: now, tool: tool, text: fmt.Sprintf("error (%s): %s", tool, truncateForChat(errText, 80)), detail: errText}
+	}
+	return chatEntry{kind: chatToolResult, at: now, tool: tool, text: fmt.Sprintf("← %s: %s", tool, truncateForChat(msg.result, 60)), detail: msg.result}
+}
+
 // Colors match the macula brand palette (macula-artwork's own documented
 // hex values -- the same blue/orange pair every macula-*-full-*.svg logo
 // uses), not lipgloss's generic 256-color example palette. You/Assistant

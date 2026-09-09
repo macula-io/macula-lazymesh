@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
 
@@ -1061,5 +1062,264 @@ func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 	m = updated.(Model)
 	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
 		t.Fatalf("expected a chatSystem entry for EventBackoff, got %+v", m.chatEntries)
+	}
+}
+
+// Direct mesh-service invocation (macula-io/macula-lazymesh's own
+// PLAN_DIRECT_MESH_SERVICE_CALLS.md) needs a real, bounded cursor over the
+// `s` panel's rows -- Up/Down were previously unconditional no-ops whenever
+// meshServicesExpanded was true (see handleKey's own Up/Down cases before
+// this), so there was nothing to clamp. m.meshServices is nil in
+// newTestModel (Options never sets it), which exercises the curated-catalog
+// fallback path in meshServiceEntries -- the same path a real operator with
+// mesh_services_enabled: false sees, which is the exact case this feature
+// exists for.
+func TestMeshServicesPanel_CursorMovesWithinBoundsOnly(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('s')) // open the panel
+	m = updated.(Model)
+	if !m.meshServicesExpanded {
+		t.Fatalf("expected 's' to expand the mesh services panel")
+	}
+	entries, _ := m.meshServiceEntries()
+	if len(entries) < 2 {
+		t.Fatalf("need at least 2 curated entries for this test to mean anything, got %d", len(entries))
+	}
+
+	if m.meshServicesCursor != 0 {
+		t.Fatalf("expected cursor to start at 0, got %d", m.meshServicesCursor)
+	}
+
+	updated, _ = m.Update(typeKey(tea.KeyUp))
+	m = updated.(Model)
+	if m.meshServicesCursor != 0 {
+		t.Fatalf("expected Up at row 0 to stay at 0 (not go negative), got %d", m.meshServicesCursor)
+	}
+
+	updated, _ = m.Update(typeKey(tea.KeyDown))
+	m = updated.(Model)
+	if m.meshServicesCursor != 1 {
+		t.Fatalf("expected one Down to move the cursor to row 1, got %d", m.meshServicesCursor)
+	}
+
+	// Past the last row: Down should stop advancing, not wrap or overrun.
+	for i := 0; i < len(entries)+5; i++ {
+		updated, _ = m.Update(typeKey(tea.KeyDown))
+		m = updated.(Model)
+	}
+	if want := len(entries) - 1; m.meshServicesCursor != want {
+		t.Fatalf("expected cursor clamped at the last row (%d) after overshooting Down, got %d", want, m.meshServicesCursor)
+	}
+
+	// Closing and reopening starts back at the top, not wherever it was
+	// left -- same convention as realmJoinLatest clearing on ToggleRealm.
+	updated, _ = m.Update(runeKey('s')) // close
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('s')) // reopen
+	m = updated.(Model)
+	if m.meshServicesCursor != 0 {
+		t.Fatalf("expected cursor reset to 0 on reopen, got %d", m.meshServicesCursor)
+	}
+}
+
+// Up/Down must still scroll chat as before when no overlay panel is
+// expanded -- the mesh-services cursor logic must not have accidentally
+// swallowed the pre-existing behavior for every OTHER mode.
+func TestUpDown_StillScrollsChatWhenNoPanelExpanded(t *testing.T) {
+	m := newTestModel(t)
+	if m.meshServicesExpanded || m.meshExpanded || m.realmExpanded {
+		t.Fatalf("expected no panel expanded in a fresh model")
+	}
+	// Not asserting on chatViewport's internal scroll position directly
+	// (bubbles' own viewport has no simple public read for it) -- just
+	// confirming this path is still reached without panicking and without
+	// mutating meshServicesCursor, which is the one thing this change
+	// could plausibly have broken.
+	updated, _ := m.Update(typeKey(tea.KeyDown))
+	m = updated.(Model)
+	if m.meshServicesCursor != 0 {
+		t.Fatalf("expected meshServicesCursor untouched when no panel is expanded, got %d", m.meshServicesCursor)
+	}
+}
+
+// fakeMeshServiceCallSource is meshServiceCallSource's own test double --
+// see that interface's doc comment (model.go) for why this exists instead
+// of a real *meshservices.Source: CallToolRaw on a real one requires
+// discovery to have already populated its internal index, which is
+// internal/meshservices' own concern, already covered by that package's
+// test suite. This package's tests only need to verify startMeshService
+// Call's OWN wiring (right args in, right Msg out), same split
+// TestModeRealmJoin_SubmitCallsRealmJoinFuncWithTheTypedNameAndStartsListening
+// already uses for realmJoinFunc.
+type fakeMeshServiceCallSource struct {
+	gotName, gotArgsJSON string
+	result               string
+	err                  error
+}
+
+func (f *fakeMeshServiceCallSource) CallToolRaw(_ context.Context, name, argumentsJSON string) (string, error) {
+	f.gotName, f.gotArgsJSON = name, argumentsJSON
+	return f.result, f.err
+}
+
+func TestStartMeshServiceCall_CallsCallToolRawWithExactArgsAndWrapsTheResult(t *testing.T) {
+	fake := &fakeMeshServiceCallSource{result: `{"ok":true}`}
+	cmd := startMeshServiceCall(fake, "hecate-rag.search_chunks_semantic", `{"query":"test"}`)
+	msg := cmd()
+
+	if fake.gotName != "hecate-rag.search_chunks_semantic" || fake.gotArgsJSON != `{"query":"test"}` {
+		t.Fatalf("expected CallToolRaw called with exactly the typed procedure and arguments, got (%q, %q)", fake.gotName, fake.gotArgsJSON)
+	}
+	result, ok := msg.(meshServiceCallResultMsg)
+	if !ok {
+		t.Fatalf("expected a meshServiceCallResultMsg, got %T", msg)
+	}
+	if result.procedure != "hecate-rag.search_chunks_semantic" || result.result != `{"ok":true}` || result.err != nil {
+		t.Fatalf("expected the result msg to carry the procedure and CallToolRaw's own return, got %+v", result)
+	}
+}
+
+func TestStartMeshServiceCall_WrapsAnErrorToo(t *testing.T) {
+	fake := &fakeMeshServiceCallSource{err: fmt.Errorf("mesh service tool %q is not currently available", "x")}
+	msg := startMeshServiceCall(fake, "x", "{}")()
+	result, ok := msg.(meshServiceCallResultMsg)
+	if !ok || result.err == nil {
+		t.Fatalf("expected a meshServiceCallResultMsg carrying the error, got %+v (ok=%v)", msg, ok)
+	}
+}
+
+// handleMeshServiceCallResult renders the outcome as a chat entry marked
+// "[direct]" -- an operator scanning the transcript needs to see this was
+// never something the AI decided to do (see directMeshServiceCallEntry's
+// own doc comment, chat.go).
+func TestHandleMeshServiceCallResult_SuccessAndErrorRenderDifferentEntryKinds(t *testing.T) {
+	m := newTestModel(t)
+	m.meshServiceCallInFlight = true
+
+	updated, cmd := m.Update(meshServiceCallResultMsg{procedure: "hecate-rag.get_source_by_id", result: "the result"})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no further command after a result")
+	}
+	if m.meshServiceCallInFlight {
+		t.Fatalf("expected meshServiceCallInFlight cleared after the result lands")
+	}
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatToolResult {
+		t.Fatalf("expected one chatToolResult entry for success, got %+v", m.chatEntries)
+	}
+	if !strings.Contains(m.chatEntries[0].tool, "[direct]") {
+		t.Fatalf("expected the tool field marked [direct], got %q", m.chatEntries[0].tool)
+	}
+
+	updated, _ = m.Update(meshServiceCallResultMsg{procedure: "hecate-rag.get_source_by_id", err: fmt.Errorf("boom")})
+	m = updated.(Model)
+	if len(m.chatEntries) != 2 || m.chatEntries[1].kind != chatError {
+		t.Fatalf("expected a second, chatError entry for the failure, got %+v", m.chatEntries)
+	}
+}
+
+// Same guard shape as the realm-join precedent (empty name does nothing):
+// Submit must never invoke a call when the panel was never actually
+// entered with a real procedure captured.
+func TestModeMeshServiceCall_SubmitWithNoProcedureCapturedDoesNothing(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = ModeMeshServiceCall // forced directly -- see this test file's own note on why the `i` entry path needs a real, discovered *meshservices.Source that belongs in a different test
+	m.meshServiceCallInput.SetValue(`{"query":"x"}`)
+
+	updated, cmd := m.Update(typeKey(tea.KeyEnter))
+	m = updated.(Model)
+	if m.mode != ModeNormal {
+		t.Fatalf("expected Submit to return to Normal mode regardless, got %v", m.mode)
+	}
+	if cmd != nil {
+		t.Fatalf("expected no command when no procedure/source was ever set")
+	}
+	if m.meshServiceCallInFlight {
+		t.Fatalf("expected meshServiceCallInFlight to stay false")
+	}
+}
+
+func TestModeMeshServiceCall_EscCancelsAndClearsTheDraft(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = ModeMeshServiceCall
+	m.meshServiceCallProcedure = "hecate-rag.search_chunks_semantic"
+	m.meshServiceCallInput.SetValue(`{"query":"x"}`)
+
+	updated, cmd := m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	if m.mode != ModeNormal {
+		t.Fatalf("expected Esc to return to Normal mode, got %v", m.mode)
+	}
+	if m.meshServiceCallInput.Value() != "" {
+		t.Fatalf("expected the draft arguments discarded on cancel, got %q", m.meshServiceCallInput.Value())
+	}
+	if m.meshServiceCallProcedure != "" {
+		t.Fatalf("expected the captured procedure cleared on cancel, got %q", m.meshServiceCallProcedure)
+	}
+	if cmd != nil {
+		t.Fatalf("expected no command from cancelling")
+	}
+}
+
+// The `i`-guard: mesh_services_enabled: false means m.meshServices is nil
+// (see Options.MeshServices' own doc comment) -- `i` on the `s` panel must
+// fall through to ordinary compose-a-message, never enter
+// ModeMeshServiceCall with nothing real behind it.
+func TestNormalMode_IDoesNotEnterMeshServiceCallModeWhenServicesDisabled(t *testing.T) {
+	m := newTestModel(t) // m.meshServices is nil here -- Options never sets it
+	updated, _ := m.Update(runeKey('s'))
+	m = updated.(Model)
+	if m.meshServices != nil {
+		t.Fatalf("test assumption broken: expected meshServices nil in a fresh test model")
+	}
+
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	if m.mode != ModeInsert {
+		t.Fatalf("expected 'i' to fall through to ordinary compose (ModeInsert) when services are disabled, got %v", m.mode)
+	}
+}
+
+// fakeMCPCaller satisfies meshservices' own unexported mcpCaller interface
+// structurally (Go interface satisfaction needs no import of the
+// interface type itself) -- just enough to construct a real
+// *meshservices.Source for this test. Never actually invoked: Snapshot()
+// (and therefore meshServiceEntries(), which the `i` handler reads to
+// find the selected row) reads only in-memory index/discovered state, no
+// network call, until real discovery runs -- see meshservices.Source.
+// Snapshot's own implementation.
+type fakeMCPCaller struct{}
+
+func (fakeMCPCaller) CallTool(context.Context, string, map[string]any) (string, error) {
+	return "", fmt.Errorf("not used by this test")
+}
+
+// The actual capture-and-enter wiring: `i` on the `s` panel, with services
+// enabled, must freeze the CURSOR ROW's procedure name into
+// meshServiceCallProcedure and enter ModeMeshServiceCall -- not the first
+// row, not a placeholder, the one actually highlighted.
+func TestNormalMode_IEntersMeshServiceCallModeAndCapturesSelectedProcedure(t *testing.T) {
+	m := newTestModel(t)
+	m.meshServices = meshservices.New(fakeMCPCaller{})
+
+	updated, _ := m.Update(runeKey('s'))
+	m = updated.(Model)
+	entries, _ := m.meshServiceEntries()
+	if len(entries) < 2 {
+		t.Fatalf("need at least 2 curated entries for this test to mean anything, got %d", len(entries))
+	}
+	updated, _ = m.Update(typeKey(tea.KeyDown)) // select row 1, not row 0 -- proves this isn't hardcoded
+	m = updated.(Model)
+
+	updated, _ = m.Update(runeKey('i'))
+	m = updated.(Model)
+	if m.mode != ModeMeshServiceCall {
+		t.Fatalf("expected ModeMeshServiceCall, got %v", m.mode)
+	}
+	if !m.meshServiceCallInput.Focused() {
+		t.Fatalf("expected the mesh-service-call input to be focused")
+	}
+	if want := entries[1].Procedure(); m.meshServiceCallProcedure != want {
+		t.Fatalf("expected the selected row's procedure %q captured, got %q", want, m.meshServiceCallProcedure)
 	}
 }

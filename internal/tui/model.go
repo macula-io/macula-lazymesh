@@ -57,6 +57,16 @@ const (
 	// open) and the two draft inputs (realmJoinInput vs. the main
 	// compose input) must never share state.
 	ModeRealmJoin
+	// ModeMeshServiceCall: typing raw JSON arguments to invoke the `s`
+	// panel's currently-selected curated procedure directly -- see
+	// plans/PLAN_DIRECT_MESH_SERVICE_CALLS.md for why this exists (a
+	// non-AI door into the same meshservices.Source the agent's own tool
+	// chain calls through, so an operator who already knows which
+	// procedure they want never has to pay mesh_services_enabled's
+	// fixed-prefix token cost just to have the AI decide to call it on
+	// their behalf). Same reasoning as ModeRealmJoin for being its own
+	// mode with its own draft input, not a repurposed ModeInsert.
+	ModeMeshServiceCall
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -126,6 +136,7 @@ type Model struct {
 	mode                 Mode
 	meshExpanded         bool
 	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
+	meshServicesCursor   int  // selected row in the `s` panel's table -- clamped in handleKey's Up/Down cases, not here, since this field alone doesn't know the current entry count
 	realmExpanded        bool // `r` -- see renderRealmsOverlay
 	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
 	muted                bool
@@ -174,6 +185,21 @@ type Model struct {
 	realmJoinEvents   <-chan realmjoin.Event // nil when no join is in flight
 	realmJoinLatest   *realmjoin.Event       // the most recent event for the in-flight (or just-finished) join, nil once dismissed
 
+	// ModeMeshServiceCall's own draft input -- a SEPARATE textinput.Model
+	// from input/realmJoinInput, same reasoning as realmJoinInput's own
+	// doc comment: never share a draft across genuinely different actions
+	// just because both are "type text and press enter". meshServiceCall
+	// Procedure is captured when `i` starts the call (the cursor row at
+	// that moment), not re-read from the cursor at Submit time -- the
+	// panel's row order can't change mid-input (nothing re-fetches
+	// Snapshot() while typing), but naming the field for what it freezes
+	// makes that invariant obvious rather than assumed. InFlight blocks a
+	// stray second `i`/Submit from firing a second concurrent call, same
+	// guard shape as realmJoinLatest == nil for ModeRealmJoin.
+	meshServiceCallInput     textinput.Model
+	meshServiceCallProcedure string
+	meshServiceCallInFlight  bool
+
 	chatEntries  []chatEntry
 	chatViewport viewport.Model
 	input        textinput.Model
@@ -197,27 +223,33 @@ func New(client toolCaller, opts Options) Model {
 	realmInput.CharLimit = 253 // realm_name.ts's own MAX_LENGTH -- reject client-side at the same bound, not just server-side
 	realmInput.Prompt = "join realm: "
 
+	serviceCallInput := textinput.New()
+	serviceCallInput.Placeholder = `{} or {"key": "value"}`
+	serviceCallInput.CharLimit = 4000
+	serviceCallInput.Prompt = "args (json): "
+
 	statusBarPosition := opts.StatusBarPosition
 	if statusBarPosition != "top" {
 		statusBarPosition = "bottom"
 	}
 
 	return Model{
-		mcp:               client,
-		meshServices:      opts.MeshServices,
-		maculaMCPVersion:  opts.MaculaMCPVersion,
-		realmIdentityFile: opts.RealmIdentityFile,
-		agentEvents:       opts.AgentEvents,
-		userInputCh:       opts.UserInputCh,
-		contactPolicyFile: opts.ContactPolicyFile,
-		autoAcceptKnown:   opts.AutoAcceptKnown,
-		seenRingIDs:       make(map[string]bool),
-		mode:              ModeNormal,
-		statusBarPosition: statusBarPosition,
-		agentModel:        opts.AgentModel,
-		input:             ti,
-		realmJoinInput:    realmInput,
-		chatViewport:      viewport.New(80, 20),
+		mcp:                  client,
+		meshServices:         opts.MeshServices,
+		maculaMCPVersion:     opts.MaculaMCPVersion,
+		realmIdentityFile:    opts.RealmIdentityFile,
+		agentEvents:          opts.AgentEvents,
+		userInputCh:          opts.UserInputCh,
+		contactPolicyFile:    opts.ContactPolicyFile,
+		autoAcceptKnown:      opts.AutoAcceptKnown,
+		seenRingIDs:          make(map[string]bool),
+		mode:                 ModeNormal,
+		statusBarPosition:    statusBarPosition,
+		agentModel:           opts.AgentModel,
+		input:                ti,
+		realmJoinInput:       realmInput,
+		meshServiceCallInput: serviceCallInput,
+		chatViewport:         viewport.New(80, 20),
 		// Bell defaults ON: Fable's finding #3 is specifically that a
 		// wedged agent looks identical to a healthy one on screen: a cue
 		// that's off by default would silently defeat its own purpose for
@@ -380,6 +412,50 @@ func (m Model) handleRealmJoinEvent(msg realmJoinEventMsg) (Model, tea.Cmd) {
 	return m, waitForRealmJoinEvent(m.realmJoinEvents)
 }
 
+// meshServiceCallResultMsg carries CallToolRaw's own (result, err) pair
+// back into bubbletea's message loop -- one request/response, not a
+// stream, so this is refreshCmd's shape (single Cmd, single Msg), not
+// realmJoinEventMsg's (a channel of events re-armed after each one).
+type meshServiceCallResultMsg struct {
+	procedure string
+	result    string
+	err       error
+}
+
+// meshServiceCallSource is the subset of *meshservices.Source this package
+// actually calls -- same override-for-tests convention as realmJoinFunc,
+// so a test can substitute a fake CallToolRaw without a real mesh_call
+// RPC. *meshservices.Source itself satisfies this.
+type meshServiceCallSource interface {
+	CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error)
+}
+
+// startMeshServiceCall invokes CallToolRaw asynchronously (a real network
+// RPC -- never block Update) and reports the result through
+// meshServiceCallResultMsg. ctx is background, same reasoning as
+// startRealmJoin's own: this call's lifetime is independent of any single
+// keystroke, and CallToolRaw's own timeout (callTimeoutMS) is what
+// actually bounds it, not this context.
+func startMeshServiceCall(source meshServiceCallSource, procedure, argumentsJSON string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := source.CallToolRaw(context.Background(), procedure, argumentsJSON)
+		return meshServiceCallResultMsg{procedure: procedure, result: result, err: err}
+	}
+}
+
+// handleMeshServiceCallResult appends the outcome as a chat entry --
+// chatError for a failure (bad JSON, rate-limited, RPC error -- CallToolRaw
+// itself distinguishes these in its own error text), chatToolResult
+// otherwise, both prefixed "[direct]" so this transcript entry is never
+// mistaken for something the AI decided to do (see chat.go's own doc
+// comment on chatEntryKind for why that distinction matters).
+func (m Model) handleMeshServiceCallResult(msg meshServiceCallResultMsg) (Model, tea.Cmd) {
+	m.meshServiceCallInFlight = false
+	m.chatEntries = append(m.chatEntries, directMeshServiceCallEntry(msg))
+	m.syncViewport()
+	return m, nil
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -407,6 +483,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case realmJoinEventMsg:
 		return m.handleRealmJoinEvent(msg)
+
+	case meshServiceCallResultMsg:
+		return m.handleMeshServiceCallResult(msg)
 	}
 	return m, nil
 }
@@ -453,6 +532,39 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.mode == ModeMeshServiceCall {
+		switch {
+		case key.Matches(msg, DefaultKeyMap.Normal):
+			m.meshServiceCallInput.Blur()
+			m.meshServiceCallInput.Reset() // one-shot action, no draft kept -- same reasoning as realmJoinInput
+			m.meshServiceCallProcedure = ""
+			m.mode = ModeNormal
+			m.resizeComponents()
+			return m, nil
+		case key.Matches(msg, DefaultKeyMap.Submit):
+			argsJSON := strings.TrimSpace(m.meshServiceCallInput.Value())
+			procedure := m.meshServiceCallProcedure
+			m.meshServiceCallInput.Reset()
+			m.meshServiceCallInput.Blur()
+			m.meshServiceCallProcedure = ""
+			m.mode = ModeNormal
+			m.resizeComponents()
+			if procedure == "" || m.meshServices == nil {
+				// Panel was disabled or the procedure vanished between `i`
+				// and Submit (shouldn't happen -- nothing re-fetches
+				// Snapshot() mid-input -- but never invoke with an empty
+				// procedure name either way).
+				return m, nil
+			}
+			m.meshServiceCallInFlight = true
+			return m, startMeshServiceCall(m.meshServices, procedure, argsJSON)
+		default:
+			var cmd tea.Cmd
+			m.meshServiceCallInput, cmd = m.meshServiceCallInput.Update(msg)
+			return m, cmd
+		}
+	}
+
 	if m.mode == ModeInsert {
 		switch {
 		case key.Matches(msg, DefaultKeyMap.Normal):
@@ -494,16 +606,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Insert):
 		// `i` means something different depending on which overlay is
-		// showing: compose a message to the agent normally, or type a
-		// realm name while the `r` panel is open -- but only when
-		// there's a membership list to act on, not while a previous
-		// join's QR/status is still showing (dismiss that with Esc
-		// first, so a stray `i` can never fire a second join on top of
-		// one still in flight).
+		// showing: compose a message to the agent normally, type a
+		// realm name while the `r` panel is open, or type arguments to
+		// directly invoke the `s` panel's selected procedure -- but only
+		// when there's a membership list/curated row to act on, not
+		// while a previous join's QR/status is still showing (dismiss
+		// that with Esc first, so a stray `i` can never fire a second
+		// join on top of one still in flight), and not while a mesh
+		// service call is already in flight (same reasoning).
 		if m.realmExpanded && m.realmJoinLatest == nil {
 			m.mode = ModeRealmJoin
 			m.resizeComponents()
 			return m, m.realmJoinInput.Focus()
+		}
+		if m.meshServicesExpanded && m.meshServices != nil && !m.meshServiceCallInFlight {
+			entries, _ := m.meshServiceEntries()
+			if m.meshServicesCursor < len(entries) {
+				m.meshServiceCallProcedure = entries[m.meshServicesCursor].Procedure()
+				m.mode = ModeMeshServiceCall
+				m.resizeComponents()
+				return m, m.meshServiceCallInput.Focus()
+			}
 		}
 		m.mode = ModeInsert
 		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
@@ -525,6 +648,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.meshServicesExpanded {
 			m.meshExpanded = false
 			m.realmExpanded = false
+		} else {
+			// Reopening starts at the top, not wherever the cursor was
+			// left -- same reasoning as realmJoinLatest getting cleared
+			// when the `r` panel closes (see ToggleRealm's own case):
+			// stale position from last time isn't what "open the panel"
+			// should mean.
+			m.meshServicesCursor = 0
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleRealm):
@@ -550,12 +680,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showChatter = !m.showChatter
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Up):
-		if !m.meshExpanded && !m.meshServicesExpanded && !m.realmExpanded {
+		if m.meshServicesExpanded {
+			if m.meshServicesCursor > 0 {
+				m.meshServicesCursor--
+			}
+		} else if !m.meshExpanded && !m.realmExpanded {
 			m.chatViewport.LineUp(1)
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Down):
-		if !m.meshExpanded && !m.meshServicesExpanded && !m.realmExpanded {
+		if m.meshServicesExpanded {
+			entries, _ := m.meshServiceEntries()
+			if m.meshServicesCursor < len(entries)-1 {
+				m.meshServicesCursor++
+			}
+		} else if !m.meshExpanded && !m.realmExpanded {
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
@@ -813,6 +952,8 @@ func (m Model) renderModeIndicator() string {
 		return statusStripStyle.Render("-- RING --")
 	case ModeRealmJoin:
 		return statusStripStyle.Render("-- REALM --")
+	case ModeMeshServiceCall:
+		return statusStripStyle.Render("-- MESH CALL --")
 	default:
 		return dimStyle.Render("-- NORMAL --")
 	}
@@ -837,6 +978,8 @@ func (m Model) renderHintLines() []string {
 		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
 	case ModeRealmJoin:
 		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
+	case ModeMeshServiceCall:
+		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: call "+m.meshServiceCallProcedure)}
 	default:
 		// `i` and `esc` both mean something different depending on which
 		// overlay is showing -- see handleKey's own Insert and Normal
@@ -848,6 +991,9 @@ func (m Model) renderHintLines() []string {
 			} else {
 				insertHint = "i: join a realm"
 			}
+		}
+		if m.meshServicesExpanded && m.meshServices != nil {
+			insertHint = "↑↓: select  i: call selected"
 		}
 		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
 	}
