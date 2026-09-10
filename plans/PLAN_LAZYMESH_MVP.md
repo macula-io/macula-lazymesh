@@ -12,7 +12,7 @@ round) is a real, still-open cost on every GENUINE cycle -- removing the
 idle tick only eliminates paying it for cycles that found nothing, not
 the underlying cost itself.
 **Created:** 2026-09-06
-**Last Updated:** 2026-09-07
+**Last Updated:** 2026-09-10
 
 ## Why this exists
 
@@ -229,6 +229,16 @@ section's own commit:
    `PATH`/`HOME`/`TMPDIR` plus `MACULA_MCP_IDENTITY` when set, not the
    full environment. Live-verified: real spawn still works correctly
    under the pinned version and restricted environment.
+
+   **Superseded 2026-09-10:** Raf explicitly overruled the pin-by-default
+   half of this finding ("I know of no other harness that pins MCP
+   servers to 1 version") -- `config.Config.MaculaMCPVersion` now
+   defaults to empty, floating to npm's latest on every spawn like every
+   other MCP client, including lazymesh's own sibling Claude Code
+   `.mcp.json` config. Not an oversight if you're reading this later and
+   the code no longer pins by default -- see that field's own doc comment
+   for the full account. The `envAllowlist` restriction (the other half
+   of this finding) is untouched and still stands.
 3. **Unbounded conversation history + infinite silent retry.** History
    only ever grew by appending; once a request got too large for the
    provider's context limit, the outer loop retried the same oversized
@@ -503,6 +513,12 @@ several real, separate fixes, landed before the ring pop-up itself
   `mesh_trust_agent`/`mesh_wait_room`/inbox `poll_hint`) before setting
   this default — additive only, nothing this codebase depends on was
   removed or restructured.
+
+  **Superseded 2026-09-10** (see the same note under "Security review
+  findings" above): the pin-by-default half of this is reversed, per
+  Raf's own explicit direction overruling Fable's finding-2. Default is
+  now empty/floating. Kept here as an accurate record of the original
+  reasoning, not as current behavior.
 - **`contact_policy.json` isolated per lazymesh instance**
   (`config.ContactPolicyFile`, passed through as
   `MACULA_MCP_CONTACT_POLICY_FILE`). Found while reading macula-mcp's own

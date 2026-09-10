@@ -97,9 +97,14 @@ func TestLoad_OverridesStatusBarPosition(t *testing.T) {
 	}
 }
 
-func TestDefault_MaculaMCPVersionIsSet(t *testing.T) {
-	if got := Default().MaculaMCPVersion; got == "" {
-		t.Fatalf("expected a non-empty default macula_mcp_version")
+// Raf's explicit direction 2026-09-10, overruling an earlier Fable
+// finding-2 pin-by-default policy: lazymesh floats to npm's latest
+// @macula-io/mcp release by default now, the same as every other MCP
+// client. Empty is the deliberate default, not an oversight -- see
+// MaculaMCPVersion's own doc comment.
+func TestDefault_MaculaMCPVersionFloatsByDefault(t *testing.T) {
+	if got := Default().MaculaMCPVersion; got != "" {
+		t.Fatalf("expected empty default macula_mcp_version (float to latest), got %q", got)
 	}
 }
 

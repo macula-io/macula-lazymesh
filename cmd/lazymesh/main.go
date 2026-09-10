@@ -205,14 +205,19 @@ func run(configPath, room, goalText string) error {
 		AgentModel:        agentModelLabel,
 		MeshServices:      meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
 		// The `r` panel execs macula-mcp-realm directly (internal/realmjoin),
-		// never through client -- MaculaMCPVersion pins it to the exact
-		// same @macula-io/mcp release the persistent server is already
-		// running, and client.IdentityFile() is the RESOLVED identity
-		// path that server actually ended up using (not cfg.IdentityFile,
-		// which config.Default() deliberately leaves empty most of the
-		// time -- see mcpclient.Client.IdentityFile's own doc comment),
-		// so a fresh join's credential lands under the same node_id this
-		// operator's agent is actually presenting on the mesh.
+		// never through client -- MaculaMCPVersion is the same value both
+		// this and the persistent server's own Spawn resolve their npx
+		// invocation from, so (pinned) they run the exact same
+		// @macula-io/mcp release, or (empty, the default -- see
+		// config.Config.MaculaMCPVersion's own doc comment) both float to
+		// npm's latest independently, which is the same release barring a
+		// new one landing in the narrow window between the two npx calls.
+		// client.IdentityFile() is the RESOLVED identity path that server
+		// actually ended up using (not cfg.IdentityFile, which
+		// config.Default() deliberately leaves empty most of the time --
+		// see mcpclient.Client.IdentityFile's own doc comment), so a fresh
+		// join's credential lands under the same node_id this operator's
+		// agent is actually presenting on the mesh.
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
 	})

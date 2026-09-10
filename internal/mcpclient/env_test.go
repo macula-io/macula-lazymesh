@@ -50,11 +50,11 @@ func TestLaunchCommand_UsesGivenVersion(t *testing.T) {
 	}
 }
 
-func TestLaunchCommand_EmptyVersionFallsBackToDefault(t *testing.T) {
+func TestLaunchCommand_EmptyVersionFloatsToLatest(t *testing.T) {
 	got := launchCommand("")
-	want := "@macula-io/mcp@" + DefaultMaculaMCPVersion
+	want := "@macula-io/mcp"
 	if got[3] != want {
-		t.Fatalf("expected %q, got %q", want, got[3])
+		t.Fatalf("expected no @version suffix (%q), got %q", want, got[3])
 	}
 }
 

@@ -23,27 +23,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// DefaultMaculaMCPVersion is launchCommand's fallback when SpawnOptions
-// carries no version -- a defensive floor for direct callers of this
-// package, not the primary place an operator interacts with this value.
-// That's config.Config.MaculaMCPVersion (config.Default() sets it, kept
-// in sync with this constant); see that field's own doc comment for the
-// actual "verify the diff before bumping" methodology and history. Not
-// imported from here into config on purpose -- config stays a leaf
-// package with no cross-package awareness, matching how every other
-// cross-cutting default in this codebase is resolved at the call site
-// rather than via an import.
-const DefaultMaculaMCPVersion = "0.27.0"
-
 // launchCommand starts macula-mcp the same way every other MCP config in
-// this workspace does (npx -p @macula-io/mcp macula-mcp), pinned to the
-// given version instead of npm's floating latest tag. Do not change this
-// to a locally-built binary path or a different invocation otherwise.
+// this workspace does (npx -p @macula-io/mcp macula-mcp). An empty version
+// floats to npm's latest published release on every spawn -- lazymesh's
+// own default since 2026-09-10 (see config.Config.MaculaMCPVersion for
+// why: Raf explicitly overruled an earlier Fable-driven pin-by-default
+// policy). A non-empty version still pins to that exact release, for an
+// operator who deliberately sets one in their own config. Do not change
+// this to a locally-built binary path or a different invocation otherwise.
 func launchCommand(version string) []string {
-	if version == "" {
-		version = DefaultMaculaMCPVersion
+	pkg := "@macula-io/mcp"
+	if version != "" {
+		pkg += "@" + version
 	}
-	return []string{"npx", "-y", "-p", "@macula-io/mcp@" + version, "macula-mcp"}
+	return []string{"npx", "-y", "-p", pkg, "macula-mcp"}
 }
 
 // envAllowlist is what Spawn forwards to the macula-mcp subprocess instead
@@ -76,8 +69,9 @@ type mcpSession interface {
 
 // SpawnOptions configures how Spawn launches macula-mcp.
 type SpawnOptions struct {
-	// Version pins the exact @macula-io/mcp release to run. Empty uses
-	// DefaultMaculaMCPVersion.
+	// Version pins the exact @macula-io/mcp release to run. Empty (the
+	// default -- see config.Config.MaculaMCPVersion) floats to npm's
+	// latest published release on every spawn instead.
 	Version string
 	// IdentityFile, if non-empty, is passed through as MACULA_MCP_IDENTITY
 	// so macula-mcp keeps a stable node_id across a full restart of this

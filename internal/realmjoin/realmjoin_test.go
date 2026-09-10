@@ -58,15 +58,69 @@ func TestSpawnEnv_CarriesOnlyTheAllowlistPlusIdentity(t *testing.T) {
 
 func TestJoin_RejectsEmptyArgumentsWithoutSpawningAnything(t *testing.T) {
 	ctx := context.Background()
-	if _, err := Join(ctx, "", "id", "io.macula"); err == nil {
-		t.Fatalf("expected an error for empty version")
-	}
 	if _, err := Join(ctx, "0.27.0", "", "io.macula"); err == nil {
 		t.Fatalf("expected an error for empty identityFile -- joining under an unrelated identity must never happen silently")
 	}
 	if _, err := Join(ctx, "0.27.0", "id", ""); err == nil {
 		t.Fatalf("expected an error for empty realmName")
 	}
+}
+
+// version="" is a real, deliberate case (config.Config.MaculaMCPVersion's
+// own default since 2026-09-10) -- Join must NOT reject it. See newCommand's
+// own tests for the actual npx invocation this produces.
+func TestJoin_AcceptsEmptyVersion(t *testing.T) {
+	script := fakeScript(t, []string{`{"event":"confirmed","realm":"io.macula"}`}, 0)
+	withFakeCommand(t, script)
+
+	events, err := Join(context.Background(), "", "/tmp/identity.seed", "io.macula")
+	if err != nil {
+		t.Fatalf("Join with empty version: %v", err)
+	}
+	got := drain(t, events, 5*time.Second)
+	if len(got) != 1 || got[0].Kind != "confirmed" {
+		t.Fatalf("expected the confirmed event, got %+v", got)
+	}
+}
+
+// newCommand is the actual npx invocation -- verified directly rather than
+// only through fakeScript substitutions, since every other test in this
+// file replaces it.
+func TestNewCommand_EmptyVersionFloatsToLatest(t *testing.T) {
+	cmd := newCommand(context.Background(), "", "io.macula")
+	want := "@macula-io/mcp"
+	if !containsArg(cmd.Args, want) {
+		t.Fatalf("expected arg %q (no @version suffix), got %v", want, cmd.Args)
+	}
+	if containsArgPrefix(cmd.Args, "@macula-io/mcp@") {
+		t.Fatalf("expected no @macula-io/mcp@... arg for an empty version, got %v", cmd.Args)
+	}
+}
+
+func TestNewCommand_PinsGivenVersion(t *testing.T) {
+	cmd := newCommand(context.Background(), "0.29.0", "io.macula")
+	want := "@macula-io/mcp@0.29.0"
+	if !containsArg(cmd.Args, want) {
+		t.Fatalf("expected arg %q, got %v", want, cmd.Args)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgPrefix(args []string, prefix string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(a, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // fakeScript writes a shell script at dir/name that prints each of lines

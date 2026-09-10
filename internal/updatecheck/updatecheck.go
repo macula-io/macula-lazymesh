@@ -1,14 +1,20 @@
 // Package updatecheck performs a lightweight, best-effort check for a newer
-// @macula-io/mcp release than the one lazymesh is pinned to (see
-// config.Config.MaculaMCPVersion for why lazymesh pins an exact version
-// instead of npx's floating "latest" tag -- that pin is a real security
-// fix and this package never touches it). Staleness was previously
-// invisible until someone remembered to check manually, which is exactly
-// what left a running lazymesh two versions behind real upstream bugfixes,
-// 2026-09-06. This exists purely to surface that gap: it never blocks
-// startup for long, never treats an unreachable or malformed registry
-// response as fatal, and never adopts a new version on its own -- reporting
-// only.
+// @macula-io/mcp release than the one lazymesh is pinned to. Originally
+// written when lazymesh pinned @macula-io/mcp by default: staleness was
+// invisible until someone remembered to check manually, which left a
+// running lazymesh two versions behind real upstream bugfixes, 2026-09-06.
+//
+// Pinning is no longer the default (config.Config.MaculaMCPVersion's own
+// doc comment: Raf's 2026-09-10 direction overruling that earlier
+// pin-by-default policy) -- with an empty version, every spawn already
+// floats to whatever npm currently calls latest, so there is nothing
+// "stale" to report, and Notice is a deliberate no-op for that case (see
+// its own doc comment) rather than removed outright. This package still
+// earns its keep for an operator who explicitly sets macula_mcp_version in
+// their own config.yaml: pinning is still their choice to make, and this
+// is still how they'd find out they're now behind. It never blocks startup
+// for long, never treats an unreachable or malformed registry response as
+// fatal, and never adopts a new version on its own -- reporting only.
 package updatecheck
 
 import (
@@ -46,11 +52,17 @@ type registryResponse struct {
 
 // Notice returns a one-line, human-readable notice if npm reports a
 // @macula-io/mcp version other than pinned, or "" when there's nothing to
-// report: versions match, or the registry could not be reached or parsed
+// report: pinned is empty (nothing pinned -- every spawn already floats to
+// latest, so there is no staleness to compare against, and this skips the
+// network call entirely rather than produce a nonsensical "pinned to v"
+// message), versions match, or the registry could not be reached or parsed
 // within DefaultTimeout. Every failure mode is silent by design -- this
 // check is purely informational and must never make startup noisier or
 // less reliable than not having it at all.
 func (c Checker) Notice(ctx context.Context, pinned string) string {
+	if pinned == "" {
+		return ""
+	}
 	latest, err := c.latestVersion(ctx)
 	if err != nil || latest == "" || latest == pinned {
 		return ""

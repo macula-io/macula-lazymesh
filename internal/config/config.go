@@ -86,131 +86,34 @@ type Config struct {
 	// is treated as "bottom" -- matching vim's statusline and tmux's
 	// status bar, both bottom by default.
 	StatusBarPosition string `yaml:"status_bar_position,omitempty"`
-	// MaculaMCPVersion pins the exact @macula-io/mcp release Spawn runs
-	// (config, not a Go const, per Raf's own steer 2026-09-06: the
-	// security property Fable's finding-2 fix actually needed was "not a
-	// floating tag, always an explicit deliberate value," not "compiled
-	// into the binary" -- a config-driven default gives an operator who
-	// never touches it the same verified value, and one who edits
-	// config.yaml is making their own equally deliberate choice, without
-	// needing a Go toolchain to do it). Default() sets this to the
-	// version actually verified here: read every commit between 0.23.0
-	// and 0.24.0 directly (petname fields, a real mesh_open_room
-	// ring-sequencing bugfix, mesh_trust_agent/mesh_wait_room) and
-	// confirmed all of it is additive -- nothing this codebase depends on
-	// was removed or restructured. 0.24.1 (ceaa13f, single commit) is the
-	// fix for the mesh_read_inbox/mesh_rooms cold-start race THIS repo's
-	// own live testing found and reported upstream: presence.currentNodeId()
-	// now falls back to the local identity file's node_id instead of
-	// reading undefined on a fresh identity's first call, which had been
-	// silently omitting/hiding pending rings -- exactly the failure mode
-	// blocking this repo's own ring pop-up from ever being seen live.
-	// Confirmed additive (two files touched, both gain a fallback, nothing
-	// removed) and RED/GREEN tested upstream. 0.24.2 (96dee2a, single commit)
-	// fixes a related but distinct bug: serve()'s teardown-then-serve
-	// ordering could leave ring_service.ts's own direct-dial registration
-	// completely torn down (not degraded) if a periodic 20-minute renewal's
-	// connect/serve() call failed, until the next renewal happened to
-	// succeed -- serve() now connects and serves the replacement FIRST,
-	// only retiring the previous still-working registration once that
-	// succeeds, plus backoff on a failed renewal instead of waiting the
-	// full interval again. Confirmed additive (both changed functions keep
-	// their existing happy path, only reorder/add retry logic) and
-	// RED/GREEN tested upstream (30 files, 433 tests). Explicitly does NOT
-	// claim to fix the separate, still-open "ring recorded then vanished"
-	// mystery -- left open on its own terms, not force-unified.
+	// MaculaMCPVersion pins the exact @macula-io/mcp release Spawn and
+	// realmjoin.Join run. Empty (Default()'s own value, since 2026-09-10)
+	// means no pin: both float to npm's latest published release on every
+	// launch, the same way every other MCP client on this machine --
+	// including this workspace's own Claude Code .mcp.json config --
+	// already spawns macula-mcp.
 	//
-	// 0.25.0 (03d7c3d, single commit): mesh_ring's `to`, mesh_open_room's
-	// `participants`, and mesh_trust_agent/mesh_untrust_agent's `node_id`
-	// now also accept a petname, resolved to the real node_id once at each
-	// call's own top before anything else runs -- a raw 64-hex value (all
-	// this repo has ever sent) still passes through unchanged, so this is
-	// new INPUT flexibility only, nothing existing removed or renamed on
-	// any arg or response shape. 16 new tests upstream (including a real
-	// brute-forced sha256 petname collision, not simulated).
+	// This reverses an earlier pinned-by-default policy that a Fable
+	// security review (finding-2) drove, and which this field's own history
+	// used to document commit-by-commit (0.23.0 through 0.27.0, each bump
+	// individually read and confirmed additive before being trusted). Raf
+	// explicitly overruled that policy 2026-09-10: "frankly, I'll overrule
+	// Fable here... I know of no other harness that pins MCP servers to 1
+	// version." The concrete cost that surfaced the question: this repo had
+	// stayed pinned to 0.28.1 through 0.29.0 (which shipped session_name)
+	// purely because nobody had done the deliberate manual bump -- exactly
+	// the friction a mandatory pin imposes, and what this reversal removes.
 	//
-	// 0.25.1 (three commits, all reviewed directly by this repo's own team
-	// -- see macula-io/macula-mcp#2/#3/#4/#5): cf7c7d8 fixes
-	// ring_service.ts's INITIAL registration (not just renewal, which
-	// 0.24.2 above already covered) retrying with backoff instead of
-	// permanently giving up on one transient failure -- pure internal
-	// reliability fix, no wire shape change. 3f6b7b1 adds a new
-	// `interval_seconds` field to every agent.hello and a new computed
-	// `stale` field to mesh_agents' response (both additive -- existing
-	// fields untouched), plus documentation-only comments about the
-	// hello/goodbye trust model (zero functional change). 8eaa3b3 is the
-	// version bump itself, no code change. Confirmed additive throughout:
-	// no tool renamed or removed, no existing response field removed, no
-	// existing arg made required that wasn't before. 458 tests passing
-	// upstream, typecheck clean.
-	//
-	// 0.25.2 (4c534fb, single commit): purely cosmetic -- mesh_hello's
-	// DEFAULT_BANNER figlet art had one letter wrong (rendered "MTCULA"),
-	// fixed to spell "MACULA". A string-literal-only diff in one file
-	// (src/mesh_hello.ts), read directly: no other line touched, no
-	// behavior, no tool arg/response shape affected at all.
-	//
-	// 0.26.0 (two commits): 515f227 adds mesh_wait_ring, the blocking
-	// counterpart to polling mesh_read_inbox for a new ring -- purely
-	// additive, a new tool, nothing existing touched (this is what
-	// internal/ringwaiter switched to, replacing its own former polling
-	// loop -- see that package's own doc comment). d2a1744 adds
-	// MACULA_MCP_TERSE_TOOLS as an opt-in env var for shorter tool
-	// descriptions -- unset by default, so every existing tool's
-	// description is byte-for-byte unchanged unless an operator opts in;
-	// this codebase's own internal/agent.TerseDescriptionSource already
-	// does the equivalent client-side and doesn't set this var, so
-	// nothing here is affected either way.
-	//
-	// 0.26.1 (1849ff5, single commit, cut same-day as a correctness
-	// fix): a REAL bug, found live 2026-09-07/08 investigating why a
-	// ring never surfaced on the recipient's side of two same-machine
-	// lazymesh instances (credit to this investigation: reproduced with
-	// two real macula-mcp processes, confirmed via the raw sqlite row,
-	// not theorized). rings.sqlite3 is one file per MACHINE; one ring
-	// produces two legitimate rows in that shared file (the caller's own
-	// "out" bookkeeping, written synchronously before the network call
-	// even goes out, and the callee's own "in" bookkeeping, written when
-	// the call arrives) -- but the old schema's ring_id TEXT PRIMARY KEY
-	// alone meant the second insert always silently no-op'd via
-	// ON CONFLICT DO NOTHING, so the callee's own copy -- what
-	// mesh_read_inbox/mesh_wait_ring/mesh_answer_ring all read on ITS
-	// side -- simply never existed whenever caller and callee shared a
-	// machine (deterministic, not a race: the caller's local write always
-	// precedes the callee's network-triggered one). Fixed: primary key is
-	// now (ring_id, direction), and answerRing's own UPDATE is now scoped
-	// by direction too (the same collision would otherwise have let one
-	// party's answer silently overwrite the other's once two rows could
-	// share a ring_id). A real on-disk migration rebuilds an existing
-	// old-schema file, verified against one, not just a fresh in-memory
-	// db. No MCP tool's own argument or response shape changed --
-	// confirmed by reading the diff directly (src/mesh_ring.ts,
-	// src/ring_service.ts): every changed call site is an internal
-	// TypeScript function signature (answerRing gaining a direction
-	// parameter), nothing tool-schema-facing. Empirically re-verified
-	// live with two real 0.26.1 processes after the bump: the callee's
-	// own mesh_read_inbox now shows the pending ring, and
-	// mesh_answer_ring succeeds against it.
-	//
-	// 0.27.0 (2026-09-08): adds mesh_list_realms (confirmed realm
-	// memberships, an ordinary read-only tool) -- backs the `r` panel's
-	// own listing (internal/tui/mesh.go's fetchMeshState). Also adds
-	// mesh_join_realm's own multi-realm counterpart, macula-mcp-realm
-	// (a separate CLI binary, deliberately NEVER an MCP tool -- see
-	// internal/realmjoin's own doc comment for why), which this bump
-	// makes available via npx at the SAME pinned version the persistent
-	// macula-mcp server already runs, so a fresh join's credential lands
-	// under the same @macula-io/mcp release's own schema/behavior.
-	// mesh_join_realm's own existing shape is completely unchanged.
-	// Confirmed by reading the diff directly, not assumed: no other tool
-	// schema changed.
-	//
-	// Whoever next edits this default should do the same before bumping it, never
-	// bump just to "pick up whatever's newest." Kept in sync with (but not
-	// imported from, to
-	// keep this package a leaf with no cross-package awareness, matching
-	// how ToolAllowlist's own default is resolved in main.go instead of
-	// here) mcpclient.DefaultMaculaMCPVersion.
+	// DO NOT revert this to a pinned default because the history above
+	// looks like evidence it should stay pinned -- it is not an oversight,
+	// it is Raf's explicit direction overruling that earlier finding. An
+	// operator who wants a pin back (their own review cadence, an
+	// environment where floating is unacceptable) can still set this
+	// explicitly in their own config.yaml; that path is untouched, it's
+	// simply no longer the default. Kept in sync with (but not imported
+	// from, to keep this package a leaf with no cross-package awareness)
+	// mcpclient's own launchCommand and realmjoin's own newCommand, which
+	// both treat empty the same way.
 	MaculaMCPVersion string `yaml:"macula_mcp_version,omitempty"`
 	// ContactPolicyFile, if set, is passed to macula-mcp as
 	// MACULA_MCP_CONTACT_POLICY_FILE so this lazymesh instance's contact
@@ -312,7 +215,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition:   "bottom",
-		MaculaMCPVersion:    "0.27.0",
+		MaculaMCPVersion:    "", // float to latest -- see the field's own doc comment
 		ContactPolicyFile:   filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:          "always-ask",
 		ExpressiveStyle:     false,

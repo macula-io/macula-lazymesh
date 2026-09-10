@@ -24,6 +24,23 @@ func TestNotice_ReportsNewerVersion(t *testing.T) {
 	}
 }
 
+// pinned="" is config.Config.MaculaMCPVersion's own default since
+// 2026-09-10 (floating, not pinned) -- there is nothing to compare
+// against, so Notice must skip the registry call entirely rather than
+// produce a nonsensical "pinned to v" message. Failing the test from
+// inside the handler catches a regression that calls the registry anyway.
+func TestNotice_EmptyPinnedSkipsRegistryEntirely(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("expected Notice to never call the registry when pinned is empty")
+	}))
+	defer srv.Close()
+
+	c := Checker{RegistryURL: srv.URL}
+	if got := c.Notice(context.Background(), ""); got != "" {
+		t.Fatalf("expected empty notice when nothing is pinned, got %q", got)
+	}
+}
+
 func TestNotice_EmptyWhenVersionsMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

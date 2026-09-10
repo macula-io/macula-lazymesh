@@ -69,24 +69,29 @@ var envAllowlist = []string{"PATH", "HOME", "TMPDIR"}
 // ever risking a real network call or a real join session against
 // production. Never reassigned outside a test.
 var newCommand = func(ctx context.Context, version, realmName string) *exec.Cmd {
-	return exec.CommandContext(ctx, "npx", "-y", "-p", "@macula-io/mcp@"+version, "macula-mcp-realm", "join", realmName, "--json")
+	pkg := "@macula-io/mcp"
+	if version != "" {
+		pkg += "@" + version
+	}
+	return exec.CommandContext(ctx, "npx", "-y", "-p", pkg, "macula-mcp-realm", "join", realmName, "--json")
 }
 
-// Join execs `npx -y -p @macula-io/mcp@<version> macula-mcp-realm join
+// Join execs `npx -y -p @macula-io/mcp[@<version>] macula-mcp-realm join
 // <realmName> --json` and streams its NDJSON stdout as Events on the
 // returned channel, closed once the subprocess exits (successfully or
-// not) and every already-buffered line has been delivered. identityFile
-// is passed through as MACULA_MCP_IDENTITY -- MUST be the exact same
-// path the running macula-mcp server (mcpclient.Client) is using, or the
+// not) and every already-buffered line has been delivered. version may be
+// empty -- floats to npm's latest published release, same as
+// mcpclient.launchCommand and for the same reason (config.Config.
+// MaculaMCPVersion's own doc comment: Raf's 2026-09-10 direction
+// overruling the earlier pin-by-default policy). identityFile is passed
+// through as MACULA_MCP_IDENTITY -- MUST be the exact same path the
+// running macula-mcp server (mcpclient.Client) is using, or the
 // credential this mints lands under a different node_id than the one
 // this operator's agent is actually presenting on the mesh (see
 // mcpclient.Client.IdentityFile's own doc comment for where that value
 // comes from). ctx cancellation kills the subprocess; the channel is
 // closed either way.
 func Join(ctx context.Context, version, identityFile, realmName string) (<-chan Event, error) {
-	if version == "" {
-		return nil, fmt.Errorf("realmjoin: version must not be empty")
-	}
 	if identityFile == "" {
 		return nil, fmt.Errorf("realmjoin: identityFile must not be empty -- joining under a fresh, unrelated identity would silently mint an identity nobody's agent presence actually uses")
 	}

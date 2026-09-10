@@ -26,11 +26,11 @@
 // startup catch-up path) helped prove the actual bug was upstream, in
 // macula-mcp's own rings.sqlite3 schema (ring_id alone as primary key
 // couldn't hold both a ring's caller-side and callee-side bookkeeping
-// rows in the one shared per-machine file) -- fixed in macula-mcp
-// 0.26.1, this codebase's own pinned version (see internal/config's
-// MaculaMCPVersion doc comment for the full account). Polling was never
-// the problem; there was nothing correct to poll OR wait for on the
-// recipient's own side until that fix landed.
+// rows in the one shared per-machine file) -- fixed in macula-mcp 0.26.1
+// (see internal/config's MaculaMCPVersion doc comment for the full
+// account, and for why this codebase no longer pins to a fixed release
+// at all). Polling was never the problem; there was nothing correct to
+// poll OR wait for on the recipient's own side until that fix landed.
 package ringwaiter
 
 import (
