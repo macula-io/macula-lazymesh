@@ -25,6 +25,12 @@ type KeyMap struct {
 	Answer  key.Binding
 	Decline key.Binding
 	Trust   key.Binding
+
+	// Error pop-up. ShowError opens it from normal mode; Copy only means
+	// anything once it is open. Shift-E, not "e", because "e" is already
+	// the chat detail toggle.
+	ShowError key.Binding
+	Copy      key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -45,4 +51,6 @@ var DefaultKeyMap = KeyMap{
 	Answer:             key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "answer")),
 	Decline:            key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "decline")),
 	Trust:              key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "answer + trust")),
+	ShowError:          key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "show last error")),
+	Copy:               key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -156,10 +157,16 @@ func collapseNewlines(s string) string {
 	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
 }
 
+// truncateForChat cuts to n CHARACTERS, not n bytes. It used to slice the
+// raw string, which splits any multi-byte rune straddling the cut and
+// renders the fragment as a replacement glyph -- so a petname, a room
+// topic or an error message containing anything outside ASCII ended in
+// visible corruption rather than a clean ellipsis. Counting runes costs
+// one pass and removes the whole class.
 func truncateForChat(s string, n int) string {
 	s = collapseNewlines(s)
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string([]rune(s)[:n]) + "..."
 }

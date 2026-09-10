@@ -67,6 +67,11 @@ const (
 	// their behalf). Same reasoning as ModeRealmJoin for being its own
 	// mode with its own draft input, not a repurposed ModeInsert.
 	ModeMeshServiceCall
+	// ModeErrorPopup: reading the last error in full, wrapped and
+	// scrollable, with a copy key. Its own mode for the same reason as
+	// the others -- "c" means copy only while it is open, and "esc"
+	// closes it rather than leaving whatever mode was underneath.
+	ModeErrorPopup
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -169,6 +174,11 @@ type Model struct {
 	lastListeningAt time.Time
 
 	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
+
+	// The error pop-up's own state, nil when it is closed. Separate from
+	// lastErr: lastErr is the live condition, this is the reading of it,
+	// so closing the pop-up does not pretend the error went away.
+	errorPopup *errorPopup
 
 	// The `r` panel's own join affordance -- realmjoin.Join is called
 	// directly from here, never through m.mcp/the agent's own tool
@@ -499,6 +509,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleRingPopupKey(msg)
 	}
 
+	if m.mode == ModeErrorPopup {
+		return m.handleErrorPopupKey(msg)
+	}
+
 	// Works from either Normal or Insert -- composing in $EDITOR is useful
 	// as a way INTO a message (from Normal) just as much as a way to
 	// finish one already started (from Insert), and always lands in
@@ -678,6 +692,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
 		m.showChatter = !m.showChatter
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ShowError):
+		if m.lastErr == nil {
+			return m, nil
+		}
+		e := newErrorPopup(m.lastErr.Error(), m.width, m.height)
+		m.errorPopup = &e
+		m.mode = ModeErrorPopup
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Up):
 		if m.meshServicesExpanded {
@@ -912,6 +934,14 @@ func (m Model) View() string {
 		return strings.Join([]string{popup, status}, "\n")
 	}
 
+	if m.mode == ModeErrorPopup && m.errorPopup != nil {
+		popup := m.renderErrorPopup()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
 	var body string
 	switch {
 	case m.meshExpanded:
@@ -1045,7 +1075,7 @@ func (m Model) renderSummaryLine() string {
 		out = name + summaryStyle.Render(" · ") + out
 	}
 	if m.lastErr != nil {
-		out += "  " + errStyle.Render(fmt.Sprintf("(refresh error: %s)", m.lastErr))
+		out += "  " + formatSummaryError(m.lastErr)
 	}
 	return out
 }
