@@ -263,6 +263,10 @@ type Client struct {
 	respawnMu     sync.Mutex
 	respawning    bool
 	lastRespawnAt time.Time
+
+	// throttle keeps a persistently failing tool from filling the log
+	// ring with one repeated message -- see calllog.go.
+	throttle *failureThrottle
 }
 
 // Spawn starts macula-mcp as a subprocess and completes the MCP handshake.
@@ -276,9 +280,10 @@ func Spawn(ctx context.Context, opts SpawnOptions) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		session: session,
-		opts:    resolved,
-		spawnFn: realSpawnSession,
+		session:  session,
+		opts:     resolved,
+		spawnFn:  realSpawnSession,
+		throttle: newFailureThrottle(),
 	}, nil
 }
 
@@ -435,6 +440,7 @@ func (c *Client) callToolOnce(ctx context.Context, name string, args map[string]
 		Arguments: args,
 	})
 	if err != nil {
+		c.logCallOutcome(name, err)
 		return "", fmt.Errorf("macula-mcp tools/call %s: %w: %w", name, errTransportFailure, err)
 	}
 
@@ -446,8 +452,11 @@ func (c *Client) callToolOnce(ctx context.Context, name string, args map[string]
 	}
 	text := sb.String()
 	if res.IsError {
-		return text, fmt.Errorf("macula-mcp tool %s reported an error: %s", name, text)
+		err := fmt.Errorf("macula-mcp tool %s reported an error: %s", name, text)
+		c.logCallOutcome(name, err)
+		return text, err
 	}
+	c.logCallOutcome(name, nil)
 	return text, nil
 }
 

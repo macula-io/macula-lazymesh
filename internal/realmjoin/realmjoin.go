@@ -99,6 +99,7 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 		return nil, fmt.Errorf("realmjoin: realmName must not be empty")
 	}
 
+	logf("realm join starting: %s (identity %s)", realmName, identityFile)
 	cmd := newCommand(ctx, version, realmName)
 	cmd.Env = spawnEnv(identityFile)
 	stdout, err := cmd.StdoutPipe()
@@ -106,6 +107,7 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 		return nil, fmt.Errorf("realmjoin: stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		logf("realm join failed to start for %s: %v", realmName, err)
 		return nil, fmt.Errorf("realmjoin: start macula-mcp-realm: %w", err)
 	}
 
@@ -126,6 +128,9 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 				continue
 			}
 			sawEvent = true
+			if ev.Terminal() {
+				logf("realm join %s for %s: %s", ev.Kind, realmName, ev.Message)
+			}
 			events <- ev
 		}
 		waitErr := cmd.Wait()
@@ -138,6 +143,7 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 			// has anything useful to say beyond what the CLI's own
 			// "error" event already reported (that one already flowed
 			// through above, if it happened).
+			logf("realm join for %s produced no events and exited: %s", realmName, exitMessage(waitErr))
 			events <- Event{Kind: "spawn_error", Realm: realmName, Message: exitMessage(waitErr)}
 		}
 	}()

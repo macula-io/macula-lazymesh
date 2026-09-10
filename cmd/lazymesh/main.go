@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,9 +23,11 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
+	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
@@ -121,14 +124,30 @@ func run(configPath, room, goalText string) error {
 	// (fmt.Fprintln below, before the TUI starts) is the live view
 	// for agent internals; the chat pane shows a collapsed line per
 	// event live, but agent.log keeps the full verbose detail.
-	agentLog := log.New(logFile, "", log.LstdFlags)
+	// Records reach agent.log through internal/logging: levelled, with
+	// structured attributes and a component tag on every line. agentLog
+	// stays a *log.Logger so every existing call site below, and the three
+	// SetLogger seams, are unchanged -- see logging.Stack.StdFor.
+	// LevelDebug because the previous logger had no levels at all and
+	// dropped nothing; this must not start filtering out what used to be
+	// written.
+	logStack := logging.New(logFile, slog.LevelDebug)
+	// slog's package-level functions write to STDERR by default, which
+	// would corrupt the alt screen. Point them at agent.log instead,
+	// before anything can log.
+	logStack.SetDefault()
+	agentLog := logStack.StdFor("agent")
 	fmt.Fprintf(os.Stderr, "lazymesh: agent activity logged to %s\n", logPath)
 	// 2026-09-08: a respawn attempt/success/failure is otherwise
 	// completely invisible -- see mcpclient.Client's own doc comment on
 	// SetLogger for why that matters (same "quietly healthy" vs
 	// "silently failing" ambiguity today's ringwaiter/meshservices
 	// logging fixes already closed elsewhere).
-	client.SetLogger(agentLog)
+	client.SetLogger(logStack.StdFor("mcp"))
+	// The `r` panel's join runs as its own subprocess and its only other
+	// trace is a panel the operator dismisses; log it so a failed join
+	// is still diagnosable afterwards.
+	realmjoin.SetLogger(logStack.StdFor("realm"))
 
 	// The agent loop always runs -- Raf's explicit product decision
 	// (macula-io/macula-lazymesh#1, 2026-09-06): "lazymesh should run
@@ -149,7 +168,7 @@ func run(configPath, room, goalText string) error {
 	var meshSvc *meshservices.Source
 	if cfg.MeshServicesEnabled {
 		meshSvc = meshservices.New(client)
-		meshSvc.SetLogger(agentLog)
+		meshSvc.SetLogger(logStack.StdFor("mesh"))
 	}
 	tools, err := buildToolSource(cfg, client, meshSvc)
 	if err != nil {
@@ -189,7 +208,7 @@ func run(configPath, room, goalText string) error {
 	// doc comment on SetLogger for why this matters -- without it,
 	// "ringwaiter is quietly healthy" and "ringwaiter's poll has been
 	// failing since startup" were indistinguishable from the log alone.
-	ringMgr.SetLogger(agentLog)
+	ringMgr.SetLogger(logStack.StdFor("ring"))
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
@@ -204,6 +223,9 @@ func run(configPath, room, goalText string) error {
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
 		AgentModel:        agentModelLabel,
 		MeshServices:      meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
+		// The l key opens this file in $EDITOR. The same logPath the file
+		// was opened from above, so there is one derivation of the path.
+		LogPath: logPath,
 		// The `r` panel execs macula-mcp-realm directly (internal/realmjoin),
 		// never through client -- MaculaMCPVersion is the same value both
 		// this and the persistent server's own Spawn resolve their npx
