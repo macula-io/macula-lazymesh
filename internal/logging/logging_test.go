@@ -5,233 +5,120 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 )
 
-// errWriter fails every write, standing in for a full disk or a closed
-// agent.log.
-type errWriter struct{}
-
-func (errWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
-
-func TestRecentEntriesIsNewestFirst(t *testing.T) {
-	b := NewBuffer(10)
-	for _, m := range []string{"first", "second", "third"} {
-		b.Append(Entry{Message: m})
-	}
-	got := b.RecentEntries(3)
-	want := []string{"third", "second", "first"}
-	if len(got) != len(want) {
-		t.Fatalf("got %d entries, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i].Message != want[i] {
-			t.Errorf("position %d: got %q, want %q", i, got[i].Message, want[i])
-		}
-	}
-}
-
-func TestRingDropsOldestOnceFull(t *testing.T) {
-	b := NewBuffer(3)
-	for _, m := range []string{"a", "b", "c", "d", "e"} {
-		b.Append(Entry{Message: m})
-	}
-	if b.Len() != 3 {
-		t.Fatalf("Len = %d, want 3 (the ring must stay bounded)", b.Len())
-	}
-	got := b.RecentEntries(0)
-	want := []string{"e", "d", "c"}
-	for i := range want {
-		if got[i].Message != want[i] {
-			t.Errorf("position %d: got %q, want %q", i, got[i].Message, want[i])
-		}
-	}
-	for _, e := range got {
-		if e.Message == "a" || e.Message == "b" {
-			t.Errorf("%q should have been dropped", e.Message)
-		}
-	}
-}
-
-func TestRecentEntriesCapsAtN(t *testing.T) {
-	b := NewBuffer(10)
-	for i := 0; i < 8; i++ {
-		b.Append(Entry{Message: "x"})
-	}
-	if got := len(b.RecentEntries(3)); got != 3 {
-		t.Errorf("RecentEntries(3) returned %d entries, want 3", got)
-	}
-	// n larger than what is held returns only what is held, not padding.
-	if got := len(b.RecentEntries(99)); got != 8 {
-		t.Errorf("RecentEntries(99) returned %d entries, want 8", got)
-	}
-	// n <= 0 means everything held.
-	if got := len(b.RecentEntries(0)); got != 8 {
-		t.Errorf("RecentEntries(0) returned %d entries, want 8", got)
-	}
-}
-
-// The overlay's whole error path is an empty slice, so this must not
-// panic and must not return nil-with-length.
-func TestEmptyBufferReturnsEmptyNotPanic(t *testing.T) {
-	b := NewBuffer(5)
-	got := b.RecentEntries(10)
-	if len(got) != 0 {
-		t.Errorf("fresh buffer returned %d entries, want 0", len(got))
-	}
-	if b.Len() != 0 {
-		t.Errorf("fresh buffer Len = %d, want 0", b.Len())
-	}
-}
-
-// Component is promised to the TUI as populated on EVERY entry -- a
-// blank column is worse than no column.
-func TestComponentAlwaysPopulated(t *testing.T) {
+// Every line in agent.log must say which subsystem produced it, whether
+// it came from new slog code, the stdlib bridge, or the package-level
+// default.
+func TestEveryPathTagsItsComponent(t *testing.T) {
 	var file bytes.Buffer
-	s := New(&file, slog.LevelDebug, 10)
+	s := New(&file, slog.LevelDebug)
 
 	s.For("mcp").Info("via slog")
 	s.StdFor("realm").Printf("via the stdlib bridge")
 	s.SetDefault()
 	slog.Info("via the package-level default")
 
-	entries := s.Buffer.RecentEntries(0)
-	if len(entries) != 3 {
-		t.Fatalf("captured %d entries, want 3", len(entries))
+	lines := strings.Split(strings.TrimSpace(file.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("file has %d lines, want 3:\n%s", len(lines), file.String())
 	}
-	for _, e := range entries {
-		if strings.TrimSpace(e.Component) == "" {
-			t.Errorf("entry %q has a blank Component", e.Message)
+	want := map[string]string{
+		"via slog":                      "component=mcp",
+		"via the stdlib bridge":         "component=realm",
+		"via the package-level default": "component=lazymesh",
+	}
+	for msg, tag := range want {
+		found := false
+		for _, l := range lines {
+			if strings.Contains(l, msg) {
+				found = true
+				if !strings.Contains(l, tag) {
+					t.Errorf("line for %q is missing %s: %s", msg, tag, l)
+				}
+			}
 		}
-	}
-
-	byMessage := map[string]string{}
-	for _, e := range entries {
-		byMessage[e.Message] = e.Component
-	}
-	if got := byMessage["via slog"]; got != "mcp" {
-		t.Errorf("slog entry Component = %q, want %q", got, "mcp")
-	}
-	if got := byMessage["via the stdlib bridge"]; got != "realm" {
-		t.Errorf("bridged entry Component = %q, want %q", got, "realm")
+		if !found {
+			t.Errorf("no line in the file for %q", msg)
+		}
 	}
 }
 
 // The load-bearing promise: the three existing SetLogger(*log.Logger)
-// call sites keep their signature and their output now reaches BOTH the
-// file and the ring. If this regresses, an existing signal goes silent.
-func TestStdLoggerBridgeReachesBothFileAndBuffer(t *testing.T) {
+// call sites keep their signature and their Printf output still reaches
+// agent.log. If this regresses, a signal that exists today goes silent.
+func TestStdLoggerBridgeReachesTheFile(t *testing.T) {
 	var file bytes.Buffer
-	s := New(&file, slog.LevelInfo, 10)
+	s := New(&file, slog.LevelInfo)
 
 	s.StdFor("mcp").Printf("respawn failed: %v", errors.New("boom"))
 
-	if s.Buffer.Len() != 1 {
-		t.Fatalf("buffer holds %d entries, want 1 -- the bridge did not reach the ring", s.Buffer.Len())
+	got := file.String()
+	if !strings.Contains(got, "respawn failed: boom") {
+		t.Errorf("file got %q, want it to contain the Printf output", got)
 	}
-	got := s.Buffer.RecentEntries(1)[0]
-	if !strings.Contains(got.Message, "respawn failed: boom") {
-		t.Errorf("buffered message = %q, want it to contain the Printf output", got.Message)
+	if !strings.Contains(got, "component=mcp") {
+		t.Errorf("file entry is missing the component tag: %q", got)
 	}
-	if !strings.Contains(file.String(), "respawn failed: boom") {
-		t.Errorf("file got %q, want it to contain the Printf output", file.String())
-	}
-	if !strings.Contains(file.String(), "component=mcp") {
-		t.Errorf("file entry is missing the component tag: %q", file.String())
-	}
-}
-
-// A failing file write must not cost the overlay its copy of the entry.
-func TestBufferStillCapturesWhenFileWriteFails(t *testing.T) {
-	s := New(errWriter{}, slog.LevelInfo, 10)
-
-	s.For("agent").Error("the file is broken but this must still be visible")
-
-	if s.Buffer.Len() != 1 {
-		t.Fatalf("buffer holds %d entries, want 1 -- a failing file write swallowed the entry", s.Buffer.Len())
+	if !strings.Contains(got, "level=INFO") {
+		t.Errorf("bridged output should be written at INFO: %q", got)
 	}
 }
 
 func TestLevelFilteringApplies(t *testing.T) {
 	var file bytes.Buffer
-	s := New(&file, slog.LevelWarn, 10)
+	s := New(&file, slog.LevelWarn)
 
 	l := s.For("agent")
-	l.Debug("dropped")
-	l.Info("dropped")
-	l.Warn("kept")
-	l.Error("kept")
+	l.Debug("dropped-debug")
+	l.Info("dropped-info")
+	l.Warn("kept-warn")
+	l.Error("kept-error")
 
-	if s.Buffer.Len() != 2 {
-		t.Fatalf("buffer holds %d entries, want 2 (Warn and Error only)", s.Buffer.Len())
+	got := file.String()
+	for _, dropped := range []string{"dropped-debug", "dropped-info"} {
+		if strings.Contains(got, dropped) {
+			t.Errorf("%q should have been filtered out below Warn", dropped)
+		}
 	}
-	for _, e := range s.Buffer.RecentEntries(0) {
-		if e.Level < slog.LevelWarn {
-			t.Errorf("entry %q at level %v should have been filtered out", e.Message, e.Level)
+	for _, kept := range []string{"kept-warn", "kept-error"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%q should have been written", kept)
 		}
 	}
 }
 
-// A capacity below 1 must not produce a buffer that silently discards
-// everything written to it.
-func TestNonPositiveCapacityFallsBackToDefault(t *testing.T) {
-	b := NewBuffer(0)
-	b.Append(Entry{Message: "kept"})
-	if b.Len() != 1 {
-		t.Fatalf("Len = %d, want 1 -- a zero capacity must not discard writes", b.Len())
+// Structured attributes are the other thing this package adds over the
+// old Printf-only logger.
+func TestStructuredAttrsAreWritten(t *testing.T) {
+	var file bytes.Buffer
+	s := New(&file, slog.LevelInfo)
+
+	s.For("mesh").Error("call failed", slog.String("procedure", "mesh_list_realms"))
+
+	got := file.String()
+	if !strings.Contains(got, "procedure=mesh_list_realms") {
+		t.Errorf("structured attr missing from file line: %q", got)
+	}
+	if !strings.Contains(got, "level=ERROR") {
+		t.Errorf("level missing from file line: %q", got)
 	}
 }
 
-// The agent loop writes while the TUI reads. Run with -race.
-func TestConcurrentAppendAndRead(t *testing.T) {
+// slog.Default()'s own handler writes to STDERR, which corrupts the alt
+// screen. After SetDefault, a package-level call must land in the file.
+func TestSetDefaultRoutesPackageLevelCallsToTheFile(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
 	var file bytes.Buffer
-	s := New(&file, slog.LevelInfo, 100)
-	l := s.For("agent")
+	s := New(&file, slog.LevelInfo)
+	s.SetDefault()
 
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
-				l.Info("write")
-			}
-		}()
-	}
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
-				_ = s.Buffer.RecentEntries(20)
-				_ = s.Buffer.Len()
-			}
-		}()
-	}
-	wg.Wait()
+	slog.Warn("stray call from somewhere else")
 
-	if s.Buffer.Len() != 100 {
-		t.Errorf("Len = %d, want the ring to be full at 100", s.Buffer.Len())
-	}
-}
-
-// Attrs beyond component are carried, and component itself is lifted
-// out into its own field rather than left in the map.
-func TestAttrsCarriedAndComponentLifted(t *testing.T) {
-	var file bytes.Buffer
-	s := New(&file, slog.LevelInfo, 10)
-
-	s.For("mesh").Info("call failed", slog.String("procedure", "mesh_list_realms"))
-
-	got := s.Buffer.RecentEntries(1)[0]
-	if got.Component != "mesh" {
-		t.Errorf("Component = %q, want %q", got.Component, "mesh")
-	}
-	if _, present := got.Attrs[componentKey]; present {
-		t.Errorf("component should be lifted into its own field, not left in Attrs: %v", got.Attrs)
-	}
-	if got.Attrs["procedure"] != "mesh_list_realms" {
-		t.Errorf("Attrs[procedure] = %q, want %q", got.Attrs["procedure"], "mesh_list_realms")
+	if !strings.Contains(file.String(), "stray call from somewhere else") {
+		t.Errorf("package-level slog call did not reach the file: %q", file.String())
 	}
 }
