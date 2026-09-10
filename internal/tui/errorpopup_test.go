@@ -25,12 +25,18 @@ func keyPress(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
-func TestShowError_OpensPopupWithTheWholeMessage(t *testing.T) {
-	m := newTestModel(t)
-	m.lastErr = errors.New(realRefreshError)
+// failingRefresh puts an error through the real path -- the refresh loop
+// reporting a failure -- rather than assigning lastErr by hand. A new
+// error opens the pop-up on its own now, so this returns a model with it
+// already showing.
+func failingRefresh(t *testing.T, m Model, text string) Model {
+	t.Helper()
+	m, _ = m.handleRefresh(refreshMsg{err: errors.New(text)})
+	return m
+}
 
-	updated, _ := m.handleKey(keyPress("E"))
-	m = updated.(Model)
+func TestShowError_OpensPopupWithTheWholeMessage(t *testing.T) {
+	m := failingRefresh(t, newTestModel(t), realRefreshError)
 
 	if m.mode != ModeErrorPopup {
 		t.Fatalf("expected ModeErrorPopup, got %v", m.mode)
@@ -47,10 +53,7 @@ func TestShowError_OpensPopupWithTheWholeMessage(t *testing.T) {
 // dropped "-32602: Tool mesh_list_realms not found" would reproduce the bug
 // it exists to fix, just inside a border.
 func TestRenderErrorPopup_ShowsTheReasonAtTheEnd(t *testing.T) {
-	m := newTestModel(t)
-	m.lastErr = errors.New(realRefreshError)
-	updated, _ := m.handleKey(keyPress("E"))
-	m = updated.(Model)
+	m := failingRefresh(t, newTestModel(t), realRefreshError)
 
 	out := m.renderErrorPopup()
 	// The viewport wraps, so the text is broken across lines; compare on
@@ -72,10 +75,10 @@ func TestRenderErrorPopup_FitsWithinTheTerminalWidth(t *testing.T) {
 		m := newTestModel(t)
 		m.width, m.height = width, 24
 		m.resizeComponents()
-		m.lastErr = errors.New(realRefreshError)
-
-		updated, _ := m.handleKey(keyPress("E"))
-		m = updated.(Model)
+		m = failingRefresh(t, m, realRefreshError)
+		if m.errorPopup == nil {
+			t.Fatal("expected the pop-up open -- an empty render would pass this test without testing anything")
+		}
 
 		// Scoped to the pop-up, not the whole View: the shortcuts row is
 		// deliberately one long line that clips on a narrow terminal
@@ -96,17 +99,14 @@ func TestRenderErrorPopup_FitsWithinTheTerminalWidth(t *testing.T) {
 func TestErrorPopup_LongErrorScrollsAndSaysSo(t *testing.T) {
 	long := realRefreshError + " " + strings.Repeat("decode mesh_list_realms: invalid character 'x' looking for beginning of value at offset 8412. ", 12)
 
-	m := newTestModel(t)
-	m.lastErr = errors.New(long)
-	updated, _ := m.handleKey(keyPress("E"))
-	m = updated.(Model)
+	m := failingRefresh(t, newTestModel(t), long)
 
 	if !strings.Contains(m.renderErrorPopup(), "Scroll") {
 		t.Fatal("a pop-up with more content than fits must offer the scroll keys")
 	}
 
 	before := m.errorPopup.viewport.YOffset
-	updated, _ = m.handleKey(keyPress("j"))
+	updated, _ := m.handleKey(keyPress("j"))
 	m = updated.(Model)
 	if m.errorPopup.viewport.YOffset <= before {
 		t.Fatalf("expected j to scroll down, offset stayed at %d", m.errorPopup.viewport.YOffset)
@@ -131,12 +131,9 @@ func TestShowError_DoesNothingWithoutAnError(t *testing.T) {
 // Closing the reading of an error must not pretend the error stopped being
 // true. Only a successful refresh clears lastErr.
 func TestErrorPopup_EscClosesButKeepsLastErr(t *testing.T) {
-	m := newTestModel(t)
-	m.lastErr = errors.New(realRefreshError)
-	updated, _ := m.handleKey(keyPress("E"))
-	m = updated.(Model)
+	m := failingRefresh(t, newTestModel(t), realRefreshError)
 
-	updated, _ = m.handleKey(keyPress("esc"))
+	updated, _ := m.handleKey(keyPress("esc"))
 	m = updated.(Model)
 
 	if m.mode != ModeNormal {

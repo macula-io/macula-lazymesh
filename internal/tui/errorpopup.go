@@ -60,6 +60,7 @@ const (
 // to here and the viewport shows them as-is.
 type errorPopup struct {
 	text       string
+	index      int // which errorHistory entry is showing
 	viewport   viewport.Model
 	copied     copyStatus
 	copyErrMsg string
@@ -123,6 +124,10 @@ func (m Model) handleErrorPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, DefaultKeyMap.OlderError):
+		return m.openErrorPopup(m.errorPopup.index - 1), nil
+	case key.Matches(msg, DefaultKeyMap.NewerError):
+		return m.openErrorPopup(m.errorPopup.index + 1), nil
 	case key.Matches(msg, DefaultKeyMap.Copy):
 		if err := clipboard.WriteAll(m.errorPopup.text); err != nil {
 			m.errorPopup.copied = copyFailed
@@ -170,13 +175,33 @@ func (e errorPopup) copyLine() string {
 	}
 }
 
+// errorPopupHeading names which error out of how many, how often it has
+// come back, and when it was FIRST seen. First rather than last on
+// purpose: a repeating failure's earliest sighting is the one whose
+// timestamp tells you when things actually started going wrong.
+func (m Model) errorPopupHeading() string {
+	e := m.errorPopup
+	title := fmt.Sprintf("⚠ Error %d of %d", e.index+1, len(m.errorHistory))
+	if e.index < 0 || e.index >= len(m.errorHistory) {
+		return errorPopupTitleStyle.Render("⚠ Error")
+	}
+	rec := m.errorHistory[e.index]
+
+	detail := rec.first.Format("15:04:05")
+	if rec.count > 1 {
+		detail = fmt.Sprintf("%s, seen %d times, first at %s",
+			rec.last.Format("15:04:05"), rec.count, rec.first.Format("15:04:05"))
+	}
+	return errorPopupTitleStyle.Render(title) + popupHintStyle.Render("   "+detail)
+}
+
 func (m Model) renderErrorPopup() string {
 	e := m.errorPopup
 	if e == nil {
 		return ""
 	}
 	parts := []string{
-		errorPopupTitleStyle.Render("⚠ Last error"),
+		m.errorPopupHeading(),
 		"",
 		e.viewport.View(),
 		"",
@@ -184,7 +209,11 @@ func (m Model) renderErrorPopup() string {
 	if line := e.copyLine(); line != "" {
 		parts = append(parts, line, "")
 	}
+
 	hint := "[c] Copy   [esc] Close"
+	if len(m.errorHistory) > 1 {
+		hint = "[p] Older   [n] Newer   " + hint
+	}
 	if e.viewport.TotalLineCount() > e.viewport.Height {
 		hint = "[k/↑ j/↓] Scroll   " + hint
 	}

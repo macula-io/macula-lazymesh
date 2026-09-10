@@ -180,6 +180,16 @@ type Model struct {
 	// so closing the pop-up does not pretend the error went away.
 	errorPopup *errorPopup
 
+	// Distinct errors seen this run, oldest first, bounded. A repeating
+	// refresh failure is one entry with a count, not one entry per tick.
+	errorHistory []errorRecord
+
+	// A new error is waiting to be shown. Set when one first appears,
+	// cleared when the pop-up actually opens -- which may be several
+	// keystrokes later, if the operator was composing or reading an
+	// overlay at the time.
+	autoPopPending bool
+
 	// The `r` panel's own join affordance -- realmjoin.Join is called
 	// directly from here, never through m.mcp/the agent's own tool
 	// chain (see internal/realmjoin's own doc comment). realmJoinInput
@@ -477,7 +487,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tickMsg:
-		return m, tea.Batch(m.refreshCmd(), tick())
+		return m.maybeAutoPopError(), tea.Batch(m.refreshCmd(), tick())
 
 	case refreshMsg:
 		return m.handleRefresh(msg)
@@ -500,7 +510,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleKey applies the keypress, then shows any error that was held
+// back while the operator was busy. The check lives here rather than in
+// Update's dispatch so it holds for every caller, including tests
+// driving keys directly.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.applyKey(msg)
+	next, ok := updated.(Model)
+	if !ok {
+		return updated, cmd
+	}
+	return next.maybeAutoPopError(), cmd
+}
+
+func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, DefaultKeyMap.ForceQuit) {
 		return m, tea.Quit
 	}
@@ -694,13 +717,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showChatter = !m.showChatter
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ShowError):
-		if m.lastErr == nil {
-			return m, nil
-		}
-		e := newErrorPopup(m.lastErr.Error(), m.width, m.height)
-		m.errorPopup = &e
-		m.mode = ModeErrorPopup
-		return m, nil
+		// Opens on the newest and steps back from there. An error that
+		// has already been dismissed is still reachable, which is the
+		// point of keeping the list at all.
+		return m.openErrorPopup(len(m.errorHistory) - 1), nil
 	case key.Matches(msg, DefaultKeyMap.Up):
 		if m.meshServicesExpanded {
 			if m.meshServicesCursor > 0 {
@@ -727,7 +747,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
 		m.lastErr = msg.err
-		return m, nil
+		// Only a FIRST sighting asks for the screen. The refresh loop
+		// runs every two seconds, so popping per occurrence would put
+		// the program behind a box that reopens faster than it can be
+		// dismissed.
+		if m.recordError(msg.err, time.Now()) {
+			m.autoPopPending = true
+		}
+		return m.maybeAutoPopError(), nil
 	}
 	prev := m.state
 	m.lastErr = nil
