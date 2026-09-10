@@ -26,9 +26,12 @@ type KeyMap struct {
 	Decline key.Binding
 	Trust   key.Binding
 
-	// Error pop-up. ShowError opens it from normal mode; Copy only means
-	// anything once it is open. Shift-E, not "e", because "e" is already
-	// the chat detail toggle.
+	// The log overlay. Opens and closes on the same key.
+	ToggleLogs key.Binding
+
+	// Error pop-up. ShowError opens it from normal mode; Copy, OlderError
+	// and NewerError only mean anything once it is open. Shift-E, not
+	// "e", because "e" is already the chat detail toggle.
 	ShowError  key.Binding
 	Copy       key.Binding
 	OlderError key.Binding // p -- step back through the error history
@@ -53,6 +56,7 @@ var DefaultKeyMap = KeyMap{
 	Answer:             key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "answer")),
 	Decline:            key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "decline")),
 	Trust:              key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "answer + trust")),
+	ToggleLogs:         key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 	ShowError:          key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "show recent errors")),
 	Copy:               key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 	OlderError:         key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "older error")),

@@ -21,6 +21,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
@@ -72,6 +73,10 @@ const (
 	// the others -- "c" means copy only while it is open, and "esc"
 	// closes it rather than leaving whatever mode was underneath.
 	ModeErrorPopup
+	// ModeLogs: the l overlay, reading internal/logging's in-memory ring.
+	// Its own mode rather than another *Expanded flag, so it scrolls and
+	// closes the same way the error dialog does.
+	ModeLogs
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -121,6 +126,16 @@ type Options struct {
 	// mesh presence uses.
 	MaculaMCPVersion  string
 	RealmIdentityFile string
+
+	// LogBuffer backs the l overlay. Nil is a normal state: the wiring
+	// that fills it lives in main.go and lands separately, so the overlay
+	// shows its empty state rather than failing.
+	LogBuffer *logging.Buffer
+
+	// LogPath is the append-mode file holding the across-runs history,
+	// named in the overlay's empty state so an operator on a fresh window
+	// knows where the rest of it is.
+	LogPath string
 }
 
 // Model is the bubbletea model for lazymesh's TUI.
@@ -183,6 +198,10 @@ type Model struct {
 	// Distinct errors seen this run, oldest first, bounded. A repeating
 	// refresh failure is one entry with a count, not one entry per tick.
 	errorHistory []errorRecord
+
+	logsPopup *logsPopup
+	logBuffer *logging.Buffer
+	logPath   string
 
 	// A new error is waiting to be shown. Set when one first appears,
 	// cleared when the pop-up actually opens -- which may be several
@@ -266,6 +285,8 @@ func New(client toolCaller, opts Options) Model {
 		mode:                 ModeNormal,
 		statusBarPosition:    statusBarPosition,
 		agentModel:           opts.AgentModel,
+		logBuffer:            opts.LogBuffer,
+		logPath:              opts.LogPath,
 		input:                ti,
 		realmJoinInput:       realmInput,
 		meshServiceCallInput: serviceCallInput,
@@ -536,6 +557,10 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleErrorPopupKey(msg)
 	}
 
+	if m.mode == ModeLogs {
+		return m.handleLogsKey(msg)
+	}
+
 	// Works from either Normal or Insert -- composing in $EDITOR is useful
 	// as a way INTO a message (from Normal) just as much as a way to
 	// finish one already started (from Insert), and always lands in
@@ -715,6 +740,11 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
 		m.showChatter = !m.showChatter
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleLogs):
+		p := m.newLogsPopup()
+		m.logsPopup = &p
+		m.mode = ModeLogs
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ShowError):
 		// Opens on the newest and steps back from there. An error that
@@ -955,6 +985,14 @@ func (m Model) View() string {
 	// principle as the mesh view's own expand/collapse.
 	if m.mode == ModeRingPopup && m.pendingRingPopup != nil {
 		popup := m.renderRingPopup()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
+	if m.mode == ModeLogs && m.logsPopup != nil {
+		popup := m.renderLogsPopup()
 		if m.statusBarPosition == "top" {
 			return strings.Join([]string{status, popup}, "\n")
 		}
