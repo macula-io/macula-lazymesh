@@ -26,7 +26,8 @@ type KeyMap struct {
 	Decline key.Binding
 	Trust   key.Binding
 
-	// The log overlay. Opens and closes on the same key.
+	// Opens the agent log in $EDITOR. Not an overlay: the log is already a
+	// file, and an editor already searches and scrolls it better.
 	ToggleLogs key.Binding
 
 	// Error pop-up. ShowError opens it from normal mode; Copy, OlderError

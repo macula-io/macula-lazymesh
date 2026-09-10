@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
-	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
@@ -73,10 +71,6 @@ const (
 	// the others -- "c" means copy only while it is open, and "esc"
 	// closes it rather than leaving whatever mode was underneath.
 	ModeErrorPopup
-	// ModeLogs: the l overlay, reading internal/logging's in-memory ring.
-	// Its own mode rather than another *Expanded flag, so it scrolls and
-	// closes the same way the error dialog does.
-	ModeLogs
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -127,14 +121,11 @@ type Options struct {
 	MaculaMCPVersion  string
 	RealmIdentityFile string
 
-	// LogBuffer backs the l overlay. Nil is a normal state: the wiring
-	// that fills it lives in main.go and lands separately, so the overlay
-	// shows its empty state rather than failing.
-	LogBuffer *logging.Buffer
-
-	// LogPath is the append-mode file holding the across-runs history,
-	// named in the overlay's empty state so an operator on a fresh window
-	// knows where the rest of it is.
+	// LogPath is the append-mode agent log. The `l` key opens it in
+	// $EDITOR rather than rendering it: the file already exists, and an
+	// editor already has search, jumping, copy and highlighting that an
+	// overlay would only reimplement worse. Empty when not wired, which
+	// `l` reports rather than opening an editor on nothing.
 	LogPath string
 }
 
@@ -199,9 +190,7 @@ type Model struct {
 	// refresh failure is one entry with a count, not one entry per tick.
 	errorHistory []errorRecord
 
-	logsPopup *logsPopup
-	logBuffer *logging.Buffer
-	logPath   string
+	logPath string
 
 	// A new error is waiting to be shown. Set when one first appears,
 	// cleared when the pop-up actually opens -- which may be several
@@ -285,7 +274,6 @@ func New(client toolCaller, opts Options) Model {
 		mode:                 ModeNormal,
 		statusBarPosition:    statusBarPosition,
 		agentModel:           opts.AgentModel,
-		logBuffer:            opts.LogBuffer,
 		logPath:              opts.LogPath,
 		input:                ti,
 		realmJoinInput:       realmInput,
@@ -359,15 +347,7 @@ func openEditorCmd(current string) tea.Cmd {
 		return func() tea.Msg { return editorFinishedMsg{path: path, err: closeErr} }
 	}
 
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vi"
-	}
-	c := exec.Command(editor, path)
-	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return tea.ExecProcess(c, func(err error) tea.Msg {
+	return runEditorCmd(path, func(err error) tea.Msg {
 		return editorFinishedMsg{path: path, err: err}
 	})
 }
@@ -522,6 +502,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editorFinishedMsg:
 		return m.handleEditorFinished(msg)
 
+	case logViewedMsg:
+		return m.handleLogViewed(msg)
+
 	case realmJoinEventMsg:
 		return m.handleRealmJoinEvent(msg)
 
@@ -555,10 +538,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.mode == ModeErrorPopup {
 		return m.handleErrorPopupKey(msg)
-	}
-
-	if m.mode == ModeLogs {
-		return m.handleLogsKey(msg)
 	}
 
 	// Works from either Normal or Insert -- composing in $EDITOR is useful
@@ -742,10 +721,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showChatter = !m.showChatter
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleLogs):
-		p := m.newLogsPopup()
-		m.logsPopup = &p
-		m.mode = ModeLogs
-		return m, nil
+		return m.openAgentLog()
 	case key.Matches(msg, DefaultKeyMap.ShowError):
 		// Opens on the newest and steps back from there. An error that
 		// has already been dismissed is still reachable, which is the
@@ -985,14 +961,6 @@ func (m Model) View() string {
 	// principle as the mesh view's own expand/collapse.
 	if m.mode == ModeRingPopup && m.pendingRingPopup != nil {
 		popup := m.renderRingPopup()
-		if m.statusBarPosition == "top" {
-			return strings.Join([]string{status, popup}, "\n")
-		}
-		return strings.Join([]string{popup, status}, "\n")
-	}
-
-	if m.mode == ModeLogs && m.logsPopup != nil {
-		popup := m.renderLogsPopup()
 		if m.statusBarPosition == "top" {
 			return strings.Join([]string{status, popup}, "\n")
 		}
