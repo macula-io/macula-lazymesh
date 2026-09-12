@@ -44,13 +44,19 @@ func (m Model) chatPaneTop() int {
 	return 0
 }
 
-// handleMouse routes mouse events: a shift+drag begins, extends and ends
-// a chat-pane selection (copied to the clipboard on release); the wheel
-// scrolls the chat when it is the surface on screen. Overlays own the
-// screen while open, and popup modes answer keys, not mice.
+// handleMouse routes mouse events: a left-button drag begins, extends
+// and ends a chat-pane selection (copied to the clipboard on release);
+// the wheel scrolls the chat when it is the surface on screen. Overlays
+// own the screen while open, and popup modes answer keys, not mice.
+//
+// A PLAIN drag selects, not just shift+drag (2026-09-12, live): some
+// terminals (kitty) consume shift+drag for their own native selection
+// and never hand it to the app, while others hand everything over — so
+// the app must select on the plain events it is guaranteed to receive,
+// and the shift convention degrades gracefully either way.
 func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	switch {
-	case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Shift:
+	case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 		if m.chatOnScreen() {
 			m.sel = selectionState{anchorRow: msg.Y, endRow: msg.Y, active: true}
 		}

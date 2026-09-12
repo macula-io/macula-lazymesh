@@ -107,14 +107,25 @@ func TestSelectionOverlayReversesOnlyPaneRows(t *testing.T) {
 	}
 }
 
-// TestPlainDragDoesNotSelect pins the convention: only shift+drag
-// selects; a plain left press goes to the viewport (and nothing else).
-func TestPlainDragDoesNotSelect(t *testing.T) {
+// TestPlainDragSelects pins the 2026-09-12 live fix: a PLAIN left drag
+// selects too, because some terminals (kitty) keep shift+drag for their
+// own native selection and the app only ever receives plain events.
+func TestPlainDragSelects(t *testing.T) {
 	m := newTestModel(t)
 	m = fillChat(t, m, 30)
 	updated, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 0, Y: 2})
 	m = updated.(Model)
+	if !m.sel.active {
+		t.Fatal("a plain left press did not begin a selection")
+	}
+	updated, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft, X: 0, Y: 6})
+	m = updated.(Model)
+	if m.sel.endRow != 6 {
+		t.Fatalf("plain drag did not extend the selection: endRow = %d", m.sel.endRow)
+	}
+	updated, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionRelease, X: 0, Y: 6})
+	m = updated.(Model)
 	if m.sel.active {
-		t.Fatal("a plain left press began a selection")
+		t.Fatal("release did not clear the selection")
 	}
 }
