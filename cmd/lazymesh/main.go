@@ -34,6 +34,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
+	"github.com/macula-io/macula-lazymesh/internal/scheduler"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
@@ -312,6 +313,11 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		}
 	}()
 
+	// The scheduler (G13): the control socket's schedule message arms a
+	// deferred prompt; the driver consumes it as its next wakeup.
+	schedulerMgr := scheduler.New()
+	defer schedulerMgr.Stop()
+
 	// The control plane (D1): a unix socket speaking NDJSON both ways,
 	// attached to the same bus the TUI uses. input lands on userInputCh
 	// exactly like the compose line; queries read live session and mesh
@@ -332,6 +338,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			Query:     buildQueryHandler(node, sessPid, client),
 			Interrupt: func() { sessionhost.Interrupt(sessPid) },
 			Approve:   func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
+			Schedule:  schedulerMgr.Schedule,
 			SessionID: resolvedSessionID,
 			Model:     providerLabel(cfg) + "/" + cfg.Model,
 			Log:       logStack.StdFor("frontend"),
@@ -342,7 +349,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		defer ctrl.Close()
 	}
 
-	go runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh)
+	go runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals())
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -769,7 +776,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // failure falls into the ordinary backoff accounting. Room/ring waiting
 // stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
 // this function supplies the cadence, driven by real events.
-func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string) {
+func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string, wakeups <-chan string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
 	prompt := agentInitialPrompt
@@ -789,7 +796,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
 				}
-				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 				continue
 			}
 			sessPid = newPid
@@ -806,7 +813,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
 				}
-				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 				continue
 			}
 			sessPid = newPid
@@ -820,7 +827,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// the fact it is, and whatever the operator typed next (or
 			// the next room/ring event) picks the cadence back up.
 			agentLog.Printf("lazymesh agent: turn interrupted")
-			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 			continue
 		}
 		if reply.Err != nil {
@@ -830,7 +837,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, reply.Err) {
 				return
 			}
-			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 			continue
 		}
 
@@ -848,7 +855,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 		// session.runSay); this driver emits it only on the failure
 		// path, where no session events are in flight.
 		var ok bool
-		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 		if !ok {
 			return
 		}
@@ -1091,7 +1098,7 @@ func ringArrivalPrompt(r ringwaiter.Ring) string {
 //
 // Returns ok=false only when ctx is done -- the caller should stop the
 // loop, not call Say with an empty prompt.
-func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager) (string, bool) {
+func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, wakeups <-chan string) (string, bool) {
 	if waiterMgr == nil || ringMgr == nil {
 		return nextPrompt(userInputCh, "check for anything new"), true
 	}
@@ -1112,6 +1119,11 @@ func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwa
 		return roomArrivalPrompt(arrival.RoomTopic), true
 	case ring := <-ringMgr.Arrivals():
 		return ringArrivalPrompt(ring), true
+	case prompt := <-wakeups:
+		// A deferred prompt fired (G13): the operator scheduled it, so
+		// it arrives as-is — no room/ring wrapper, the prompt IS the
+		// instruction.
+		return prompt, true
 	}
 }
 

@@ -270,3 +270,46 @@ func TestApproveControlMessageAndApprovalRequestWire(t *testing.T) {
 		t.Fatal("Approve func never called")
 	}
 }
+
+// TestScheduleControlMessage pins G13's socket half: a schedule message
+// parses its RFC3339 time and reaches the wired Schedule func, with the
+// scheduled ack back on the wire; a malformed time gets an error reply.
+func TestScheduleControlMessage(t *testing.T) {
+	scheduled := make(chan [2]any, 1)
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	s, err := Start(Options{
+		Path:      path,
+		Input:     make(chan string, 8),
+		Events:    make(chan agent.Event, 8),
+		Schedule:  func(at time.Time, prompt string) error { scheduled <- [2]any{at, prompt}; return nil },
+		SessionID: "sched-test",
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c := dial(t, path)
+	c.line(t) // handshake
+
+	at := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	c.send(t, `{"type":"schedule","at":"`+at.Format(time.RFC3339)+`","prompt":"check the mesh"}`)
+	ack := c.line(t)
+	if ack["type"] != "scheduled" {
+		t.Fatalf("schedule ack = %v", ack)
+	}
+	select {
+	case got := <-scheduled:
+		if !got[0].(time.Time).Equal(at) || got[1] != "check the mesh" {
+			t.Fatalf("schedule call = %v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Schedule func never called")
+	}
+
+	c.send(t, `{"type":"schedule","at":"not-a-time","prompt":"x"}`)
+	line := c.line(t)
+	if line["type"] != "error" {
+		t.Fatalf("expected an error reply for a malformed time, got %v", line)
+	}
+}

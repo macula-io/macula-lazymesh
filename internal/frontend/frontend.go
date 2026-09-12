@@ -19,6 +19,7 @@
 //	  {"type":"input","session_id":"<id>","text":"<user message>"}
 //	  {"type":"interrupt"}
 //	  {"type":"approve","id":"<approval-id>","allow":1}   (1 allow, 0 deny)
+//	  {"type":"schedule","at":"<RFC3339>","prompt":"..."} (wakes the agent with prompt at that time; ack: {"type":"scheduled","at":...})
 //	  {"type":"query","what":"status|rooms|inbox|agents|realms"}
 //	  {"type":"shutdown"}
 //	lazymesh -> controller:
@@ -65,7 +66,9 @@ type Server struct {
 	interrupt func()
 	// approve answers an approval request; nil means not wired.
 	approve func(id string, allow bool)
-	session sessionInfo
+	// schedule arms a deferred prompt; nil means not wired.
+	schedule func(at time.Time, prompt string) error
+	session  sessionInfo
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -101,6 +104,9 @@ type Options struct {
 	// Approve answers an approval request (G9) when a controller sends an
 	// approve control message; nil means not wired.
 	Approve func(id string, allow bool)
+	// Schedule arms a deferred prompt (G13) when a controller sends a
+	// schedule control message; nil means not wired.
+	Schedule func(at time.Time, prompt string) error
 	// SessionID identifies this lazymesh session to controllers (the
 	// --session-id flag, or a generated default).
 	SessionID string
@@ -146,6 +152,7 @@ func Start(opts Options) (*Server, error) {
 		query:     opts.Query,
 		interrupt: opts.Interrupt,
 		approve:   opts.Approve,
+		schedule:  opts.Schedule,
 		session:   sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
 		ln:        ln,
 		conns:     make(map[net.Conn]*connection),
@@ -277,6 +284,8 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 		What      string `json:"what"`
 		ID        string `json:"id"`
 		Allow     int    `json:"allow"`
+		At        string `json:"at"`
+		Prompt    string `json:"prompt"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		reply(map[string]any{"type": "error", "error": "malformed control message"})
@@ -313,6 +322,26 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 			return true
 		}
 		s.approve(msg.ID, msg.Allow == 1)
+		return true
+	case "schedule":
+		if s.schedule == nil {
+			reply(map[string]any{"type": "error", "error": "schedule is not wired"})
+			return true
+		}
+		at, err := time.Parse(time.RFC3339, msg.At)
+		if err != nil {
+			reply(map[string]any{"type": "error", "error": "schedule requires a valid RFC3339 at: " + err.Error()})
+			return true
+		}
+		if msg.Prompt == "" {
+			reply(map[string]any{"type": "error", "error": "schedule requires a prompt"})
+			return true
+		}
+		if err := s.schedule(at, msg.Prompt); err != nil {
+			reply(map[string]any{"type": "error", "error": err.Error()})
+			return true
+		}
+		reply(map[string]any{"type": "scheduled", "at": msg.At})
 		return true
 	case "query":
 		if s.query == nil {

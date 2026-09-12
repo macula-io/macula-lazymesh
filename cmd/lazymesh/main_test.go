@@ -465,7 +465,7 @@ func TestParseAnsweredRingRoom_MalformedReturnsFalse(t *testing.T) {
 func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "from the human"
-	got, ok := nextEvent(context.Background(), ch, nil, nil)
+	got, ok := nextEvent(context.Background(), ch, nil, nil, nil)
 	if !ok || got != "from the human" {
 		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
 	}
@@ -477,7 +477,7 @@ func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "human message"
 
-	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr)
+	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr, nil)
 	if !ok || got != "human message" {
 		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
 	}
@@ -490,7 +490,7 @@ func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
 	cancel()
 	ch := make(chan string)
 
-	_, ok := nextEvent(ctx, ch, mgr, ringMgr)
+	_, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
 	if ok {
 		t.Fatalf("expected nextEvent to report !ok once ctx is done")
 	}
@@ -513,7 +513,7 @@ func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
 	mgr.Sync(ctx, []string{"agents.room.deadbeef"})
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, ringMgr)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
@@ -546,7 +546,7 @@ func TestNextEvent_ConsumesARealRingArrival(t *testing.T) {
 	ringMgr.Start(ctx)
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, ringMgr)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
@@ -691,5 +691,20 @@ func TestLocalInstructionsTruncatesOversizedFiles(t *testing.T) {
 	}
 	if len(got) > maxLocalInstructionsBytes+2000 {
 		t.Fatalf("truncated instructions grew unexpectedly: %d bytes", len(got))
+	}
+}
+
+// TestNextEvent_WakeupDeliversPromptVerbatim pins G13's driver half: a
+// scheduled wakeup arrives as the next prompt, unwrapped — the operator
+// wrote it, it IS the instruction.
+func TestNextEvent_WakeupDeliversPromptVerbatim(t *testing.T) {
+	wakeups := make(chan string, 4)
+	wakeups <- "check the mesh now"
+	got, ok := nextEvent(context.Background(), make(chan string, 1), nil, nil, wakeups)
+	if !ok {
+		t.Fatal("nextEvent reported the driver should stop")
+	}
+	if got != "check the mesh now" {
+		t.Fatalf("wakeup prompt = %q", got)
 	}
 }
