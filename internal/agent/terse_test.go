@@ -97,8 +97,10 @@ func TestTerseDescriptionSource_MeshSayGetsFullReplacementShorterThanReal(t *tes
 	if len(meshSay.Description) >= len(realDescriptionsAsOf025_2["mesh_say"]) {
 		t.Fatalf("expected mesh_say's terse description shorter than the real one")
 	}
-	if strings.Contains(meshSay.Description, "lane_claimed") || strings.Contains(meshSay.Description, "claim_confirmed") {
-		t.Fatalf("expected the unused lane/claim workflow dropped from mesh_say's description, got: %s", meshSay.Description)
+	// G11 (2026-09-12): the lane/claim workflow is RESTORED to the
+	// description — the handoff grammar is part of the agent's job now.
+	if !strings.Contains(meshSay.Description, "lane_claimed") || !strings.Contains(meshSay.Description, "claim_confirmed") {
+		t.Fatalf("expected the lane/claim grammar in mesh_say's description, got: %s", meshSay.Description)
 	}
 	schema, ok := meshSay.InputSchema.(map[string]any)
 	if !ok {
@@ -116,14 +118,16 @@ func TestTerseDescriptionSource_MeshSayGetsFullReplacementShorterThanReal(t *tes
 	if !ok {
 		t.Fatalf("expected kind's enum to be a []string")
 	}
-	for _, dropped := range []string{"lane_claimed", "lane_released", "claim_confirmed", "claim_disputed", "task_handed_over", "result_reported", "room_opened", "participant_joined", "participant_left", "room_closed"} {
+	// G11: the model-emittable conversation kinds are restored; only the
+	// room-tool lifecycle kinds stay out.
+	for _, dropped := range []string{"room_opened", "participant_joined", "participant_left", "room_closed"} {
 		for _, v := range kindEnum {
 			if v == dropped {
-				t.Fatalf("expected %q dropped from mesh_say's kind enum, still present: %v", dropped, kindEnum)
+				t.Fatalf("expected lifecycle kind %q absent from mesh_say's kind enum, still present: %v", dropped, kindEnum)
 			}
 		}
 	}
-	for _, required := range []string{"remark_made", "question_asked", "answer_given"} {
+	for _, required := range []string{"remark_made", "question_asked", "answer_given", "task_handed_over", "result_reported", "lane_claimed", "lane_released", "claim_confirmed", "claim_disputed"} {
 		found := false
 		for _, v := range kindEnum {
 			if v == required {

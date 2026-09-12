@@ -535,13 +535,17 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 		sources = append(sources, local)
 	}
 	combined := agent.NewMultiSource(sources...)
-	allowed := agent.NewAllowlistSource(combined, resolveAllowlist(cfg))
+	var gated agent.ToolSource = agent.NewAllowlistSource(combined, resolveAllowlist(cfg))
+	// G11: the handoff-discipline wrapper sits AFTER the allowlist (only
+	// allowed calls matter) and enforces the reply-kind in_reply_to rule
+	// at the boundary.
+	gated = agent.NewHandoffSource(gated)
 
 	// Terse-ified last, after allowlisting -- see internal/agent/terse.go's
 	// own doc comment (R2, 2026-09-07): only shortens what actually
 	// reaches the model, never wastes work rewriting a tool the allowlist
 	// would filter out anyway.
-	return agent.NewTerseDescriptionSource(allowed), nil
+	return agent.NewTerseDescriptionSource(gated), nil
 }
 
 // resolveAllowlist is the single place cfg.ToolAllowlist gets defaulted,
@@ -689,6 +693,17 @@ func localInstructions(dir string) string {
 	return b.String()
 }
 
+// meshGrammarLine is the envelope-kind grammar the model must follow
+// (G11, 2026-09-12): the kinds exist so rooms stay readable and work
+// stays attributable, and every reply kind names the message it answers.
+const meshGrammarLine = "Mesh conversation grammar: choose mesh_say's kind deliberately. " +
+	"A question_asked expects an answer_given; a task_handed_over expects a result_reported " +
+	"from whoever took it; a lane_claimed on work you picked up expects a lane_released once " +
+	"you are done or dropping it; claim_confirmed/claim_disputed weigh in on someone's " +
+	"result_reported. Every reply kind (answer_given, result_reported, lane_released, " +
+	"claim_confirmed, claim_disputed) REQUIRES in_reply_to set to the message_id it answers, " +
+	"which you read from mesh_read_inbox -- a reply without it is refused."
+
 // buildSystemPrompt is the agent's fixed opening instruction, pulled out of
 // runAgent as its own pure function so the room-scoping behavior (macula-
 // io/macula-lazymesh#1) has a direct unit test independent of the loop's
@@ -760,6 +775,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"they fit naturally. Don't force it into every message, and keep it to conversation " +
 			"text, not tool arguments."
 	}
+	systemPrompt += "\n\n" + meshGrammarLine
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
 	}

@@ -228,8 +228,11 @@ var terseSchemaOverrides = map[string]mcpclient.Tool{
 		Name: "mesh_say",
 		Description: "Say something in a room, or broadcast on central (agents.lobby -- for " +
 			"help_requested/help_offered only, not conversation). Publishes one envelope with your " +
-			"node id. kind defaults to remark_made; question_asked expects an answer_given reply " +
-			"with in_reply_to set to the question's message_id. Joins the room first if you're not " +
+			"node id. kind defaults to remark_made; question_asked expects an answer_given reply, " +
+			"task_handed_over expects a result_reported, lane_claimed expects a lane_released once " +
+			"you're done, claim_confirmed/claim_disputed weigh in on a result_reported -- and every " +
+			"reply kind REQUIRES in_reply_to set to the message_id it answers (read it from " +
+			"mesh_read_inbox; a reply without it is refused). Joins the room first if you're not " +
 			"in it yet.",
 		InputSchema: map[string]any{
 			"type": "object",
@@ -243,8 +246,13 @@ var terseSchemaOverrides = map[string]mcpclient.Tool{
 					"description": "The message.",
 				},
 				"kind": map[string]any{
-					"type":        "string",
-					"enum":        []string{"remark_made", "question_asked", "answer_given", "help_requested", "help_offered"},
+					"type": "string",
+					// G11 (2026-09-12): the full set of kinds an agent
+					// can EMIT. The lifecycle kinds (room_opened,
+					// participant_joined/left, room_closed) stay out --
+					// those are published by the room tools, never by a
+					// mesh_say call.
+					"enum":        []string{"remark_made", "question_asked", "answer_given", "help_requested", "help_offered", "task_handed_over", "result_reported", "lane_claimed", "lane_released", "claim_confirmed", "claim_disputed"},
 					"description": "Default remark_made.",
 				},
 				"in_reply_to": map[string]any{
@@ -252,7 +260,7 @@ var terseSchemaOverrides = map[string]mcpclient.Tool{
 					"minLength":   32,
 					"maxLength":   32,
 					"pattern":     "^[0-9a-f]+$",
-					"description": "message_id this replies to. Required for answer_given.",
+					"description": "message_id this replies to. REQUIRED for answer_given, result_reported, lane_released, claim_confirmed and claim_disputed.",
 				},
 			},
 			"required": []string{"room_topic", "text"},

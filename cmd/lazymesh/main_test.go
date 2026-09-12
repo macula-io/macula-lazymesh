@@ -700,11 +700,24 @@ func TestLocalInstructionsTruncatesOversizedFiles(t *testing.T) {
 func TestNextEvent_WakeupDeliversPromptVerbatim(t *testing.T) {
 	wakeups := make(chan string, 4)
 	wakeups <- "check the mesh now"
-	got, ok := nextEvent(context.Background(), make(chan string, 1), nil, nil, wakeups)
+	mgr := roomwaiter.New(nil, "")
+	ringMgr := ringwaiter.New(nil, "")
+	got, ok := nextEvent(context.Background(), make(chan string, 1), mgr, ringMgr, wakeups)
 	if !ok {
 		t.Fatal("nextEvent reported the driver should stop")
 	}
 	if got != "check the mesh now" {
 		t.Fatalf("wakeup prompt = %q", got)
+	}
+}
+
+// TestBuildSystemPrompt_TeachesHandoffGrammar pins G11's prompting half:
+// the grammar paragraph names the reply kinds and the in_reply_to rule.
+func TestBuildSystemPrompt_TeachesHandoffGrammar(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, false, "")
+	for _, want := range []string{"in_reply_to", "answer_given", "result_reported", "lane_claimed", "lane_released", "claim_confirmed", "task_handed_over"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("grammar missing %q in the system prompt", want)
+		}
 	}
 }

@@ -736,8 +736,23 @@ become long-running.
       socket approve round trip, summarization presence, failure
       fallback + EventError, and the pre-G6 boundary discipline
       (turn-cut, tool-call/result pairing) pinned on the fallback path.
-- [ ] **Phase 7 — Handoff discipline.** Envelope-kind prompting +
-      schema restoration + `in_reply_to` injection wrapper (G11).
+- [x] **Phase 7 — Handoff discipline (G11).** Landed 2026-09-12: the
+      system prompt now teaches the envelope grammar (question→answer,
+      task→result, lane claim→release, claims weigh in on results; every
+      reply kind REQUIRES in_reply_to naming the message it answers); the
+      terse mesh_say schema restored the full model-emittable kind enum
+      (the lifecycle kinds stay out — those are published by the room
+      tools, never by mesh_say) and updated the in_reply_to description;
+      and `agent.HandoffSource` enforces the rule at the boundary — a
+      reply kind without a well-formed 32-hex in_reply_to is refused
+      BEFORE it reaches the mesh, with the model told to supply the
+      message_id it read from mesh_read_inbox. Deliberately validation,
+      not injection: the harness cannot know which message the model
+      intends to answer, so guessing an id would be worse than refusing.
+      Proven by tests: refusal for every reply kind + malformed ids,
+      permission for well-formed replies and plain kinds, pass-through
+      for non-mesh_say tools, grammar presence in the prompt, and the
+      restored terse enum (lifecycle kinds still excluded).
 - [ ] **Phase 8 — Anthropic provider, metrics, allowlist merge-mode
       fix.** (G14, G16, G18.)
 
