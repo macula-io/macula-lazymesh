@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -195,8 +196,12 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// anything else starts, so a genuinely undersized context window
 	// fails fast with a clear message instead of the same class of
 	// crash the runaway-context incident already produced once.
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled)
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(wd))
 	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
 		return err
 	}
@@ -252,10 +257,6 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	dataDir, err := sessionstore.DefaultDataDir()
 	if err != nil {
 		return fmt.Errorf("resolve session store dir: %w", err)
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolve working directory: %w", err)
 	}
 	sessionStore, err := sessionstore.New(dataDir, sessionstore.Fingerprint(wd))
 	if err != nil {
@@ -645,6 +646,35 @@ func agentLogPath() (string, error) {
 	return filepath.Join(dir, "agent.log"), nil
 }
 
+// maxLocalInstructionsBytes caps how much of the operator's own
+// instruction files ever reaches the model (G8): the convention files
+// can be huge (a workspace CLAUDE.md is tens of KB), and the startup
+// budget check exists to refuse genuinely oversized prefixes — the cap
+// here keeps one accidentally gigantic file from doing that refusal on
+// its own.
+const maxLocalInstructionsBytes = 100_000
+
+// localInstructions reads the operator's own standing instructions for
+// the working directory (G8): AGENTS.md and CLAUDE.md, the two
+// conventions this ecosystem already uses for agent guidance. Missing
+// files are simply absent; the order is AGENTS.md first, and content
+// past the cap is truncated with a marker rather than silently cut.
+func localInstructions(dir string) string {
+	var b strings.Builder
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		content, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		if total := len(content); total > maxLocalInstructionsBytes {
+			content = append(content[:maxLocalInstructionsBytes], []byte(fmt.Sprintf("\n... [truncated: %d of %d bytes shown]", maxLocalInstructionsBytes, total))...)
+		}
+		b.WriteString("\n\n--- " + name + " ---\n")
+		b.Write(content)
+	}
+	return b.String()
+}
+
 // buildSystemPrompt is the agent's fixed opening instruction, pulled out of
 // runAgent as its own pure function so the room-scoping behavior (macula-
 // io/macula-lazymesh#1) has a direct unit test independent of the loop's
@@ -652,7 +682,7 @@ func agentLogPath() (string, error) {
 // model is told to discover its actual participation scope live via
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
-func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool) string {
+func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, localInstructions string) string {
 	// Deliberately says nothing about why this changed (macula-io/macula-
 	// lazymesh#14/#15's own history) -- that belongs in code comments and
 	// the issue tracker, not in tokens sent to the model on every single
@@ -718,6 +748,9 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 	}
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
+	}
+	if localInstructions != "" {
+		systemPrompt += "\n\nThe operator's local instructions for the working directory follow. Treat them as standing orders, second only to this system prompt and to explicit new instructions:" + localInstructions
 	}
 	return systemPrompt
 }
