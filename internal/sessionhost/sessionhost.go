@@ -9,18 +9,22 @@
 //     (condition 1: Ergo's default silently binds TCP :11144 — a lazymesh
 //     node opens no listener; the mesh is the transport and the
 //     unix-socket control plane is the only local surface);
-//   - one agent conversation (a real agent.Loop: provider, tools, system
-//     prompt) lives in a supervised session actor;
-//   - a panic inside the session — a panicking provider is the exact
+//   - any number of agent conversations (real agent.Loops) live as
+//     supervised session actors under one simple_one_for_one root, each
+//     owned, addressed by pid, and started/stopped/listed by the host
+//     API (OD2);
+//   - a panic inside a session — a panicking provider is the exact
 //     failure mode supervision exists for — is recovered by Ergo, the
 //     session dies with TerminateReasonPanic, monitors are told, and the
-//     root supervisor restarts it with fresh state (condition Q3);
+//     root supervisor restarts it with fresh state and the same
+//     SessionArgs (condition Q3);
+//   - a normal stop ends a session for good (transient strategy: no
+//     resurrection of closed conversations);
 //   - subscribers receive loop events, and status is a synchronous call.
 //
-// Known next increments, deliberately NOT here: dynamic N-session hosting
-// (OD2: one supervisor child per session instead of one static child),
-// the unix-socket control plane (D1), and JSONL persistence (D2). The
-// walking skeleton stands on its own and is what those build on.
+// Known next increments, deliberately NOT here: the unix-socket control
+// plane (D1), JSONL persistence (D2), and wiring cmd/lazymesh onto this
+// tree. The walking skeleton stands on its own and is what those build on.
 package sessionhost
 
 import (
@@ -29,6 +33,15 @@ import (
 	"ergo.services/ergo"
 	"ergo.services/ergo/gen"
 )
+
+// UnsupportedReply is the answer to a request the receiver does not
+// recognize. It is delivered as a normal reply rather than an error
+// because, in Ergo, a non-nil error from HandleCall TERMINATES the
+// process — an unknown request must never be able to kill a session or
+// the root.
+type UnsupportedReply struct {
+	Request any
+}
 
 // NodeName is the single embedded node's name: one node per process, ever.
 // Ergo requires the FQDN shape (name@host); with networking disabled the

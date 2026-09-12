@@ -101,8 +101,7 @@ type monitorRequest struct{ Target gen.PID }
 type subscribeTo struct{ Target gen.PID }
 
 // testNode is shared by every test in this package: one embedded node per
-// process by design (Node's own contract), so all tests ride the same one
-// with distinct root/session names.
+// process by design (Node's own contract), so all tests ride the same one.
 func testNode(t *testing.T) gen.Node {
 	t.Helper()
 	n, err := Node()
@@ -112,11 +111,50 @@ func testNode(t *testing.T) gen.Node {
 	return n
 }
 
-func newSessionArgs(p provider.Provider) SessionArgs {
-	return SessionArgs{
+// testRoot starts a fresh anonymous root and cleans up every session it
+// still hosts when the test ends.
+func testRoot(t *testing.T, n gen.Node) gen.PID {
+	t.Helper()
+	root, err := StartRoot(n)
+	if err != nil {
+		t.Fatalf("start root: %v", err)
+	}
+	t.Cleanup(func() {
+		pids, err := Sessions(n, root)
+		if err != nil {
+			return
+		}
+		for _, pid := range pids {
+			_ = StopSession(n, pid)
+		}
+	})
+	return root
+}
+
+// startSession is StartSession with the fatal-on-error behavior every
+// test wants.
+func startSession(t *testing.T, n gen.Node, root gen.PID, p provider.Provider) gen.PID {
+	t.Helper()
+	pid, err := StartSession(n, root, SessionArgs{
 		Provider:     p,
 		Tools:        fakeTools{},
 		SystemPrompt: "you are a test agent",
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	return pid
+}
+
+// waitDowns waits for one DOWN on downs within the deadline.
+func waitDowns(t *testing.T, downs chan gen.MessageDownPID) gen.MessageDownPID {
+	t.Helper()
+	select {
+	case down := <-downs:
+		return down
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for a monitor DOWN")
+		return gen.MessageDownPID{}
 	}
 }
 
@@ -142,20 +180,12 @@ func TestNodeStartsWithNetworkingDisabled(t *testing.T) {
 // the grown conversation.
 func TestSayRunsTheRealLoopAndSubscribersSeeEvents(t *testing.T) {
 	n := testNode(t)
+	root := testRoot(t, n)
 	p := &fakeProvider{reply: provider.ChatResponse{
 		Message: provider.Message{Role: provider.RoleAssistant, Content: "hello from the fake"},
 		Usage:   provider.Usage{TotalTokens: 7},
 	}}
-
-	rootPid, err := StartRoot(n, "root_say", "session_say", newSessionArgs(p))
-	if err != nil {
-		t.Fatalf("start root: %v", err)
-	}
-	_ = rootPid
-	sessPid, err := SessionPID(n, "session_say")
-	if err != nil {
-		t.Fatalf("resolve session pid: %v", err)
-	}
+	sessPid := startSession(t, n, root, p)
 
 	events := make(chan Event, 16)
 	downs := make(chan gen.MessageDownPID, 8)
@@ -205,18 +235,12 @@ func TestSayRunsTheRealLoopAndSubscribersSeeEvents(t *testing.T) {
 // TestPanicRestartsWithFreshState proves the supervision contract the
 // whole actor core exists for: a session whose provider panics dies with
 // TerminateReasonPanic, its monitor is told, and the root supervisor
-// restarts it with a fresh conversation.
+// restarts it — a new pid, same SessionArgs, fresh conversation.
 func TestPanicRestartsWithFreshState(t *testing.T) {
 	n := testNode(t)
+	root := testRoot(t, n)
 	p := &fakeProvider{panicNow: true}
-
-	if _, err := StartRoot(n, "root_panic", "session_panic", newSessionArgs(p)); err != nil {
-		t.Fatalf("start root: %v", err)
-	}
-	oldPid, err := SessionPID(n, "session_panic")
-	if err != nil {
-		t.Fatalf("resolve session pid: %v", err)
-	}
+	oldPid := startSession(t, n, root, p)
 
 	events := make(chan Event, 16)
 	downs := make(chan gen.MessageDownPID, 8)
@@ -232,26 +256,31 @@ func TestPanicRestartsWithFreshState(t *testing.T) {
 		t.Fatalf("send say: %v", err)
 	}
 
-	select {
-	case down := <-downs:
-		if !errors.Is(down.Reason, gen.TerminateReasonPanic) {
-			t.Fatalf("down reason = %v, want TerminateReasonPanic", down.Reason)
-		}
-		if down.PID != oldPid {
-			t.Fatalf("down pid = %s, want the original session %s", down.PID, oldPid)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for the monitor DOWN")
+	down := waitDowns(t, downs)
+	if !errors.Is(down.Reason, gen.TerminateReasonPanic) {
+		t.Fatalf("down reason = %v, want TerminateReasonPanic", down.Reason)
+	}
+	if down.PID != oldPid {
+		t.Fatalf("down pid = %s, want the original session %s", down.PID, oldPid)
 	}
 
-	// The supervisor restarts the child under the same registered name:
-	// wait until the name resolves to a NEW pid, then prove the state is
-	// fresh (only the system prompt, no trace of the pre-panic turn).
+	// The supervisor restarts the instance under a new anonymous pid:
+	// poll the root's session list until the old pid is replaced by a new
+	// one, then prove the state is fresh (only the system prompt, no
+	// trace of the pre-panic turn).
 	var newPid gen.PID
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if candidate, err := SessionPID(n, "session_panic"); err == nil && candidate != oldPid {
-			newPid = candidate
+		pids, err := Sessions(n, root)
+		if err != nil {
+			t.Fatalf("list sessions: %v", err)
+		}
+		for _, pid := range pids {
+			if pid != oldPid {
+				newPid = pid
+			}
+		}
+		if newPid != (gen.PID{}) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -271,4 +300,48 @@ func TestPanicRestartsWithFreshState(t *testing.T) {
 	if status.MessageCount != 1 { // system prompt only: fresh state
 		t.Fatalf("restarted session message count = %d, want 1", status.MessageCount)
 	}
+}
+
+// TestNormalStopDoesNotRestart pins the transient-strategy contract: a
+// normally stopped session ends for good — the DOWN reports the normal
+// reason and the root's session list empties instead of resurrecting the
+// conversation the way a permanent strategy would.
+func TestNormalStopDoesNotRestart(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &fakeProvider{reply: provider.ChatResponse{
+		Message: provider.Message{Role: provider.RoleAssistant, Content: "hello"},
+	}}
+	sessPid := startSession(t, n, root, p)
+
+	downs := make(chan gen.MessageDownPID, 8)
+	cPid, err := n.Spawn(collectorFactory, gen.ProcessOptions{}, make(chan Event, 16), downs)
+	if err != nil {
+		t.Fatalf("spawn collector: %v", err)
+	}
+	if _, err := n.Call(cPid, monitorRequest{Target: sessPid}); err != nil {
+		t.Fatalf("monitor session: %v", err)
+	}
+
+	if err := StopSession(n, sessPid); err != nil {
+		t.Fatalf("stop session: %v", err)
+	}
+
+	down := waitDowns(t, downs)
+	if !errors.Is(down.Reason, gen.TerminateReasonNormal) {
+		t.Fatalf("down reason = %v, want TerminateReasonNormal", down.Reason)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		pids, err := Sessions(n, root)
+		if err != nil {
+			t.Fatalf("list sessions: %v", err)
+		}
+		if len(pids) == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("normally stopped session is still listed under the root")
 }

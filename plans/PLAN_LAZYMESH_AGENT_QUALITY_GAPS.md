@@ -613,11 +613,15 @@ become long-running.
 
 - [ ] **Phase 0 — Actor-core port (bus-vs-actors decided: ACTORS — D4).**
       Walking skeleton landed 2026-09-12 as `internal/sessionhost`: embedded
-      Ergo node with `NetworkModeDisabled` + silent logger, root one_for_one
-      supervisor, and a supervised session actor hosting the real
-      `agent.Loop`. Proven by tests: node boot, say→events→subscribers,
-      and panic→`TerminateReasonPanic`→supervisor restart with fresh state.
-      Still open before Phase 0 is done: dynamic N-session hosting (OD2),
+      Ergo node with `NetworkModeDisabled` + silent logger, a
+      simple_one_for_one root supervisor, and supervised session actors
+      hosting the real `agent.Loop`. Dynamic N-session hosting (OD2) is
+      in: `StartSession`/`Sessions`/`StopSession` over anonymous pids, the
+      transient strategy restarts only abnormal deaths (panic → fresh
+      state + same SessionArgs; normal stop ends the conversation for
+      good). Proven by tests: node boot, say→events→subscribers,
+      panic→`TerminateReasonPanic`→restart with fresh state, and
+      normal-stop-does-not-restart. Still open before Phase 0 is done:
       main.go wiring onto the tree, and the frontend bus as actor
       mailboxes.
 - [ ] **Phase 1 — Headless mode + unix socket.** `--headless`,

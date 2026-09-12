@@ -97,14 +97,6 @@ func (s *session) HandleMessage(from gen.PID, message any) error {
 	return nil
 }
 
-// UnsupportedReply is the answer to a request the session does not
-// recognize. It is delivered as a normal reply rather than an error
-// because, in Ergo, a non-nil error from HandleCall TERMINATES the
-// process — an unknown request must never be able to kill a conversation.
-type UnsupportedReply struct {
-	Request any
-}
-
 // HandleCall answers synchronous requests. Subscribe is callable too (its
 // ack is the subscriber count); anything unknown is answered with
 // UnsupportedReply via SendResponse. The nil, nil return marks the
