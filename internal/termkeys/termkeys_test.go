@@ -55,17 +55,21 @@ func TestPlainTextKeysRoundTrip(t *testing.T) {
 		want string
 	}{
 		{"\x1b[105;1u", "i"},
-		{"\x1b[73;2u", "I"},      // shift+i: codepoint is the shifted char
-		{"\x1b[32;1u", " "},      // space
-		{"\x1b[97;5u", "\x01"},   // ctrl+a
-		{"\x1b[99;5u", "\x03"},   // ctrl+c
-		{"\x1b[32;5u", "\x00"},   // ctrl+space
-		{"\x1b[120;3u", "\x1bx"}, // alt+x
-		{"\x1b[9;1u", "\t"},      // tab
-		{"\x1b[9;2u", "\x1b[Z"},  // shift+tab
-		{"\x1b[127;1u", "\x7f"},  // backspace
-		{"\x1b[27;1u", "\x1b"},   // escape
-		{"\x1b[13;3u", "\x1b\r"}, // alt+enter
+		{"\x1b[73;2u", "I"},           // shift+i: codepoint is the shifted char
+		{"\x1b[32;1u", " "},           // space
+		{"\x1b[97;5u", "\x01"},        // ctrl+a
+		{"\x1b[99;5u", "\x03"},        // ctrl+c
+		{"\x1b[32;5u", "\x00"},        // ctrl+space
+		{"\x1b[120;3u", "\x1bx"},      // alt+x
+		{"\x1b[9;1u", "\t"},           // tab
+		{"\x1b[9;2u", "\x1b[Z"},       // shift+tab
+		{"\x1b[127;1u", "\x7f"},       // backspace
+		{"\x1b[27;1u", "\x1b"},        // escape
+		{"\x1b[13;3u", "\x1b\r"},      // alt+enter
+		{"\x1b[105;129u", "i"},        // i with num-lock held (the lock bit is
+		{"\x1b[73;130u", "I"},         //   state, not part of the chord)
+		{"\x1b[13;130u", "\n"},        // shift+enter with num-lock held
+		{"\x1b[57352;129u", "\x1b[A"}, // arrow with num-lock
 	}
 	for _, c := range cases {
 		if got := translate(t, c.in); got != c.want {

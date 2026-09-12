@@ -267,13 +267,22 @@ func splitCodeMods(body []byte) (code int, mods int) {
 // to legacy sequences verbatim.
 func translateU(body []byte) []byte {
 	code, mods := splitCodeMods(body)
-	bits := mods - 1
+	// The kitty modifier value is 1 plus the sum of bit flags (shift=1,
+	// alt=2, ctrl=4, super=8, hyper=16, meta=32, caps_lock=64,
+	// num_lock=128), the same encoding the legacy CSI modifier parameter
+	// uses -- so the mods value carries over to legacy sequences
+	// verbatim. The two LOCK bits describe keyboard state, not the
+	// chord: a keyboard with num-lock always on reports every key with
+	// mods >= 129, which must not turn an ordinary key into an
+	// "unknown modifier" key. Drop them before deciding.
+	bits := (mods - 1) &^ (64 | 128)
 	shift := bits&1 != 0
 	alt := bits&2 != 0
 	ctrl := bits&4 != 0
 	if bits&^0x7 != 0 {
-		return nil // super/hyper/meta/caps/num: no legacy encoding
+		return nil // super/hyper/meta: no legacy encoding
 	}
+	mods = bits + 1 // lock-masked modifier for legacy parameters
 
 	switch {
 	case code == 13: // ENTER
