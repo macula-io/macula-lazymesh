@@ -121,8 +121,11 @@ func TestMarkdownFeaturesStillRender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
+	// Code blocks carry chroma syntax highlighting (per-token colors),
+	// so the content check runs on the ANSI-stripped text.
+	stripped := ansiSGR.ReplaceAllString(out, "")
 	for _, want := range []string{"bold", "code", "item", "quote", "x := 1"} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(stripped, want) {
 			t.Fatalf("render lost %q: %q", want, out)
 		}
 	}
