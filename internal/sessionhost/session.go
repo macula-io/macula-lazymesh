@@ -355,13 +355,26 @@ func (s *session) broadcast(ev agent.Event) {
 	}
 }
 
+// turnCallTimeoutSeconds bounds the driver's SayTurn call. Ergo's Call
+// has a 5-second default and NO infinite mode, and a turn's real bounds
+// are the provider's own timeouts and the loop's maxRounds — this
+// constant is deliberately huge, not tuned. Found live 2026-09-12: with
+// the 5s default, every slow turn (its tool calls queued behind the
+// ring waiter's blocking mesh_wait_ring on the shared MCP client) timed
+// out the driver's call and was misdiagnosed as a dead session — the
+// driver backed off with "agent hit an error" while the turn itself
+// completed moments later. A genuinely dead session still fails the
+// call immediately, so the reattach path is unaffected; the operator's
+// abort is the interrupt, not a call timeout.
+const turnCallTimeoutSeconds = 3600
+
 // Say runs one turn on session and blocks until it completes: SayReply.Err
 // carries a turn failure (an interrupt arrives as context.Canceled), while
 // a non-nil returned error means the session process itself is gone (a
 // panic-restart in flight, or a stop) and the caller must reattach rather
 // than count it as an ordinary failure.
 func SayTurn(n gen.Node, session gen.PID, text string) (SayReply, error) {
-	reply, err := n.Call(session, Say{Text: text})
+	reply, err := n.CallWithTimeout(session, Say{Text: text}, turnCallTimeoutSeconds)
 	if err != nil {
 		return SayReply{}, err
 	}

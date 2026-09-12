@@ -541,6 +541,46 @@ func containsDenial(err error) bool {
 	return strings.Contains(err.Error(), "denied")
 }
 
+// slowProvider answers after a fixed delay — the shape of a turn whose
+// tool calls queue behind another consumer of the shared MCP client, the
+// live failure that once outlasted Ergo's 5-second call default.
+type slowProvider struct {
+	delay time.Duration
+	reply provider.ChatResponse
+}
+
+func (s *slowProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	select {
+	case <-time.After(s.delay):
+		return s.reply, nil
+	case <-ctx.Done():
+		return provider.ChatResponse{}, ctx.Err()
+	}
+}
+
+func (s *slowProvider) ContextWindow() int { return 1000 }
+
+// TestSlowTurnOutlastsTheCallDefault pins the 2026-09-12 live fix: a
+// turn taking longer than Ergo's 5-second default call timeout still
+// delivers its reply — the driver's call must not misread a slow turn
+// as a dead session.
+func TestSlowTurnOutlastsTheCallDefault(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &slowProvider{delay: 6 * time.Second, reply: provider.ChatResponse{
+		Message: provider.Message{Role: provider.RoleAssistant, Content: "slow but done"},
+	}}
+	pid := startSession(t, n, root, p)
+
+	reply, err := SayTurn(n, pid, "take your time")
+	if err != nil {
+		t.Fatalf("slow turn's call failed: %v", err)
+	}
+	if reply.Err != nil {
+		t.Fatalf("slow turn reported an error: %v", reply.Err)
+	}
+}
+
 // TestNodeStartsWithNetworkingDisabled exercises the production bootstrap
 // path: the node boots, is alive, and carries the lazymesh name. The
 // disabled-network part is a config claim this test cannot observe
