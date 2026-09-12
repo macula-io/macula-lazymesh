@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
@@ -27,12 +28,19 @@ const (
 // on -- collapsed by default so the chat stream stays readable, but never
 // hidden entirely (per the plan: the two surfaces, chat and agent.log,
 // serve different needs, this isn't replacing the log's full detail).
+//
+// streaming marks the entry currently being built from EventAssistantDelta
+// chunks: its text grows with every delta until the turn's completed
+// EventAssistantMessage finishes it, and only a finished entry may cache
+// its markdown rendering (md).
 type chatEntry struct {
-	kind   chatEntryKind
-	at     time.Time
-	tool   string // set for chatToolCall / chatToolResult
-	text   string // collapsed-form text
-	detail string // full text, shown only when details are expanded
+	kind      chatEntryKind
+	at        time.Time
+	tool      string // set for chatToolCall / chatToolResult
+	text      string // collapsed-form text
+	detail    string // full text, shown only when details are expanded
+	streaming bool   // assistant entry still accumulating deltas
+	md        string // glamour rendering, cached once finished
 }
 
 // chatEntryFromAgentEvent converts one agent.Event into a chat line. Plain
@@ -43,6 +51,8 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
 		return chatEntry{kind: chatAssistant, at: now, text: ev.Text}
+	case agent.EventAssistantDelta:
+		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, streaming: true}
 	case agent.EventToolCall:
 		return chatEntry{kind: chatToolCall, at: now, tool: ev.ToolName, text: fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 	case agent.EventToolResult:
@@ -110,9 +120,13 @@ var (
 	chatTimeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
-// render returns this entry's line, in expanded form if detailsExpanded is
-// on and this entry actually has separate detail to show.
-func (e chatEntry) render(detailsExpanded bool) string {
+// render returns this entry's line(s), in expanded form if detailsExpanded
+// is on and this entry actually has separate detail to show. Assistant
+// entries render through glamour (D3: markdown-capable answers made
+// readable), word-wrapped to width; every other kind stays a single line.
+// Must be a pointer receiver: a completed assistant entry caches its
+// markdown rendering in md.
+func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
 	text := e.text
 	if detailsExpanded && e.detail != "" && e.detail != e.text {
@@ -130,7 +144,7 @@ func (e chatEntry) render(detailsExpanded bool) string {
 	case chatYou:
 		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
 	case chatAssistant:
-		return fmt.Sprintf("%s %s %s", ts, chatAssistantStyl.Render("agent:"), text)
+		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
 	case chatToolCall, chatToolResult:
 		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
 	case chatError:
@@ -140,6 +154,34 @@ func (e chatEntry) render(detailsExpanded bool) string {
 	default:
 		return fmt.Sprintf("%s %s", ts, text)
 	}
+}
+
+// markdownBody renders the entry's text through glamour, word-wrapped to
+// fit the pane. A finished entry caches the rendering (re-rendering every
+// assistant entry on every viewport sync would turn a long chat into a
+// glamour benchmark); a streaming entry re-renders as its text grows, and
+// falls back to the raw text if rendering fails -- a display concern must
+// never lose content.
+func (e *chatEntry) markdownBody(width int) string {
+	if !e.streaming && e.md != "" {
+		return e.md
+	}
+	wrap := width - 8
+	if wrap < 20 {
+		wrap = 20
+	}
+	renderer, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(wrap))
+	if err != nil {
+		return e.text
+	}
+	rendered, err := renderer.Render(e.text)
+	if err != nil {
+		return e.text
+	}
+	if !e.streaming {
+		e.md = rendered
+	}
+	return rendered
 }
 
 // collapseNewlines flattens embedded newlines to spaces before a string

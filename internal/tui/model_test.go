@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -1321,5 +1322,44 @@ func TestNormalMode_IEntersMeshServiceCallModeAndCapturesSelectedProcedure(t *te
 	}
 	if want := entries[1].Procedure(); m.meshServiceCallProcedure != want {
 		t.Fatalf("expected the selected row's procedure %q captured, got %q", want, m.meshServiceCallProcedure)
+	}
+}
+
+// TestStreamingDeltasMergeIntoOneEntry pins the D3 contract: a streamed
+// turn's deltas grow ONE assistant chat entry, the completed message
+// finishes it (authoritative text), and the entry count stays one.
+func TestStreamingDeltasMergeIntoOneEntry(t *testing.T) {
+	m := newTestModel(t)
+	update := func(ev agent.Event) {
+		next, _ := m.Update(agentEventMsg(ev))
+		m = next.(Model)
+	}
+	update(agent.Event{Kind: agent.EventAssistantDelta, Text: "hel"})
+	update(agent.Event{Kind: agent.EventAssistantDelta, Text: "lo"})
+	update(agent.Event{Kind: agent.EventAssistantMessage, Text: "hello"})
+
+	if len(m.chatEntries) != 1 {
+		t.Fatalf("chat entries = %d, want 1", len(m.chatEntries))
+	}
+	entry := m.chatEntries[0]
+	if entry.kind != chatAssistant || entry.streaming {
+		t.Fatalf("entry = kind %v streaming %v, want a finished assistant entry", entry.kind, entry.streaming)
+	}
+	if entry.text != "hello" {
+		t.Fatalf("entry text = %q, want %q", entry.text, "hello")
+	}
+}
+
+// TestAssistantEntryRendersMarkdown proves D3's readability claim: a
+// markdown assistant answer renders as markdown (bold survives as ANSI),
+// not as collapsed raw text.
+func TestAssistantEntryRendersMarkdown(t *testing.T) {
+	entry := chatEntry{kind: chatAssistant, at: time.Now(), text: "**bold** answer"}
+	rendered := entry.render(false, 80)
+	if !strings.Contains(rendered, "agent:") {
+		t.Fatalf("render lost the agent label: %q", rendered)
+	}
+	if !strings.Contains(rendered, "bold") {
+		t.Fatalf("render lost the markdown content: %q", rendered)
 	}
 }

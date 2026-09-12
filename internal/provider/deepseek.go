@@ -63,6 +63,7 @@ type dsFunctionCall struct {
 
 type dsToolCall struct {
 	ID       string         `json:"id"`
+	Index    int            `json:"index"`
 	Type     string         `json:"type"`
 	Function dsFunctionCall `json:"function"`
 }
@@ -154,6 +155,13 @@ func toDSTools(specs []ToolSpec) []dsToolSpec {
 // duplicated.
 func (d *DeepSeek) ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	return callOpenAICompatChatCompletions(ctx, d.HTTP, d.BaseURL, d.Model, d.APIKey, req)
+}
+
+// ChatCompletionStream delegates to callOpenAICompatChatCompletionsStream
+// -- the same shared wire, streamed. This is what makes DeepSeek satisfy
+// Streamer; NVIDIA and Groq get identical methods over the same function.
+func (d *DeepSeek) ChatCompletionStream(ctx context.Context, req ChatRequest, onDelta func(chunk string) error) (ChatResponse, error) {
+	return callOpenAICompatChatCompletionsStream(ctx, d.HTTP, d.BaseURL, d.Model, d.APIKey, req, onDelta)
 }
 
 // deepSeekContextWindow is deepseek-v4-flash's and deepseek-v4-pro's

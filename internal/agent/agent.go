@@ -32,6 +32,14 @@ type EventKind int
 
 const (
 	EventAssistantMessage EventKind = iota
+	// EventAssistantDelta is one incremental chunk of assistant content,
+	// emitted by Say when the Provider satisfies provider.Streamer, before
+	// the turn's single completed EventAssistantMessage. Consumers that
+	// render live (the chat pane, the control socket's delta lines)
+	// accumulate deltas; consumers that record (agent.log) only see the
+	// final message, so the log keeps one line per turn instead of one
+	// per chunk.
+	EventAssistantDelta
 	EventToolCall
 	EventToolResult
 	EventError
@@ -197,10 +205,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 	// model/tool pair can't loop forever unattended.
 	const maxRounds = 25
 	for round := 0; round < maxRounds; round++ {
-		resp, err := l.Provider.ChatCompletion(ctx, provider.ChatRequest{
-			Messages: l.messages,
-			Tools:    toolSpecs,
-		})
+		resp, err := l.completionRound(ctx, toolSpecs, events)
 		if err != nil {
 			emit(events, Event{Kind: EventError, Err: fmt.Errorf("chat completion: %w", err)})
 			return err
@@ -211,10 +216,6 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		l.usage.TotalTokens += resp.Usage.TotalTokens
 		l.usage.PromptCacheHitTokens += resp.Usage.PromptCacheHitTokens
 		l.usage.PromptCacheMissTokens += resp.Usage.PromptCacheMissTokens
-
-		if resp.Message.Content != "" {
-			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
-		}
 
 		if len(resp.Message.ToolCalls) == 0 {
 			return nil
@@ -251,6 +252,37 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		}
 	}
 	return fmt.Errorf("agent loop: exceeded %d tool-calling rounds without a final reply", maxRounds)
+}
+
+// completionRound runs one chat-completion call, streaming when the
+// provider can. The streaming path emits an EventAssistantDelta per
+// content chunk followed by the single completed EventAssistantMessage;
+// the plain path emits only the completed message — so consumers of the
+// event stream see identical final shape either way, and only live
+// renderers notice the difference.
+func (l *Loop) completionRound(ctx context.Context, toolSpecs []provider.ToolSpec, events chan<- Event) (provider.ChatResponse, error) {
+	req := provider.ChatRequest{Messages: l.messages, Tools: toolSpecs}
+	if streamer, ok := l.Provider.(provider.Streamer); ok {
+		resp, err := streamer.ChatCompletionStream(ctx, req, func(chunk string) error {
+			emit(events, Event{Kind: EventAssistantDelta, Text: chunk})
+			return nil
+		})
+		if err != nil {
+			return provider.ChatResponse{}, err
+		}
+		if resp.Message.Content != "" {
+			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
+		}
+		return resp, nil
+	}
+	resp, err := l.Provider.ChatCompletion(ctx, req)
+	if err != nil {
+		return provider.ChatResponse{}, err
+	}
+	if resp.Message.Content != "" {
+		emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
+	}
+	return resp, nil
 }
 
 // trimHistory drops the oldest complete "turns" (a user message and

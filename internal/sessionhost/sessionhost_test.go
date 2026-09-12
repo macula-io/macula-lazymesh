@@ -158,6 +158,79 @@ func waitDowns(t *testing.T, downs chan gen.MessageDownPID) gen.MessageDownPID {
 	}
 }
 
+// fakeStreamingProvider streams fixed chunks, then completes — the
+// Streamer half of the provider contract for the ordering test below.
+type fakeStreamingProvider struct {
+	chunks []string
+}
+
+func (f *fakeStreamingProvider) ChatCompletion(context.Context, provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{Message: provider.Message{Role: provider.RoleAssistant, Content: "fallback"}}, nil
+}
+
+func (f *fakeStreamingProvider) ContextWindow() int { return 1000 }
+
+func (f *fakeStreamingProvider) ChatCompletionStream(ctx context.Context, req provider.ChatRequest, onDelta func(chunk string) error) (provider.ChatResponse, error) {
+	full := ""
+	for _, c := range f.chunks {
+		full += c
+		if err := onDelta(c); err != nil {
+			return provider.ChatResponse{}, err
+		}
+	}
+	return provider.ChatResponse{Message: provider.Message{Role: provider.RoleAssistant, Content: full}}, nil
+}
+
+// TestStreamedTurnDeliversDeltasThenTurnComplete pins the settle-order
+// contract the control plane depends on: a subscriber sees every delta of
+// the turn, then the completed message, then the session's own
+// turn-complete marker — in mailbox order, never interleaved with the
+// next turn's events.
+func TestStreamedTurnDeliversDeltasThenTurnComplete(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &fakeStreamingProvider{chunks: []string{"hel", "lo "}}
+	sessPid := startSession(t, n, root, p)
+
+	events := make(chan Event, 16)
+	downs := make(chan gen.MessageDownPID, 8)
+	cPid, err := n.Spawn(collectorFactory, gen.ProcessOptions{}, events, downs)
+	if err != nil {
+		t.Fatalf("spawn collector: %v", err)
+	}
+	if _, err := n.Call(cPid, subscribeTo{Target: sessPid}); err != nil {
+		t.Fatalf("subscribe collector: %v", err)
+	}
+
+	reply, err := SayTurn(n, sessPid, "stream please")
+	if err != nil {
+		t.Fatalf("say turn: %v", err)
+	}
+	if reply.Err != nil {
+		t.Fatalf("say turn failed: %v", reply.Err)
+	}
+
+	var kinds []agent.EventKind
+	deadline := time.After(10 * time.Second)
+	for len(kinds) < 4 {
+		select {
+		case ev := <-events:
+			kinds = append(kinds, ev.Event.Kind)
+		case <-deadline:
+			t.Fatalf("timed out collecting events; got %v", kinds)
+		}
+	}
+	want := []agent.EventKind{
+		agent.EventAssistantDelta, agent.EventAssistantDelta,
+		agent.EventAssistantMessage, agent.EventListening,
+	}
+	for i, k := range want {
+		if kinds[i] != k {
+			t.Fatalf("event order = %v, want %v", kinds, want)
+		}
+	}
+}
+
 // TestNodeStartsWithNetworkingDisabled exercises the production bootstrap
 // path: the node boots, is alive, and carries the lazymesh name. The
 // disabled-network part is a config claim this test cannot observe

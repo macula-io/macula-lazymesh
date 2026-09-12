@@ -860,6 +860,28 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		// pane for anyone who wants the full detail.
 		return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
 	}
+
+	// D3 streaming: deltas grow the in-progress assistant entry, and the
+	// turn's completed message finishes it -- one chat entry per turn,
+	// however many chunks it took. The completed text replaces the
+	// accumulated deltas so a final message that differs from the sum of
+	// its chunks (never the case here, but the contract is the message is
+	// authoritative) wins.
+	if ev.Kind == agent.EventAssistantDelta {
+		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
+			m.chatEntries[n-1].text += ev.Text
+			m.syncViewport()
+			return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+		}
+	} else if ev.Kind == agent.EventAssistantMessage {
+		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
+			m.chatEntries[n-1].text = ev.Text
+			m.chatEntries[n-1].streaming = false
+			m.syncViewport()
+			return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+		}
+	}
+
 	entry := chatEntryFromAgentEvent(agent.Event(ev))
 	m.chatEntries = append(m.chatEntries, entry)
 	m.syncViewport()
@@ -914,8 +936,8 @@ func (m *Model) resizeComponents() {
 
 func (m *Model) syncViewport() {
 	lines := make([]string, 0, len(m.chatEntries))
-	for _, e := range m.chatEntries {
-		lines = append(lines, e.render(m.detailsExpanded))
+	for i := range m.chatEntries {
+		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
 	}
 	m.chatViewport.SetContent(strings.Join(lines, "\n"))
 	m.chatViewport.GotoBottom()
@@ -1233,8 +1255,8 @@ func (m Model) renderRealmsOverlay() string {
 // (non-overlay) chat pane would show.
 func (m Model) chatContentLines() []string {
 	lines := make([]string, 0, len(m.chatEntries))
-	for _, e := range m.chatEntries {
-		lines = append(lines, e.render(m.detailsExpanded))
+	for i := range m.chatEntries {
+		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
 	}
 	joined := strings.Join(lines, "\n")
 	if joined == "" {

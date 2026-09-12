@@ -95,13 +95,19 @@ func (s *session) ProcessKind() gen.ProcessKind {
 	return gen.ProcessKindSession
 }
 
-// HandleMessage routes Subscribe. An unknown message is logged and
-// dropped, never an error: a non-nil return terminates the process, and an
-// unrecognized message must not be able to kill a conversation.
+// HandleMessage routes Subscribe, and Event — the live-drain shape:
+// runSay's forwarding goroutine self-Sends every loop event here, so the
+// broadcast to subscribers happens on the actor's own goroutine and the
+// subscriber map is never touched concurrently (Ergo's no-goroutines-in-
+// callbacks rule is about exactly this). An unknown message is logged
+// and dropped, never an error: a non-nil return terminates the process.
 func (s *session) HandleMessage(from gen.PID, message any) error {
-	switch message.(type) {
+	switch msg := message.(type) {
 	case Subscribe:
 		s.subscribers[from] = struct{}{}
+		return nil
+	case Event:
+		s.broadcast(msg.Event)
 		return nil
 	}
 	s.Log().Warning("sessionhost: session dropped unknown message %T from %s", message, from)
@@ -147,13 +153,44 @@ func (s *session) Terminate(reason error) {}
 // exists for — a panic — is precisely what still gets caught and
 // restarted. Events are captured in a bounded buffer and broadcast after
 // the turn, so no subscriber can stall the loop.
+// runSay executes one full tool-calling turn inside this actor's callback.
+//
+// Blocking I/O in an actor callback is the deliberate deviation Ergo's own
+// guidelines warn about, and it is accepted here for three reasons, all
+// recorded in the D4 decision: Ergo runs one goroutine per process, so a
+// blocked session blocks only itself (Q5); a blocked turn cannot be
+// preempted, so interrupt will arrive as ctx-cancel at the boundary, not
+// as an actor Kill (conditions 2-3); and the failure mode supervision
+// exists for — a panic — is precisely what still gets caught and
+// restarted.
+//
+// Streaming (D3) changed the event drain: the loop now emits a delta per
+// content chunk, far more than the bounded capture buffer could hold
+// before it deadlocked the turn. One forwarding goroutine therefore
+// drains the buffer while Say runs and self-Sends every event through
+// the actor's own mailbox — all subscriber-state access stays on the
+// actor goroutine, and events reach subscribers live, in mailbox order,
+// ahead of the SayReply that ends the turn.
 func (s *session) runSay(text string) error {
 	events := make(chan agent.Event, eventBuffer)
+	drained := make(chan struct{})
+	go func() {
+		for ev := range events {
+			_ = s.Send(s.PID(), Event{Event: ev})
+		}
+		close(drained)
+	}()
 	err := s.loop.Say(context.Background(), text, events)
 	close(events)
-	for ev := range events {
-		s.broadcast(ev)
-	}
+	<-drained
+	// The turn-complete marker is emitted BY the session, appended to the
+	// mailbox AFTER every event of the turn it just ran: it rides the
+	// same delivery path as the deltas, so the control plane's settle
+	// contract (deltas..., then turn_complete) holds regardless of how
+	// quickly the driver's SayReply travels to the caller. The driver's
+	// own success path deliberately does NOT emit EventListening for the
+	// same turn.
+	_ = s.Send(s.PID(), Event{Event: agent.Event{Kind: agent.EventListening}})
 	// The turn's failure travels back to the driver as SayReply.Err: the
 	// loop has already emitted the EventError describing it, and the
 	// retry/backoff policy belongs to whoever drives the session — the

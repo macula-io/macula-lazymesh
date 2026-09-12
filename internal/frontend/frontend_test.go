@@ -177,6 +177,21 @@ func TestShutdownClosesShutdownChannel(t *testing.T) {
 	}
 }
 
+// TestDeltaWireShape proves streaming deltas reach controllers as delta
+// lines, in the same stream as the assistant message that completes them.
+func TestDeltaWireShape(t *testing.T) {
+	events := make(chan agent.Event, 8)
+	_, path := startTestServer(t, make(chan string, 8), events, nil)
+	c := dial(t, path)
+	c.line(t) // handshake
+
+	events <- agent.Event{Kind: agent.EventAssistantDelta, Text: "par"}
+	line := c.line(t)
+	if line["type"] != "delta" || line["text"] != "par" {
+		t.Fatalf("delta line = %v", line)
+	}
+}
+
 // TestCloseRemovesSocketFile proves Close leaves no socket file behind.
 func TestCloseRemovesSocketFile(t *testing.T) {
 	s, path := startTestServer(t, make(chan string, 8), make(chan agent.Event, 8), nil)

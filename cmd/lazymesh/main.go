@@ -737,7 +737,10 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			usageAfter = sessionhost.Status{}
 		}
 		logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
-		emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventListening})
+		// The session itself emitted the turn's EventListening (it must
+		// ride the same delivery path as the turn's deltas — see
+		// session.runSay); this driver emits it only on the failure
+		// path, where no session events are in flight.
 		var ok bool
 		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 		if !ok {

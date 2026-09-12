@@ -643,10 +643,26 @@ become long-running.
       query round-trip, shutdown signal, Close removes the socket). Known
       follow-ups: SO_PEERCRED peer-uid check, and `ring_pending` on the
       wire (arrives with the ring/approve phase).
-- [ ] **Phase 2 — Streaming + chat UX (D3).** Streaming variant on the
-      Provider interface; incremental assistant text in the TUI and
-      `delta` events on the socket; glamour markdown rendering; chatbox
-      prompt entry.
+- [x] **Phase 2 — Streaming + chat UX (D3).** Landed 2026-09-12:
+      `provider.Streamer` interface + SSE streaming over the shared
+      OpenAI-compatible wire (DeepSeek/Groq/NVIDIA), with tool-call
+      fragments accumulated per index and usage taken from the final
+      chunk (`stream_options.include_usage`). `agent.Loop.Say` streams
+      `EventAssistantDelta` per chunk then the single completed
+      `EventAssistantMessage`; non-streamers fall back with byte-identical
+      behavior. The session actor drains events LIVE during a turn (a
+      self-Send forwarding goroutine — the pre-streaming post-turn drain
+      would have deadlocked the stream at the buffer bound) and emits the
+      turn's `EventListening` itself, so deltas and the settle point ride
+      one ordered delivery path to the control socket. The TUI merges
+      deltas into one growing assistant entry and renders assistant
+      answers as markdown via glamour (word-wrapped, cached per finished
+      entry); the socket gains `{"type":"delta"}` lines. The chatbox
+      compose line already existed (bottom textinput) — D3's real gap was
+      streaming + readable markdown, both now covered. Proven by new
+      tests in provider (SSE deltas/usage/tool-fragments/consumer-abort),
+      agent (stream vs fallback), sessionhost (delta→message→listening
+      order), tui (merge + markdown render) and frontend (delta wire).
 - [ ] **Phase 3 — Interrupt.** Per-turn cancellable context in
       `Loop.Say`; `interrupt` control message + TUI key.
 - [ ] **Phase 4 — Session persistence/resume (D2).** JSONL session

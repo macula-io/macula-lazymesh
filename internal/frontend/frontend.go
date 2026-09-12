@@ -313,6 +313,8 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
 		line, err = json.Marshal(map[string]any{"type": "assistant", "text": ev.Text})
+	case agent.EventAssistantDelta:
+		line, err = json.Marshal(map[string]any{"type": "delta", "text": ev.Text})
 	case agent.EventToolCall:
 		line, err = json.Marshal(map[string]any{"type": "tool_call", "tool": ev.ToolName, "args": ev.Text})
 	case agent.EventToolResult:
