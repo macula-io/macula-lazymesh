@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"ergo.services/ergo/gen"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
@@ -30,6 +31,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 )
@@ -212,7 +214,33 @@ func run(configPath, room, goalText string) error {
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
-	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
+	// The actor core (D4): one embedded node, one root supervisor, one
+	// supervised session actor owning the conversation, and a bridge
+	// process handing loop events to the TUI, the agent log and the
+	// room-waiter. A provider panic now restarts the session instead of
+	// killing lazymesh — the whole point of the supervision tree.
+	node, err := sessionhost.Node()
+	if err != nil {
+		return fmt.Errorf("start actor node: %w", err)
+	}
+	rootPid, err := sessionhost.StartRoot(node)
+	if err != nil {
+		return fmt.Errorf("start session root: %w", err)
+	}
+	sessPid, err := sessionhost.StartSession(node, rootPid, sessionhost.SessionArgs{
+		Provider:     p,
+		Tools:        tools,
+		SystemPrompt: systemPrompt,
+	})
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	defer sessionhost.StopSession(node, sessPid)
+	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, agentLog, waiterMgr); err != nil {
+		return fmt.Errorf("start event bridge: %w", err)
+	}
+
+	go runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -576,119 +604,162 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 	return systemPrompt
 }
 
-// runAgent drives the agent loop in the background, for as long as the
-// program runs; room and goalText are optional hints, not a scope
-// restriction -- the model discovers and participates in every room it is
-// currently a member of via mesh_rooms, regardless of whether either is
-// set. Every round the LLM decides what to do (join, talk, answer rings
-// when told about one) -- waiting itself is waiterMgr's (rooms) and
-// ringMgr's (rings) job now (macula-io/macula-lazymesh#14/#15, rings
-// 2026-09-07), not something the model asks for or checks periodically;
-// this function supplies the cadence of asking it to keep going, driven
-// by real events rather than the model's own long tool-call waits or a
-// periodic re-check.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle, meshServicesEnabled)
-
-	loop := agent.NewLoop(p, tools, systemPrompt)
-	events := make(chan agent.Event, 16)
-	go func() {
-		for ev := range events {
-			logEvent(agentLog, ev)
-			// Reactive room-churn detection (macula-io/macula-lazymesh#14,
-			// Vega's flagged requirement): piggyback on tool results the
-			// model already produces on its own normal cadence, never a
-			// poll loop of waiterMgr's own. mesh_rooms is authoritative
-			// (its own {"joined": [...]} list drives a full Sync, adding
-			// and removing); mesh_join_room/mesh_ring/mesh_answer_ring/
-			// mesh_leave_room each report exactly one room and only ever
-			// grow or shrink the watched set by that one room via Add/
-			// Remove -- found live 2026-09-08 (Raf): a ring's caller and
-			// its accepting callee both got a real room membership this
-			// package never learned about until the model happened to
-			// also call mesh_rooms, which a normal "I've said my piece,
-			// now I wait for their reply" turn never does on its own. See
-			// roomwaiter.Manager.Add's own doc comment for the full story.
-			if waiterMgr != nil && ev.Kind == agent.EventToolResult {
-				switch ev.ToolName {
-				case "mesh_rooms":
-					waiterMgr.Sync(ctx, parseJoinedRooms(ev.Text))
-				case "mesh_join_room", "mesh_ring":
-					if room := parseRoomTopic(ev.Text); room != "" {
-						waiterMgr.Add(ctx, room)
-					}
-				case "mesh_answer_ring":
-					if room, joined := parseAnsweredRingRoom(ev.Text); joined {
-						waiterMgr.Add(ctx, room)
-					}
-				case "mesh_leave_room":
-					if room := parseRoomTopic(ev.Text); room != "" {
-						waiterMgr.Remove(room)
-					}
-				}
-			}
-			// Non-blocking: the TUI is a slow, human-paced consumer and
-			// must never be able to stall the agent loop by not reading
-			// fast enough (or not running at all -- tuiEvents always
-			// exists, but nothing drains it without a program running).
-			select {
-			case tuiEvents <- ev:
-			default:
-			}
-		}
-	}()
-	defer close(events)
-
-	// maxConsecutiveErrors bounds how long this keeps retrying after
-	// repeated provider failures (found by an adversarial review,
-	// 2026-09-06): unbounded retries meant a wedged provider -- or a peer
-	// deliberately flooding the room to force context-overflow errors --
-	// left this loop silently spinning forever while the TUI still looked
-	// healthy. backoff grows between attempts instead of a fixed delay, so
-	// a transient blip recovers fast but a persistent failure doesn't
-	// hammer the provider every 5s for no reason.
-	const maxConsecutiveErrors = 8
+// runAgent drives the supervised session actor for as long as the program
+// runs: it blocks on one Say at a time (the session runs the loop; the
+// driver supplies prompts and cadence), reports cycle usage, and waits on
+// nextEvent between turns — the same sequential shape the old
+// goroutine-owned Loop had, now with the conversation itself owned by a
+// supervised actor.
+//
+// A Say whose Call fails means the session PROCESS died (a panic-restart);
+// the driver reattaches to its supervised replacement and retries the same
+// prompt, because a crashed turn was never answered — that recovery path
+// is exactly what supervision buys. When no replacement appears, the
+// failure falls into the ordinary backoff accounting. Room/ring waiting
+// stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
+// this function supplies the cadence, driven by real events.
+func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
-
 	prompt := agentInitialPrompt
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		usageBefore := loop.Usage()
-		if err := loop.Say(ctx, prompt, events); err != nil {
-			consecutiveErrors++
-			agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, consecutiveErrors, maxConsecutiveErrors)
-			if consecutiveErrors >= maxConsecutiveErrors {
-				agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", consecutiveErrors)
-				events <- agent.Event{Kind: agent.EventMaxFailuresReached}
-				return
+
+		usageBefore, err := sessionhost.SessionStatus(n, sessPid)
+		if err != nil {
+			// The session died before this turn even started. Reattach
+			// and start over with the same prompt — Say never ran, so
+			// nothing was answered twice.
+			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
+			if rerr != nil {
+				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, rerr) {
+					return
+				}
+				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+				continue
 			}
-			events <- agent.Event{Kind: agent.EventBackoff}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			backoff = nextBackoff(backoff)
-			events <- agent.Event{Kind: agent.EventListening}
-			var ok bool
-			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
-			if !ok {
-				return
-			}
+			sessPid = newPid
 			continue
 		}
+
+		reply, err := sessionhost.SayTurn(n, sessPid, prompt)
+		if err != nil {
+			// The session died mid-turn. Its replacement gets the SAME
+			// prompt: the crashed turn was never answered, and the fresh
+			// conversation has no record of it.
+			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
+			if rerr != nil {
+				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, rerr) {
+					return
+				}
+				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+				continue
+			}
+			sessPid = newPid
+			continue
+		}
+		if reply.Err != nil {
+			// An ordinary failed turn: the session survived, the loop
+			// already emitted the EventError. Count it, back off, wait
+			// for the next reason to run.
+			if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, reply.Err) {
+				return
+			}
+			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+			continue
+		}
+
 		consecutiveErrors = 0
 		backoff = initialBackoff
-		logCycleUsage(agentLog, usageBefore, loop.Usage())
-		events <- agent.Event{Kind: agent.EventListening}
+		usageAfter, err := sessionhost.SessionStatus(n, sessPid)
+		if err != nil {
+			// The session died between Say's reply and this status read —
+			// rare, but the loop below handles it like any death.
+			usageAfter = sessionhost.Status{}
+		}
+		logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
+		emitTui(tuiEvents, agent.Event{Kind: agent.EventListening})
 		var ok bool
 		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 		if !ok {
 			return
 		}
+	}
+}
+
+// reattachSession finds the supervised replacement of a session whose
+// process died (panic → supervisor restart) and verifies it answers a
+// status probe before handing it back. Bounded so a crash-looping session
+// — whose restarts the supervisor's own intensity limit eventually
+// exhausts — cannot keep the driver busy forever. With one session per
+// root, any other pid in the root's list IS the replacement; per-session
+// identity arrives with OD2's session ids, not with pid matching.
+func reattachSession(ctx context.Context, n gen.Node, root, oldPid gen.PID, agentLog *log.Logger) (gen.PID, error) {
+	agentLog.Printf("lazymesh agent: session %s died -- reattaching to its supervised replacement", oldPid)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return gen.PID{}, ctx.Err()
+		}
+		pids, err := sessionhost.Sessions(n, root)
+		if err != nil {
+			return gen.PID{}, err
+		}
+		for _, pid := range pids {
+			if pid == oldPid {
+				continue
+			}
+			if _, err := sessionhost.SessionStatus(n, pid); err != nil {
+				continue
+			}
+			agentLog.Printf("lazymesh agent: reattached to session %s", pid)
+			return pid, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return gen.PID{}, fmt.Errorf("no replacement session appeared for %s", oldPid)
+}
+
+// maxConsecutiveErrors bounds how long the driver keeps retrying after
+// repeated failures (found by an adversarial review, 2026-09-06):
+// unbounded retries meant a wedged provider -- or a peer deliberately
+// flooding the room to force context-overflow errors -- left the loop
+// silently spinning forever while the TUI still looked healthy.
+const maxConsecutiveErrors = 8
+
+// failCycle is the ordinary failure path, verbatim from the old runAgent:
+// count, report, back off with growth, and stop after
+// maxConsecutiveErrors so a wedged provider never retries forever
+// silently. Returns false when the driver should stop.
+func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Duration, agentLog *log.Logger, tuiEvents chan<- agent.Event, err error) bool {
+	*consecutiveErrors++
+	agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, *consecutiveErrors, maxConsecutiveErrors)
+	if *consecutiveErrors >= maxConsecutiveErrors {
+		agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", *consecutiveErrors)
+		emitTui(tuiEvents, agent.Event{Kind: agent.EventMaxFailuresReached})
+		return false
+	}
+	emitTui(tuiEvents, agent.Event{Kind: agent.EventBackoff})
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(*backoff):
+	}
+	*backoff = nextBackoff(*backoff)
+	emitTui(tuiEvents, agent.Event{Kind: agent.EventListening})
+	return true
+}
+
+// emitTui forwards a driver-level event to the TUI without ever blocking
+// on it — the TUI is a slow, human-paced consumer and must never stall
+// the agent's cadence.
+func emitTui(tuiEvents chan<- agent.Event, ev agent.Event) {
+	select {
+	case tuiEvents <- ev:
+	default:
 	}
 }
 

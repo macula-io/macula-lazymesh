@@ -23,9 +23,22 @@ type SessionArgs struct {
 
 // Say asks the session's loop to process one user message: the full
 // tool-calling round runs, and every intermediate step is forwarded to
-// each subscriber as an Event, in order, after the turn completes.
+// each subscriber as an Event, in order, after the turn completes. Say is
+// a REQUEST, not a cast: the driver blocks on SayReply until the turn is
+// done, preserving the sequential one-turn-at-a-time cadence the old
+// runAgent had — and SayReply.Err carries a turn failure as a value, so a
+// failed turn never terminates the session (a non-nil HandleCall error
+// would).
 type Say struct {
 	Text string
+}
+
+// SayReply is the answer to a Say: Err is nil on a completed turn, and
+// carries the loop's own error on a failed one. It travels as a normal
+// reply value — the driver decides what a failure means; the session
+// itself survives it.
+type SayReply struct {
+	Err error
 }
 
 // Event is one loop step (assistant text, tool call, tool result, error)
@@ -82,13 +95,11 @@ func (s *session) ProcessKind() gen.ProcessKind {
 	return gen.ProcessKindSession
 }
 
-// HandleMessage routes Say and Subscribe. An unknown message is logged and
+// HandleMessage routes Subscribe. An unknown message is logged and
 // dropped, never an error: a non-nil return terminates the process, and an
 // unrecognized message must not be able to kill a conversation.
 func (s *session) HandleMessage(from gen.PID, message any) error {
-	switch msg := message.(type) {
-	case Say:
-		return s.runSay(msg)
+	switch message.(type) {
 	case Subscribe:
 		s.subscribers[from] = struct{}{}
 		return nil
@@ -97,13 +108,17 @@ func (s *session) HandleMessage(from gen.PID, message any) error {
 	return nil
 }
 
-// HandleCall answers synchronous requests. Subscribe is callable too (its
-// ack is the subscriber count); anything unknown is answered with
+// HandleCall answers synchronous requests: Say runs one turn and returns
+// SayReply (a failed turn is a value, never a termination), StatusRequest
+// reports the conversation's shape, and Subscribe is callable too (its
+// ack is the subscriber count). Anything unknown is answered with
 // UnsupportedReply via SendResponse. The nil, nil return marks the
 // request as answered asynchronously — returning a non-nil error here
 // would stop the session (Ergo's HandleCall error = stop).
 func (s *session) HandleCall(from gen.PID, ref gen.Ref, request any) (any, error) {
-	switch request.(type) {
+	switch req := request.(type) {
+	case Say:
+		return SayReply{Err: s.runSay(req.Text)}, nil
 	case StatusRequest:
 		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage()}, nil
 	case Subscribe:
@@ -132,21 +147,18 @@ func (s *session) Terminate(reason error) {}
 // exists for — a panic — is precisely what still gets caught and
 // restarted. Events are captured in a bounded buffer and broadcast after
 // the turn, so no subscriber can stall the loop.
-func (s *session) runSay(msg Say) error {
+func (s *session) runSay(text string) error {
 	events := make(chan agent.Event, eventBuffer)
-	err := s.loop.Say(context.Background(), msg.Text, events)
+	err := s.loop.Say(context.Background(), text, events)
 	close(events)
 	for ev := range events {
 		s.broadcast(ev)
 	}
-	if err != nil {
-		// A failed turn is reported, not fatal: the backoff/retry policy
-		// lives with whoever drives the session, exactly as it did in
-		// cmd/lazymesh's runAgent, and the loop has already emitted the
-		// EventError describing it.
-		s.Log().Error("sessionhost: turn failed: %s", err)
-	}
-	return nil
+	// The turn's failure travels back to the driver as SayReply.Err: the
+	// loop has already emitted the EventError describing it, and the
+	// retry/backoff policy belongs to whoever drives the session — the
+	// session itself survives a failed turn.
+	return err
 }
 
 // broadcast forwards one event to every subscriber. A dead subscriber's
@@ -156,4 +168,33 @@ func (s *session) broadcast(ev agent.Event) {
 	for pid := range s.subscribers {
 		_ = s.Send(pid, Event{Event: ev})
 	}
+}
+
+// Say runs one turn on session and blocks until it completes: SayReply.Err
+// carries a turn failure, while a non-nil returned error means the session
+// process itself is gone (a panic-restart in flight, or a stop) and the
+// caller must reattach rather than count it as an ordinary failure.
+func SayTurn(n gen.Node, session gen.PID, text string) (SayReply, error) {
+	reply, err := n.Call(session, Say{Text: text})
+	if err != nil {
+		return SayReply{}, err
+	}
+	r, ok := reply.(SayReply)
+	if !ok {
+		return SayReply{}, fmt.Errorf("sessionhost: session answered Say with %T, want SayReply", reply)
+	}
+	return r, nil
+}
+
+// Status asks the session for its conversation's current shape.
+func SessionStatus(n gen.Node, session gen.PID) (Status, error) {
+	reply, err := n.Call(session, StatusRequest{})
+	if err != nil {
+		return Status{}, err
+	}
+	r, ok := reply.(Status)
+	if !ok {
+		return Status{}, fmt.Errorf("sessionhost: session answered StatusRequest with %T, want Status", reply)
+	}
+	return r, nil
 }

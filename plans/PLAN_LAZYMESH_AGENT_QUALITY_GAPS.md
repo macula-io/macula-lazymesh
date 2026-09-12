@@ -611,19 +611,23 @@ become long-running.
 
 ## Phases
 
-- [ ] **Phase 0 — Actor-core port (bus-vs-actors decided: ACTORS — D4).**
-      Walking skeleton landed 2026-09-12 as `internal/sessionhost`: embedded
-      Ergo node with `NetworkModeDisabled` + silent logger, a
+- [x] **Phase 0 — Actor-core port (bus-vs-actors decided: ACTORS — D4).**
+      Landed 2026-09-12 as `internal/sessionhost` + the cmd/lazymesh wiring:
+      embedded Ergo node with `NetworkModeDisabled` + silent logger, a
       simple_one_for_one root supervisor, and supervised session actors
       hosting the real `agent.Loop`. Dynamic N-session hosting (OD2) is
-      in: `StartSession`/`Sessions`/`StopSession` over anonymous pids, the
-      transient strategy restarts only abnormal deaths (panic → fresh
-      state + same SessionArgs; normal stop ends the conversation for
-      good). Proven by tests: node boot, say→events→subscribers,
-      panic→`TerminateReasonPanic`→restart with fresh state, and
-      normal-stop-does-not-restart. Still open before Phase 0 is done:
-      main.go wiring onto the tree, and the frontend bus as actor
-      mailboxes.
+      in (`StartSession`/`Sessions`/`StopSession`); the transient strategy
+      restarts only abnormal deaths (panic → fresh state + same
+      SessionArgs; normal stop ends the conversation). cmd/lazymesh now
+      boots the tree, `runAgent` is a driver that blocks on one Say at a
+      time and REATTACHES to the supervised replacement after a
+      panic-restart, and an `eventBridge` process hands loop events to the
+      TUI/log/room-waiter exactly as the old forwarding goroutine did.
+      Proven by tests: node boot, say→events→subscribers,
+      panic→`TerminateReasonPanic`→restart with fresh state,
+      normal-stop-does-not-restart, plus the full pre-existing suite.
+      The TUI itself still consumes channels; view-model actors (OD3) and
+      the unix-socket control plane (D1) are the next phases, not Phase 0.
 - [ ] **Phase 1 — Headless mode + unix socket.** `--headless`,
       `--unix-socket <path>`, `--session-id <id>`; control messages
       `input`/`shutdown`/`query`/`session`; output stream as above.

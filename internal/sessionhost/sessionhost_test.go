@@ -200,8 +200,12 @@ func TestSayRunsTheRealLoopAndSubscribersSeeEvents(t *testing.T) {
 		t.Fatalf("subscribe collector: %v", err)
 	}
 
-	if err := n.Send(sessPid, Say{Text: "hi"}); err != nil {
-		t.Fatalf("send say: %v", err)
+	reply, err := SayTurn(n, sessPid, "hi")
+	if err != nil {
+		t.Fatalf("say turn: %v", err)
+	}
+	if reply.Err != nil {
+		t.Fatalf("say turn failed: %v", reply.Err)
 	}
 
 	select {
@@ -252,9 +256,11 @@ func TestPanicRestartsWithFreshState(t *testing.T) {
 		t.Fatalf("monitor session: %v", err)
 	}
 
-	if err := n.Send(oldPid, Say{Text: "trigger the panic"}); err != nil {
-		t.Fatalf("send say: %v", err)
-	}
+	// The Say runs inside the session actor; the panicking provider takes
+	// the process down mid-turn, so SayTurn either returns a reply with an
+	// error value or fails outright — either way the DOWN is the real
+	// assertion.
+	_, _ = SayTurn(n, oldPid, "trigger the panic")
 
 	down := waitDowns(t, downs)
 	if !errors.Is(down.Reason, gen.TerminateReasonPanic) {
