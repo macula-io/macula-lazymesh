@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -14,14 +15,19 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
+	"ergo.services/ergo/gen"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/counters"
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
@@ -30,8 +36,13 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
+	"github.com/macula-io/macula-lazymesh/internal/scheduler"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
+	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/termkeys"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
+	"github.com/macula-io/macula-lazymesh/internal/webfetch"
 )
 
 // version, commit, and date are set via -ldflags by .goreleaser.yml at
@@ -48,6 +59,11 @@ func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
 	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs)")
 	goalText := flag.String("goal", "", "additional objective for the agent, beyond ordinary mesh participation (optional)")
+	headless := flag.Bool("headless", false, "run without the TUI (a unix control socket or a signal ends the session)")
+	socketPath := flag.String("unix-socket", "", "serve the control plane on this unix socket (default: $XDG_RUNTIME_DIR/lazymesh/<session-id>.sock)")
+	sessionID := flag.String("session-id", "", "session id reported to controllers (default: lazymesh-<pid>)")
+	resumeRef := flag.String("resume", "", "resume a previous session: a session id, or \"latest\"/\"last\" for the newest one")
+	continueLatest := flag.Bool("continue", false, "resume the newest session (same as --resume latest)")
 	flag.Parse()
 
 	if *showVersion {
@@ -55,13 +71,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *room, *goalText); err != nil {
+	if err := run(*configPath, *room, *goalText, *headless, *socketPath, *sessionID, *resumeRef, *continueLatest); err != nil {
 		fmt.Fprintln(os.Stderr, "lazymesh:", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, room, goalText string) error {
+func run(configPath, room, goalText string, headless bool, socketPath, sessionID, resumeRef string, continueLatest bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -104,6 +120,11 @@ func run(configPath, room, goalText string) error {
 	// Buffered generously since the TUI side is the slow consumer (a human
 	// reading, not a tight loop) and the agent side must never block on it.
 	tuiEvents := make(chan agent.Event, 64)
+	// The control plane's own event fan-out: the event bridge and the
+	// driver broadcast every event here too, and the frontend server
+	// drains it. Without a socket there is no reader, and the non-blocking
+	// sends simply drop — the TUI's channel is unaffected.
+	frontendEvents := make(chan agent.Event, 64)
 	userInputCh := make(chan string, 8)
 
 	// Moved ahead of buildToolSource (2026-09-07, R2): meshservices.Source
@@ -180,8 +201,12 @@ func run(configPath, room, goalText string) error {
 	// anything else starts, so a genuinely undersized context window
 	// fails fast with a clear message instead of the same class of
 	// crash the runaway-context incident already produced once.
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled)
+	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(wd))
 	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
 		return err
 	}
@@ -212,12 +237,144 @@ func run(configPath, room, goalText string) error {
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 
-	go runAgent(ctx, p, tools, room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
+	// The actor core (D4): one embedded node, one root supervisor, one
+	// supervised session actor owning the conversation, and a bridge
+	// process handing loop events to the TUI, the agent log and the
+	// room-waiter. A provider panic now restarts the session instead of
+	// killing lazymesh — the whole point of the supervision tree.
+	node, err := sessionhost.Node(logFile)
+	if err != nil {
+		return fmt.Errorf("start actor node: %w", err)
+	}
+	rootPid, err := sessionhost.StartRoot(node)
+	if err != nil {
+		return fmt.Errorf("start session root: %w", err)
+	}
+
+	// Session persistence (D2): every run resolves its session id, wires
+	// the JSONL store, and either starts fresh or resumes. --continue and
+	// --resume resolve against the workspace-fingerprinted session dir;
+	// without them the default id (lazymesh-<pid>) starts a new log.
+	resolvedSessionID := sessionID
+	if resolvedSessionID == "" {
+		resolvedSessionID = fmt.Sprintf("lazymesh-%d", os.Getpid())
+	}
+	dataDir, err := sessionstore.DefaultDataDir()
+	if err != nil {
+		return fmt.Errorf("resolve session store dir: %w", err)
+	}
+	sessionStore, err := sessionstore.New(dataDir, sessionstore.Fingerprint(wd))
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	if continueLatest {
+		if resumeRef != "" {
+			return fmt.Errorf("--continue and --resume are the same thing; give one")
+		}
+		resumeRef = "latest"
+	}
+	if resumeRef != "" {
+		resolvedSessionID, err = sessionstore.Resolve(resumeRef, sessionStore, resolvedSessionID)
+		if err != nil {
+			return err
+		}
+	}
+
+	sessPid, err := sessionhost.StartSession(node, rootPid, sessionhost.SessionArgs{
+		Provider:     p,
+		Tools:        tools,
+		SystemPrompt: systemPrompt,
+		Store:        sessionStore,
+		SessionID:    resolvedSessionID,
+		AskTools:     cfg.ToolAsklist,
+	})
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	defer sessionhost.StopSession(node, sessPid)
+	runtimeCounters := counters.New()
+	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, frontendEvents, agentLog, waiterMgr, runtimeCounters); err != nil {
+		return fmt.Errorf("start event bridge: %w", err)
+	}
+
+	// The interrupt bus (Phase 3): the TUI's `x` key and the control
+	// socket's interrupt message both land here and cancel the session's
+	// in-flight turn via its per-turn context. One goroutine per signal;
+	// a turn that isn't running makes Interrupt a no-op.
+	interruptCh := make(chan struct{}, 4)
+	go func() {
+		for range interruptCh {
+			sessionhost.Interrupt(sessPid)
+		}
+	}()
+
+	// The approval bus (G9): the TUI's approval popup and the control
+	// socket's approve message both land here and answer the session's
+	// outstanding consent question.
+	approvalCh := make(chan tui.ApprovalAnswer, 4)
+	go func() {
+		for answer := range approvalCh {
+			sessionhost.AnswerApproval(sessPid, answer.ID, answer.Allow)
+		}
+	}()
+
+	// The scheduler (G13): the control socket's schedule message arms a
+	// deferred prompt; the driver consumes it as its next wakeup.
+	schedulerMgr := scheduler.New()
+	defer schedulerMgr.Stop()
+
+	// The control plane (D1): a unix socket speaking NDJSON both ways,
+	// attached to the same bus the TUI uses. input lands on userInputCh
+	// exactly like the compose line; queries read live session and mesh
+	// state; shutdown ends the headless run.
+	var ctrl *frontend.Server
+	if socketPath != "" || headless {
+		path := socketPath
+		if path == "" {
+			path = frontend.DefaultSocketPath(resolvedSessionID)
+			if path == "" {
+				return fmt.Errorf("resolve control socket path for session %s", resolvedSessionID)
+			}
+		}
+		ctrl, err = frontend.Start(frontend.Options{
+			Path:      path,
+			Input:     userInputCh,
+			Events:    frontendEvents,
+			Query:     buildQueryHandler(node, sessPid, client, runtimeCounters),
+			Interrupt: func() { sessionhost.Interrupt(sessPid) },
+			Approve:   func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
+			Schedule:  schedulerMgr.Schedule,
+			SessionID: resolvedSessionID,
+			Model:     providerLabel(cfg) + "/" + cfg.Model,
+			Log:       logStack.StdFor("frontend"),
+		})
+		if err != nil {
+			return fmt.Errorf("start control plane: %w", err)
+		}
+		defer ctrl.Close()
+	}
+
+	go func() {
+		// The driver is a plain goroutine, not an Ergo process: a panic
+		// here crashes lazymesh WITHOUT any trace (Go writes the stack to
+		// stderr, and the alt-screen swallows it) — log the stack to
+		// agent.log first, then re-panic so the process still dies
+		// loudly.
+		defer func() {
+			if r := recover(); r != nil {
+				agentLog.Printf("lazymesh agent: PANIC in driver: %v\n%s", r, debug.Stack())
+				panic(r)
+			}
+		}()
+		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals())
+	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
 		AgentEvents:       tuiEvents,
 		UserInputCh:       userInputCh,
+		InterruptCh:       interruptCh,
+		ApprovalCh:        approvalCh,
 		StatusBarPosition: cfg.StatusBarPosition,
 		ContactPolicyFile: cfg.ContactPolicyFile,
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
@@ -243,8 +400,42 @@ func run(configPath, room, goalText string) error {
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
 	})
-	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
-	_, err = program.Run()
+
+	if headless {
+		// No TUI: the session runs until a controller says shutdown or a
+		// signal lands. The control socket is the deliberate primary exit
+		// path; SIGINT/SIGTERM (ctx) still work without one.
+		if ctrl == nil {
+			<-ctx.Done()
+		} else {
+			select {
+			case <-ctx.Done():
+			case <-ctrl.Shutdown():
+			}
+		}
+	} else {
+		// The kitty keyboard protocol (report_text + embed_text, kitty
+		// 0.48.2's flags 8+16 -- this version has no spec-style
+		// "report all keys" flag), which is what makes shift+enter
+		// distinguishable from enter at all. kitty keeps SEPARATE protocol stacks for the main and
+		// alternate screens, and this program's TUI runs on the alternate
+		// screen -- so the push cannot happen here, before the TUI starts:
+		// it would land on the main screen's stack and the TUI would see
+		// plain legacy bytes (the exact failure this comment documents,
+		// reproduced live 2026-09-12). The TUI model therefore pushes the
+		// protocol in its Init (the first thing that runs once the
+		// alternate screen is active) and pops it on its quit paths,
+		// before bubbletea leaves the alternate screen.
+		program := tea.NewProgram(tuiModel,
+			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
+			tea.WithInput(termkeys.New(os.Stdin)),
+			// bracketed paste is on by default in bubbletea: paste
+			// events arrive as KeyMsg{Paste: true}, which the
+			// PromptEditor turns into the compact pasted-lines chip.
+		)
+		_, err = program.Run()
+	}
 	cancel()
 
 	// Every deliberate exit path converges here: the TUI's own Quit ("q")
@@ -359,6 +550,12 @@ func providerLabel(cfg config.Config) string {
 // (the caller's job to keep those in sync -- see run).
 func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source) (agent.ToolSource, error) {
 	sources := []agent.ToolSource{client}
+	// web_fetch (G12) is always wired but never reachable by default: the
+	// default allowlist excludes it, so it costs nothing until an
+	// operator names it in tool_allowlist (or tool_asklist for per-call
+	// approval) — reachability stays an explicit choice, never a side
+	// effect of the source existing.
+	sources = append(sources, webfetch.New())
 	if meshSvc != nil {
 		sources = append(sources, meshSvc)
 	}
@@ -374,13 +571,17 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 		sources = append(sources, local)
 	}
 	combined := agent.NewMultiSource(sources...)
-	allowed := agent.NewAllowlistSource(combined, resolveAllowlist(cfg))
+	var gated agent.ToolSource = agent.NewAllowlistSource(combined, resolveAllowlist(cfg))
+	// G11: the handoff-discipline wrapper sits AFTER the allowlist (only
+	// allowed calls matter) and enforces the reply-kind in_reply_to rule
+	// at the boundary.
+	gated = agent.NewHandoffSource(gated)
 
 	// Terse-ified last, after allowlisting -- see internal/agent/terse.go's
 	// own doc comment (R2, 2026-09-07): only shortens what actually
 	// reaches the model, never wastes work rewriting a tool the allowlist
 	// would filter out anyway.
-	return agent.NewTerseDescriptionSource(allowed), nil
+	return agent.NewTerseDescriptionSource(gated), nil
 }
 
 // resolveAllowlist is the single place cfg.ToolAllowlist gets defaulted,
@@ -396,13 +597,41 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 // this function's own job is to prevent.
 func resolveAllowlist(cfg config.Config) []string {
 	if len(cfg.ToolAllowlist) > 0 {
-		return cfg.ToolAllowlist
+		if !cfg.ToolAllowlistExtends {
+			// Replace semantics (the default): the operator wrote the
+			// whole list, which is the one way to REMOVE a default tool.
+			return cfg.ToolAllowlist
+		}
+		// Extend semantics (G18): the override ADDS to the defaults —
+		// naming one extra tool must never silently remove every other
+		// default, the footgun this flag exists to defuse.
+		names := append([]string{}, cfg.ToolAllowlist...)
+		names = appendUnique(names, agent.DefaultToolAllowlist...)
+		if cfg.MeshServicesEnabled {
+			names = appendUnique(names, meshservices.AllowedToolNames()...)
+		}
+		return names
 	}
 	names := append([]string{}, agent.DefaultToolAllowlist...)
 	if cfg.MeshServicesEnabled {
 		names = append(names, meshservices.AllowedToolNames()...)
 	}
 	return names
+}
+
+// appendUnique appends names not already present, preserving order.
+func appendUnique(base []string, names ...string) []string {
+	seen := make(map[string]bool, len(base)+len(names))
+	for _, n := range base {
+		seen[n] = true
+	}
+	for _, n := range names {
+		if !seen[n] {
+			base = append(base, n)
+			seen[n] = true
+		}
+	}
+	return base
 }
 
 func allowlistIncludes(allowlist []string, name string) bool {
@@ -499,6 +728,54 @@ func agentLogPath() (string, error) {
 	return filepath.Join(dir, "agent.log"), nil
 }
 
+// maxLocalInstructionsBytes caps how much of the operator's own
+// instruction files ever reaches the model (G8): the convention files
+// can be huge (a workspace CLAUDE.md is tens of KB), and the startup
+// budget check exists to refuse genuinely oversized prefixes — the cap
+// here keeps one accidentally gigantic file from doing that refusal on
+// its own.
+const maxLocalInstructionsBytes = 100_000
+
+// localInstructions reads the operator's own standing instructions for
+// the working directory (G8): AGENTS.md and CLAUDE.md, the two
+// conventions this ecosystem already uses for agent guidance. Missing
+// files are simply absent; the order is AGENTS.md first, and content
+// past the cap is truncated with a marker rather than silently cut.
+func localInstructions(dir string) string {
+	var b strings.Builder
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		content, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		if total := len(content); total > maxLocalInstructionsBytes {
+			content = append(content[:maxLocalInstructionsBytes], []byte(fmt.Sprintf("\n... [truncated: %d of %d bytes shown]", maxLocalInstructionsBytes, total))...)
+		}
+		b.WriteString("\n\n--- " + name + " ---\n")
+		b.Write(content)
+	}
+	return b.String()
+}
+
+// meshGrammarLine is the envelope-kind grammar the model must follow
+// (G11, 2026-09-12): the kinds exist so rooms stay readable and work
+// stays attributable, and every reply kind names the message it answers.
+const meshGrammarLine = "Mesh conversation grammar: choose mesh_say's kind deliberately. " +
+	"A question_asked expects an answer_given; a task_handed_over expects a result_reported " +
+	"from whoever took it; a lane_claimed on work you picked up expects a lane_released once " +
+	"you are done or dropping it; claim_confirmed/claim_disputed weigh in on someone's " +
+	"result_reported. Every reply kind (answer_given, result_reported, lane_released, " +
+	"claim_confirmed, claim_disputed) REQUIRES in_reply_to set to the message_id it answers, " +
+	"which you read from mesh_read_inbox -- a reply without it is refused."
+
+// styleLine is the anti-narration rule (2026-09-12, from a live run whose
+// model opened with "I'll start by..." and closed with a bulleted report):
+// the transcript IS the record, so the model must act, not announce.
+const styleLine = "Style: act, do not narrate. Call the tool you intend to use immediately -- " +
+	"never open a turn with \"I'll start by...\" or a plan announcement, and never restate " +
+	"what a tool result already shows. Reply in one or two lines unless a question genuinely " +
+	"needs more."
+
 // buildSystemPrompt is the agent's fixed opening instruction, pulled out of
 // runAgent as its own pure function so the room-scoping behavior (macula-
 // io/macula-lazymesh#1) has a direct unit test independent of the loop's
@@ -506,7 +783,7 @@ func agentLogPath() (string, error) {
 // model is told to discover its actual participation scope live via
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
-func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool) string {
+func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, localInstructions string) string {
 	// Deliberately says nothing about why this changed (macula-io/macula-
 	// lazymesh#14/#15's own history) -- that belongs in code comments and
 	// the issue tracker, not in tokens sent to the model on every single
@@ -570,125 +847,252 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"they fit naturally. Don't force it into every message, and keep it to conversation " +
 			"text, not tool arguments."
 	}
+	systemPrompt += "\n\n" + meshGrammarLine + "\n\n" + styleLine
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
+	}
+	if localInstructions != "" {
+		systemPrompt += "\n\nThe operator's local instructions for the working directory follow. Treat them as standing orders, second only to this system prompt and to explicit new instructions:" + localInstructions
 	}
 	return systemPrompt
 }
 
-// runAgent drives the agent loop in the background, for as long as the
-// program runs; room and goalText are optional hints, not a scope
-// restriction -- the model discovers and participates in every room it is
-// currently a member of via mesh_rooms, regardless of whether either is
-// set. Every round the LLM decides what to do (join, talk, answer rings
-// when told about one) -- waiting itself is waiterMgr's (rooms) and
-// ringMgr's (rings) job now (macula-io/macula-lazymesh#14/#15, rings
-// 2026-09-07), not something the model asks for or checks periodically;
-// this function supplies the cadence of asking it to keep going, driven
-// by real events rather than the model's own long tool-call waits or a
-// periodic re-check.
-func runAgent(ctx context.Context, p provider.Provider, tools agent.ToolSource, room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, expressiveStyle, meshServicesEnabled)
-
-	loop := agent.NewLoop(p, tools, systemPrompt)
-	events := make(chan agent.Event, 16)
-	go func() {
-		for ev := range events {
-			logEvent(agentLog, ev)
-			// Reactive room-churn detection (macula-io/macula-lazymesh#14,
-			// Vega's flagged requirement): piggyback on tool results the
-			// model already produces on its own normal cadence, never a
-			// poll loop of waiterMgr's own. mesh_rooms is authoritative
-			// (its own {"joined": [...]} list drives a full Sync, adding
-			// and removing); mesh_join_room/mesh_ring/mesh_answer_ring/
-			// mesh_leave_room each report exactly one room and only ever
-			// grow or shrink the watched set by that one room via Add/
-			// Remove -- found live 2026-09-08 (Raf): a ring's caller and
-			// its accepting callee both got a real room membership this
-			// package never learned about until the model happened to
-			// also call mesh_rooms, which a normal "I've said my piece,
-			// now I wait for their reply" turn never does on its own. See
-			// roomwaiter.Manager.Add's own doc comment for the full story.
-			if waiterMgr != nil && ev.Kind == agent.EventToolResult {
-				switch ev.ToolName {
-				case "mesh_rooms":
-					waiterMgr.Sync(ctx, parseJoinedRooms(ev.Text))
-				case "mesh_join_room", "mesh_ring":
-					if room := parseRoomTopic(ev.Text); room != "" {
-						waiterMgr.Add(ctx, room)
-					}
-				case "mesh_answer_ring":
-					if room, joined := parseAnsweredRingRoom(ev.Text); joined {
-						waiterMgr.Add(ctx, room)
-					}
-				case "mesh_leave_room":
-					if room := parseRoomTopic(ev.Text); room != "" {
-						waiterMgr.Remove(room)
-					}
-				}
-			}
-			// Non-blocking: the TUI is a slow, human-paced consumer and
-			// must never be able to stall the agent loop by not reading
-			// fast enough (or not running at all -- tuiEvents always
-			// exists, but nothing drains it without a program running).
-			select {
-			case tuiEvents <- ev:
-			default:
-			}
-		}
-	}()
-	defer close(events)
-
-	// maxConsecutiveErrors bounds how long this keeps retrying after
-	// repeated provider failures (found by an adversarial review,
-	// 2026-09-06): unbounded retries meant a wedged provider -- or a peer
-	// deliberately flooding the room to force context-overflow errors --
-	// left this loop silently spinning forever while the TUI still looked
-	// healthy. backoff grows between attempts instead of a fixed delay, so
-	// a transient blip recovers fast but a persistent failure doesn't
-	// hammer the provider every 5s for no reason.
-	const maxConsecutiveErrors = 8
+// runAgent drives the supervised session actor for as long as the program
+// runs: it blocks on one Say at a time (the session runs the loop; the
+// driver supplies prompts and cadence), reports cycle usage, and waits on
+// nextEvent between turns — the same sequential shape the old
+// goroutine-owned Loop had, now with the conversation itself owned by a
+// supervised actor.
+//
+// A Say whose Call fails means the session PROCESS died (a panic-restart);
+// the driver reattaches to its supervised replacement and retries the same
+// prompt, because a crashed turn was never answered — that recovery path
+// is exactly what supervision buys. When no replacement appears, the
+// failure falls into the ordinary backoff accounting. Room/ring waiting
+// stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
+// this function supplies the cadence, driven by real events.
+func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string, wakeups <-chan string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
-
 	prompt := agentInitialPrompt
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		usageBefore := loop.Usage()
-		if err := loop.Say(ctx, prompt, events); err != nil {
-			consecutiveErrors++
-			agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, consecutiveErrors, maxConsecutiveErrors)
-			if consecutiveErrors >= maxConsecutiveErrors {
-				agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", consecutiveErrors)
-				events <- agent.Event{Kind: agent.EventMaxFailuresReached}
-				return
+
+		usageBefore, err := sessionhost.SessionStatus(n, sessPid)
+		if err != nil {
+			// The session died before this turn even started. Reattach
+			// and start over with the same prompt — Say never ran, so
+			// nothing was answered twice.
+			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
+			if rerr != nil {
+				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
+					return
+				}
+				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+				continue
 			}
-			events <- agent.Event{Kind: agent.EventBackoff}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
+			sessPid = newPid
+			continue
+		}
+
+		reply, err := sessionhost.SayTurn(n, root, sessPid, prompt)
+		if err != nil {
+			// The session died mid-turn. Its replacement gets the SAME
+			// prompt: the crashed turn was never answered, and the fresh
+			// conversation has no record of it.
+			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
+			if rerr != nil {
+				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
+					return
+				}
+				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+				continue
 			}
-			backoff = nextBackoff(backoff)
-			events <- agent.Event{Kind: agent.EventListening}
+			sessPid = newPid
+			continue
+		}
+		if errors.Is(reply.Err, context.Canceled) {
+			// An interrupt (Phase 3): the turn was deliberately cut
+			// short, not a failure. The loop already emitted the
+			// EventError and the session its turn-complete marker; the
+			// interrupted message stays in the conversation history as
+			// the fact it is, and whatever the operator typed next (or
+			// the next room/ring event) picks the cadence back up.
+			agentLog.Printf("lazymesh agent: turn interrupted")
+			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+			continue
+		}
+		if errors.Is(reply.Err, sessionhost.ErrTurnOutcomeLost) {
+			// The turn ran to completion while the driver's call had
+			// already timed out (a slow turn, alive the whole time): the
+			// conversation state is correct and the turn ran exactly
+			// once — only its reply was dropped. Neither a failure to
+			// count nor a success to celebrate: log, reset the error
+			// streak, and wait for the next event.
+			agentLog.Printf("lazymesh agent: turn finished during the wait; outcome not observed -- conversation state is intact")
+			consecutiveErrors = 0
+			backoff = initialBackoff
+			usageAfter, err := sessionhost.SessionStatus(n, sessPid)
+			if err != nil {
+				usageAfter = sessionhost.Status{}
+			}
+			logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
 			var ok bool
-			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 			if !ok {
 				return
 			}
 			continue
 		}
+		if reply.Err != nil {
+			// An ordinary failed turn: the session survived, the loop
+			// already emitted the EventError. Count it, back off, wait
+			// for the next reason to run.
+			if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, reply.Err) {
+				return
+			}
+			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+			continue
+		}
+
 		consecutiveErrors = 0
 		backoff = initialBackoff
-		logCycleUsage(agentLog, usageBefore, loop.Usage())
-		events <- agent.Event{Kind: agent.EventListening}
+		usageAfter, err := sessionhost.SessionStatus(n, sessPid)
+		if err != nil {
+			// The session died between Say's reply and this status read —
+			// rare, but the loop below handles it like any death.
+			usageAfter = sessionhost.Status{}
+		}
+		logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
+		// The session itself emitted the turn's EventListening (it must
+		// ride the same delivery path as the turn's deltas — see
+		// session.runSay); this driver emits it only on the failure
+		// path, where no session events are in flight.
 		var ok bool
-		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 		if !ok {
 			return
 		}
+	}
+}
+
+// reattachSession finds the supervised replacement of a session whose
+// process died (panic → supervisor restart) and verifies it answers a
+// status probe before handing it back. Bounded so a crash-looping session
+// — whose restarts the supervisor's own intensity limit eventually
+// exhausts — cannot keep the driver busy forever. With one session per
+// root, any other pid in the root's list IS the replacement; per-session
+// identity arrives with OD2's session ids, not with pid matching.
+func reattachSession(ctx context.Context, n gen.Node, root, oldPid gen.PID, agentLog *log.Logger) (gen.PID, error) {
+	agentLog.Printf("lazymesh agent: session %s died -- reattaching to its supervised replacement", oldPid)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return gen.PID{}, ctx.Err()
+		}
+		pids, err := sessionhost.Sessions(n, root)
+		if err != nil {
+			return gen.PID{}, err
+		}
+		for _, pid := range pids {
+			if pid == oldPid {
+				continue
+			}
+			if _, err := sessionhost.SessionStatus(n, pid); err != nil {
+				continue
+			}
+			agentLog.Printf("lazymesh agent: reattached to session %s", pid)
+			return pid, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return gen.PID{}, fmt.Errorf("no replacement session appeared for %s", oldPid)
+}
+
+// buildQueryHandler answers the control plane's query messages: status
+// reads the supervised session; rooms/inbox/agents/realms call the mesh
+// directly through the client, bypassing the model — the same
+// deterministic-harness-plumbing posture as seedInitialRooms. Mesh tool
+// results travel as parsed JSON when they parse, raw text otherwise.
+func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client, runtimeCounters *counters.Registry) func(ctx context.Context, what string) (any, error) {
+	meshTool := map[string]string{
+		"rooms":  "mesh_rooms",
+		"inbox":  "mesh_read_inbox",
+		"agents": "mesh_agents",
+		"realms": "mesh_list_realms",
+	}
+	return func(ctx context.Context, what string) (any, error) {
+		switch what {
+		case "status":
+			st, err := sessionhost.SessionStatus(n, sessPid)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"message_count": st.MessageCount,
+				"total_tokens":  st.Usage.TotalTokens,
+				"counters":      runtimeCounters.Snapshot(),
+			}, nil
+		}
+		if tool, ok := meshTool[what]; ok {
+			result, err := client.CallTool(ctx, tool, nil)
+			if err != nil {
+				return nil, err
+			}
+			var data any
+			if err := json.Unmarshal([]byte(result), &data); err != nil {
+				return result, nil
+			}
+			return data, nil
+		}
+		return nil, fmt.Errorf("unknown query %q (want status|rooms|inbox|agents|realms)", what)
+	}
+}
+
+// maxConsecutiveErrors bounds how long the driver keeps retrying after
+// repeated failures (found by an adversarial review, 2026-09-06):
+// unbounded retries meant a wedged provider -- or a peer deliberately
+// flooding the room to force context-overflow errors -- left the loop
+// silently spinning forever while the TUI still looked healthy.
+const maxConsecutiveErrors = 8
+
+// failCycle is the ordinary failure path, verbatim from the old runAgent:
+// count, report, back off with growth, and stop after
+// maxConsecutiveErrors so a wedged provider never retries forever
+// silently. Returns false when the driver should stop.
+func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Duration, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, err error) bool {
+	*consecutiveErrors++
+	agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, *consecutiveErrors, maxConsecutiveErrors)
+	if *consecutiveErrors >= maxConsecutiveErrors {
+		agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", *consecutiveErrors)
+		emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventMaxFailuresReached})
+		return false
+	}
+	emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventBackoff})
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(*backoff):
+	}
+	*backoff = nextBackoff(*backoff)
+	emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventListening})
+	return true
+}
+
+// emitTui forwards a driver-level event to the TUI without ever blocking
+// on it — the TUI is a slow, human-paced consumer and must never stall
+// the agent's cadence.
+func emitTui(tuiEvents, frontendEvents chan<- agent.Event, ev agent.Event) {
+	select {
+	case tuiEvents <- ev:
+	default:
+	}
+	select {
+	case frontendEvents <- ev:
+	default:
 	}
 }
 
@@ -812,7 +1216,7 @@ func ringArrivalPrompt(r ringwaiter.Ring) string {
 //
 // Returns ok=false only when ctx is done -- the caller should stop the
 // loop, not call Say with an empty prompt.
-func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager) (string, bool) {
+func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, wakeups <-chan string) (string, bool) {
 	if waiterMgr == nil || ringMgr == nil {
 		return nextPrompt(userInputCh, "check for anything new"), true
 	}
@@ -833,6 +1237,11 @@ func nextEvent(ctx context.Context, userInputCh <-chan string, waiterMgr *roomwa
 		return roomArrivalPrompt(arrival.RoomTopic), true
 	case ring := <-ringMgr.Arrivals():
 		return ringArrivalPrompt(ring), true
+	case prompt := <-wakeups:
+		// A deferred prompt fired (G13): the operator scheduled it, so
+		// it arrives as-is — no room/ring wrapper, the prompt IS the
+		// instruction.
+		return prompt, true
 	}
 }
 
@@ -931,10 +1340,11 @@ const (
 // macula-lazymesh#1 (2026-09-06): "the room" is now "every room
 // mesh_rooms reports," not one hardcoded topic -- a room joined later via
 // an accepted ring must stay in scope too.
-const agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+const agentInitialPrompt = "First, call mesh_read_inbox with limit 20 and answer any pending ring " +
 	"addressed to you via mesh_answer_ring. Then call mesh_rooms; join any room you were " +
 	"pointed at only if its room_topic is not already in mesh_rooms's own joined list, and " +
-	"start participating in every room you are a member of."
+	"start participating in every room you are a member of. Act, do not narrate: call the " +
+	"tools directly."
 
 // nextBackoff doubles d, capped at maxBackoff -- pulled out as a pure
 // function so the growth/cap behavior has its own test independent of the

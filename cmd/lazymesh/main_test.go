@@ -219,7 +219,7 @@ func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
 
 func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 	for _, room := range []string{"", "agents.room.deadbeef"} {
-		got := buildSystemPrompt(room, "", false, false, false)
+		got := buildSystemPrompt(room, "", false, false, false, "")
 		if !strings.Contains(got, "mesh_rooms") {
 			t.Fatalf("room=%q: expected system prompt to instruct calling mesh_rooms, got: %s", room, got)
 		}
@@ -230,14 +230,14 @@ func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyRoomHasNoPriorityHint(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false)
+	got := buildSystemPrompt("", "", false, false, false, "")
 	if strings.Contains(got, "prioritize this room") {
 		t.Fatalf("expected no room-specific priority hint when room is empty, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false, "")
 	if !strings.Contains(got, "prioritize this room: agents.room.deadbeef") {
 		t.Fatalf("expected the given room to appear as a priority hint, got: %s", got)
 	}
@@ -251,18 +251,18 @@ func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *
 }
 
 func TestBuildSystemPrompt_IncludesGoalWhenSet(t *testing.T) {
-	got := buildSystemPrompt("", "find the best pun on the mesh", false, false, false)
+	got := buildSystemPrompt("", "find the best pun on the mesh", false, false, false, "")
 	if !strings.Contains(got, "Additional objective: find the best pun on the mesh") {
 		t.Fatalf("expected goal text to appear verbatim, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
-	without := buildSystemPrompt("", "", false, false, false)
+	without := buildSystemPrompt("", "", false, false, false, "")
 	if strings.Contains(without, "shell_exec") {
 		t.Fatalf("expected no mention of shell_exec when local tools aren't reachable, got: %s", without)
 	}
-	with := buildSystemPrompt("", "", true, false, false)
+	with := buildSystemPrompt("", "", true, false, false, "")
 	if !strings.Contains(with, "shell_exec") {
 		t.Fatalf("expected shell_exec to be mentioned when local tools are reachable, got: %s", with)
 	}
@@ -279,7 +279,7 @@ func TestAgentInitialPromptCallsMeshRooms(t *testing.T) {
 // rather than assuming it will remember joining from earlier in the
 // conversation -- history gets trimmed, so that memory isn't reliable.
 func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false)
+	got := buildSystemPrompt("", "", false, false, false, "")
 	if !strings.Contains(got, "joined list") {
 		t.Fatalf("expected system prompt to reference mesh_rooms's joined list, got: %s", got)
 	}
@@ -289,7 +289,7 @@ func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing
 }
 
 func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false)
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false, "")
 	if !strings.Contains(got, "check mesh_rooms's own joined list first") {
 		t.Fatalf("expected the priority-room hint to check the joined list before joining, got: %s", got)
 	}
@@ -300,14 +300,14 @@ func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
 // permission to use emoji/expressive tone in room conversation -- never a
 // hardcoded persona forced on every operator.
 func TestBuildSystemPrompt_ExpressiveStyleOffByDefault(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false)
+	got := buildSystemPrompt("", "", false, false, false, "")
 	if strings.Contains(got, "emoji") {
 		t.Fatalf("expected no emoji guidance when expressiveStyle is false, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
-	got := buildSystemPrompt("", "", false, true, false)
+	got := buildSystemPrompt("", "", false, true, false, "")
 	if !strings.Contains(got, "emoji") {
 		t.Fatalf("expected emoji guidance when expressiveStyle is true, got: %s", got)
 	}
@@ -322,14 +322,14 @@ func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
 // wastes tokens on a capability the model doesn't have and risks a
 // hallucinated call.
 func TestBuildSystemPrompt_MeshServicesOffByDefault(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false)
+	got := buildSystemPrompt("", "", false, false, false, "")
 	if strings.Contains(got, "mesh_service_") {
 		t.Fatalf("expected no mesh_service_* mention when meshServicesEnabled is false, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_MeshServicesEnabledMentionsMeshServiceTools(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, true)
+	got := buildSystemPrompt("", "", false, false, true, "")
 	if !strings.Contains(got, "mesh_service_") {
 		t.Fatalf("expected a mesh_service_* mention when meshServicesEnabled is true, got: %s", got)
 	}
@@ -377,7 +377,7 @@ func TestSayGoodbye_ToleratesFailureWithoutPropagatingIt(t *testing.T) {
 // itself, and explain what happens instead. Unconditional now (no more
 // spike-vs-baseline split) -- this is the only behavior.
 func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false)
+	got := buildSystemPrompt("", "", false, false, false, "")
 	if strings.Contains(got, "call mesh_say with a long") {
 		t.Fatalf("expected the model-driven long-wait instruction to be gone, got: %s", got)
 	}
@@ -391,7 +391,7 @@ func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
 // room_topic" ring-check mandate is gone, replaced by internal/
 // ringwaiter waking the model only when a ring genuinely exists.
 func TestBuildSystemPrompt_DropsBlanketRingCheckMandate(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false)
+	got := buildSystemPrompt("", "", false, false, false, "")
 	if strings.Contains(got, "every single time you are prompted") {
 		t.Fatalf("expected the blanket per-cycle ring-check mandate to be gone, got: %s", got)
 	}
@@ -465,7 +465,7 @@ func TestParseAnsweredRingRoom_MalformedReturnsFalse(t *testing.T) {
 func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "from the human"
-	got, ok := nextEvent(context.Background(), ch, nil, nil)
+	got, ok := nextEvent(context.Background(), ch, nil, nil, nil)
 	if !ok || got != "from the human" {
 		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
 	}
@@ -477,7 +477,7 @@ func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "human message"
 
-	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr)
+	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr, nil)
 	if !ok || got != "human message" {
 		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
 	}
@@ -490,7 +490,7 @@ func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
 	cancel()
 	ch := make(chan string)
 
-	_, ok := nextEvent(ctx, ch, mgr, ringMgr)
+	_, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
 	if ok {
 		t.Fatalf("expected nextEvent to report !ok once ctx is done")
 	}
@@ -513,7 +513,7 @@ func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
 	mgr.Sync(ctx, []string{"agents.room.deadbeef"})
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, ringMgr)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
@@ -546,7 +546,7 @@ func TestNextEvent_ConsumesARealRingArrival(t *testing.T) {
 	ringMgr.Start(ctx)
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, ringMgr)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
@@ -634,5 +634,144 @@ func TestCheckStartupBudget_ZeroWindowNeverFails(t *testing.T) {
 
 	if err := checkStartupBudget(context.Background(), "system prompt", tools, p, nil); err != nil {
 		t.Fatalf("expected a zero ContextWindow() to never trip the hard-fail, got: %v", err)
+	}
+}
+
+// TestBuildSystemPrompt_LocalInstructionsInjected pins G8: the operator's
+// own instruction files land in the system prompt with their marker, and
+// an empty input leaves the prompt untouched.
+func TestBuildSystemPrompt_LocalInstructionsInjected(t *testing.T) {
+	without := buildSystemPrompt("", "", false, false, false, "")
+	if strings.Contains(without, "local instructions") {
+		t.Fatalf("empty instructions still injected a marker: %s", without)
+	}
+	with := buildSystemPrompt("", "", false, false, false, "--- AGENTS.md ---\nstay in your lane")
+	if !strings.Contains(with, "local instructions") || !strings.Contains(with, "stay in your lane") {
+		t.Fatalf("instructions missing from the prompt: %s", with)
+	}
+}
+
+// TestLocalInstructionsReadsConventionFiles pins the reader: both
+// convention files in the working directory land in the returned text,
+// in order, and missing files are simply absent.
+func TestLocalInstructionsReadsConventionFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("agents says hi"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("claude says no"), 0o644); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+	got := localInstructions(dir)
+	if !strings.Contains(got, "--- AGENTS.md ---") || !strings.Contains(got, "agents says hi") {
+		t.Fatalf("AGENTS.md missing: %q", got)
+	}
+	if !strings.Contains(got, "--- CLAUDE.md ---") || !strings.Contains(got, "claude says no") {
+		t.Fatalf("CLAUDE.md missing: %q", got)
+	}
+	if strings.Index(got, "AGENTS.md") > strings.Index(got, "CLAUDE.md") {
+		t.Fatalf("AGENTS.md should come before CLAUDE.md: %q", got)
+	}
+	if got := localInstructions(t.TempDir()); got != "" {
+		t.Fatalf("expected empty instructions without any convention files, got %q", got)
+	}
+}
+
+// TestLocalInstructionsTruncatesOversizedFiles pins the cap: an oversized
+// file is cut with a marker, never silently sliced mid-thought.
+func TestLocalInstructionsTruncatesOversizedFiles(t *testing.T) {
+	dir := t.TempDir()
+	big := strings.Repeat("x", maxLocalInstructionsBytes+1000)
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(big), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	got := localInstructions(dir)
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("oversized file was not marked truncated: %q", got[:200])
+	}
+	if len(got) > maxLocalInstructionsBytes+2000 {
+		t.Fatalf("truncated instructions grew unexpectedly: %d bytes", len(got))
+	}
+}
+
+// TestNextEvent_WakeupDeliversPromptVerbatim pins G13's driver half: a
+// scheduled wakeup arrives as the next prompt, unwrapped — the operator
+// wrote it, it IS the instruction.
+func TestNextEvent_WakeupDeliversPromptVerbatim(t *testing.T) {
+	wakeups := make(chan string, 4)
+	wakeups <- "check the mesh now"
+	mgr := roomwaiter.New(nil, "")
+	ringMgr := ringwaiter.New(nil, "")
+	got, ok := nextEvent(context.Background(), make(chan string, 1), mgr, ringMgr, wakeups)
+	if !ok {
+		t.Fatal("nextEvent reported the driver should stop")
+	}
+	if got != "check the mesh now" {
+		t.Fatalf("wakeup prompt = %q", got)
+	}
+}
+
+// TestBuildSystemPrompt_TeachesHandoffGrammar pins G11's prompting half:
+// the grammar paragraph names the reply kinds and the in_reply_to rule.
+func TestBuildSystemPrompt_TeachesHandoffGrammar(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, false, "")
+	for _, want := range []string{"in_reply_to", "answer_given", "result_reported", "lane_claimed", "lane_released", "claim_confirmed", "task_handed_over"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("grammar missing %q in the system prompt", want)
+		}
+	}
+}
+
+// TestResolveAllowlist_ExtendsMergesDefaults pins the G18 fix: with
+// tool_allowlist_extends, an override ADDS to the defaults instead of
+// silently replacing them; without it, the replace semantics stay (the
+// only way to remove a default tool).
+func TestResolveAllowlist_ExtendsMergesDefaults(t *testing.T) {
+	base := resolveAllowlist(config.Config{})
+	if !allowlistIncludes(base, "mesh_say") {
+		t.Fatalf("default allowlist missing mesh_say: %v", base)
+	}
+
+	// Plain override (extends false): replaces — mesh_say gone.
+	replaced := resolveAllowlist(config.Config{ToolAllowlist: []string{"shell_exec"}})
+	if allowlistIncludes(replaced, "mesh_say") {
+		t.Fatalf("plain override should replace defaults: %v", replaced)
+	}
+
+	// Extend: both the override and every default survive, deduplicated.
+	extended := resolveAllowlist(config.Config{ToolAllowlist: []string{"shell_exec", "mesh_say"}, ToolAllowlistExtends: true})
+	for _, want := range append([]string{"shell_exec"}, base...) {
+		if !allowlistIncludes(extended, want) {
+			t.Fatalf("extended allowlist missing %q: %v", want, extended)
+		}
+	}
+	seen := map[string]bool{}
+	for _, name := range extended {
+		if seen[name] {
+			t.Fatalf("extended allowlist duplicated %q: %v", name, extended)
+		}
+		seen[name] = true
+	}
+}
+
+// TestBuildSystemPrompt_TeachesAntiNarrationStyle pins the 2026-09-12
+// live-run fix: the style line forbids preamble and restatement, so a
+// model cannot open with "I'll start by...".
+func TestBuildSystemPrompt_TeachesAntiNarrationStyle(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, false, "")
+	if !strings.Contains(got, "do not narrate") || !strings.Contains(got, "I'll start by") {
+		t.Fatalf("anti-narration style missing from the prompt")
+	}
+}
+
+// TestAgentInitialPrompt_ReadsLimitedInboxAndActs pins the lean first
+// turn: the startup prompt names limit 20 (the lobby backlog once cost
+// ~12.5K prompt tokens) and forbids narration.
+func TestAgentInitialPrompt_ReadsLimitedInboxAndActs(t *testing.T) {
+	if !strings.Contains(agentInitialPrompt, "limit 20") {
+		t.Fatalf("initial prompt does not bound the first inbox read: %s", agentInitialPrompt)
+	}
+	if !strings.Contains(agentInitialPrompt, "do not narrate") {
+		t.Fatalf("initial prompt does not forbid narration: %s", agentInitialPrompt)
 	}
 }

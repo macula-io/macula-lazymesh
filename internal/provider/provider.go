@@ -91,3 +91,18 @@ type Provider interface {
 	ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error)
 	ContextWindow() int
 }
+
+// Streamer is a Provider that can deliver assistant content incrementally
+// (D3: the chat UX decision made streaming a prerequisite, not a
+// nice-to-have). A Provider that does not satisfy Streamer is driven
+// through ChatCompletion by the agent loop with no behavior change.
+//
+// onDelta is invoked once per content chunk, in order, as it arrives; an
+// error it returns aborts the stream and is what ChatCompletionStream
+// returns. The returned ChatResponse carries the completed message (tool
+// calls accumulated across chunks included) and the usage the backend
+// reported, which is zero for backends that only report it when asked.
+type Streamer interface {
+	Provider
+	ChatCompletionStream(ctx context.Context, req ChatRequest, onDelta func(chunk string) error) (ChatResponse, error)
+}

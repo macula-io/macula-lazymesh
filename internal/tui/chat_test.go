@@ -14,7 +14,7 @@ func TestChatEntryFromAgentEvent_ToolCallCollapsedByDefault(t *testing.T) {
 	if entry.kind != chatToolCall {
 		t.Fatalf("expected chatToolCall, got %v", entry.kind)
 	}
-	rendered := entry.render(false)
+	rendered := entry.render(false, 80)
 	if strings.Contains(rendered, "should get truncated") {
 		t.Fatalf("expected collapsed render to truncate the arguments, got %q", rendered)
 	}
@@ -27,8 +27,8 @@ func TestChatEntry_ExpandedShowsFullDetail(t *testing.T) {
 	ev := agent.Event{Kind: agent.EventToolResult, ToolName: "mesh_rooms", Text: strings.Repeat("x", 200)}
 	entry := chatEntryFromAgentEvent(ev)
 
-	collapsed := entry.render(false)
-	expanded := entry.render(true)
+	collapsed := entry.render(false, 80)
+	expanded := entry.render(true, 80)
 	if len(expanded) <= len(collapsed) {
 		t.Fatalf("expected expanded render to be longer than collapsed, collapsed=%d expanded=%d", len(collapsed), len(expanded))
 	}
@@ -49,8 +49,8 @@ func TestChatEntryFromAgentEvent_Error(t *testing.T) {
 	if entry.kind != chatError {
 		t.Fatalf("expected chatError, got %v", entry.kind)
 	}
-	if !strings.Contains(entry.render(false), "boom") {
-		t.Fatalf("expected error text to appear in the render, got %q", entry.render(false))
+	if !strings.Contains(entry.render(false, 80), "boom") {
+		t.Fatalf("expected error text to appear in the render, got %q", entry.render(false, 80))
 	}
 }
 
@@ -74,8 +74,8 @@ func TestChatEntryFromAgentEvent_Listening(t *testing.T) {
 	if entry.kind != chatSystem {
 		t.Fatalf("expected chatSystem, got %v", entry.kind)
 	}
-	if !strings.Contains(entry.render(false), "listening") {
-		t.Fatalf("expected the rendered text to say it's listening, got %q", entry.render(false))
+	if !strings.Contains(entry.render(false, 80), "listening") {
+		t.Fatalf("expected the rendered text to say it's listening, got %q", entry.render(false, 80))
 	}
 	if !isChatter(agent.EventListening) {
 		t.Fatalf("expected EventListening to be routed as chatter (status strip, not the main chat pane)")
@@ -87,7 +87,7 @@ func TestYouChatEntry(t *testing.T) {
 	if entry.kind != chatYou || entry.text != "hi agent" {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
-	if !strings.Contains(entry.render(false), "hi agent") {
+	if !strings.Contains(entry.render(false, 80), "hi agent") {
 		t.Fatalf("expected rendered text to include the message")
 	}
 }

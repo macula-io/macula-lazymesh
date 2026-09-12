@@ -213,3 +213,72 @@ func TestReadFile_MissingPathIsAnError(t *testing.T) {
 		t.Fatalf("expected an error when path is missing")
 	}
 }
+
+// TestReadFile_RefusesSymlinkEscape pins the G10 fix: a symlink sitting
+// inside the working directory and pointing OUT of it is resolved and
+// refused — the lexical containment check alone cannot see it.
+func TestReadFile_RefusesSymlinkEscape(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside secret"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	inside := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(inside, "leak.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	src, err := New(Config{Enabled: true, WorkingDir: inside})
+	if err != nil {
+		t.Fatalf("new source: %v", err)
+	}
+
+	if _, err := src.CallToolRaw(context.Background(), "read_file", `{"path":"leak.txt"}`); err == nil {
+		t.Fatal("expected a symlinked-out read to be refused")
+	}
+}
+
+// TestWriteFile_RefusesSymlinkedDirectoryEscape pins the write half: a
+// symlinked directory inside the sandbox pointing out is refused as a
+// destination.
+func TestWriteFile_RefusesSymlinkedDirectoryEscape(t *testing.T) {
+	outside := t.TempDir()
+	inside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(inside, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	src, err := New(Config{Enabled: true, WorkingDir: inside})
+	if err != nil {
+		t.Fatalf("new source: %v", err)
+	}
+
+	if _, err := src.CallToolRaw(context.Background(), "write_file", `{"path":"escape/pwned.txt","content":"pwned"}`); err == nil {
+		t.Fatal("expected a write through a symlinked-out directory to be refused")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "pwned.txt")); !os.IsNotExist(err) {
+		t.Fatal("the write escaped the sandbox")
+	}
+}
+
+// TestReadFile_AllowsSymlinkInsideSandbox pins that the fix is not
+// blanket symlink refusal: a symlink whose target stays inside the
+// working directory still resolves and reads.
+func TestReadFile_AllowsSymlinkInsideSandbox(t *testing.T) {
+	inside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(inside, "real.txt"), []byte("inside content"), 0o644); err != nil {
+		t.Fatalf("write real file: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(inside, "real.txt"), filepath.Join(inside, "alias.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	src, err := New(Config{Enabled: true, WorkingDir: inside})
+	if err != nil {
+		t.Fatalf("new source: %v", err)
+	}
+
+	got, err := src.CallToolRaw(context.Background(), "read_file", `{"path":"alias.txt"}`)
+	if err != nil {
+		t.Fatalf("in-sandbox symlink refused: %v", err)
+	}
+	if got != "inside content" {
+		t.Fatalf("content = %q", got)
+	}
+}

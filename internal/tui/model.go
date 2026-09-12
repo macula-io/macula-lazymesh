@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -22,6 +23,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
+	"github.com/macula-io/macula-lazymesh/internal/termkeys"
 )
 
 // refreshInterval is how often the mesh-state panels re-poll macula-mcp.
@@ -71,6 +73,9 @@ const (
 	// the others -- "c" means copy only while it is open, and "esc"
 	// closes it rather than leaving whatever mode was underneath.
 	ModeErrorPopup
+	// ModeApprovalPopup: answering a per-action approval prompt (G9) --
+	// the tool call waits, nothing else proceeds until y/n lands.
+	ModeApprovalPopup
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -78,6 +83,17 @@ const (
 type Options struct {
 	AgentEvents <-chan agent.Event // nil when no --room agent is running
 	UserInputCh chan<- string      // where a submitted message is sent for runAgent to pick up
+
+	// InterruptCh receives a signal on the `x` key (normal mode): the
+	// caller cancels the in-flight turn's context. nil when unwired, in
+	// which case `x` reports rather than sending.
+	InterruptCh chan<- struct{}
+
+	// ApprovalCh receives the operator's decision on an approval popup
+	// (G9). nil when unwired, in which case the popup's y/n still
+	// dismisses the prompt but the answer goes nowhere (the session's
+	// own approval timeout then refuses the call).
+	ApprovalCh chan<- ApprovalAnswer
 
 	StatusBarPosition string // "top" or "bottom"
 
@@ -134,8 +150,11 @@ type Model struct {
 	mcp          toolCaller
 	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
 
-	agentEvents <-chan agent.Event
-	userInputCh chan<- string
+	agentEvents     <-chan agent.Event
+	userInputCh     chan<- string
+	interruptCh     chan<- struct{}
+	approvalCh      chan<- ApprovalAnswer
+	pendingApproval *pendingApproval
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
@@ -229,8 +248,9 @@ type Model struct {
 	meshServiceCallInFlight  bool
 
 	chatEntries  []chatEntry
+	sel          selectionState // shift+drag selection over the chat pane
 	chatViewport viewport.Model
-	input        textinput.Model
+	input        PromptEditor
 
 	width  int
 	height int
@@ -241,10 +261,10 @@ type Model struct {
 // messages on userInputCh -- see Options' own doc comment for what each
 // zero value means.
 func New(client toolCaller, opts Options) Model {
-	ti := textinput.New()
-	ti.Placeholder = "message the agent..."
-	ti.CharLimit = 2000
-	ti.Prompt = "> "
+	// The chatbox (D3, opencode's own look-and-feel): the PromptEditor
+	// component owns the key semantics (enter = newline, alt+enter =
+	// send) -- see prompteditor.go.
+	ti := NewPromptEditor()
 
 	realmInput := textinput.New()
 	realmInput.Placeholder = "io.macula"
@@ -268,6 +288,8 @@ func New(client toolCaller, opts Options) Model {
 		realmIdentityFile:    opts.RealmIdentityFile,
 		agentEvents:          opts.AgentEvents,
 		userInputCh:          opts.UserInputCh,
+		interruptCh:          opts.InterruptCh,
+		approvalCh:           opts.ApprovalCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
@@ -288,11 +310,26 @@ func New(client toolCaller, opts Options) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	// Push the kitty keyboard protocol NOW: Init is the first thing that
+	// runs after bubbletea enters the alternate screen, and kitty scopes
+	// protocol pushes to the screen that is active when they arrive. A
+	// push from before the TUI started would sit on the main screen's
+	// stack and never affect this screen. Popped on the quit paths below,
+	// while the alternate screen is still current.
+	fmt.Fprint(os.Stdout, termkeys.Enable)
 	cmds := []tea.Cmd{m.refreshCmd(), tick(), textinput.Blink}
 	if m.agentEvents != nil {
 		cmds = append(cmds, waitForAgentEvent(m.agentEvents))
 	}
 	return tea.Batch(cmds...)
+}
+
+// quit pops the keyboard protocol from the alternate screen's stack --
+// bubbletea leaves the screen only after this Update returns, so the pop
+// still lands on the right screen -- and quits the program.
+func (m Model) quit() tea.Cmd {
+	fmt.Fprint(os.Stdout, termkeys.Disable)
+	return tea.Quit
 }
 
 func tick() tea.Cmd {
@@ -485,6 +522,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		debugKey(msg)
 		return m.handleKey(msg)
 
 	case tickMsg:
@@ -495,6 +533,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentEventMsg:
 		return m.handleAgentEvent(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case ringAnsweredMsg:
 		return m.handleRingAnswered(msg)
@@ -529,11 +570,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, DefaultKeyMap.ForceQuit) {
-		return m, tea.Quit
+		return m, m.quit()
 	}
 
 	if m.mode == ModeRingPopup {
 		return m.handleRingPopupKey(msg)
+	}
+
+	if m.mode == ModeApprovalPopup {
+		return m.handleApprovalPopupKey(msg)
 	}
 
 	if m.mode == ModeErrorPopup {
@@ -607,35 +652,35 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.mode == ModeInsert {
-		switch {
-		case key.Matches(msg, DefaultKeyMap.Normal):
+		if key.Matches(msg, DefaultKeyMap.Normal) {
 			m.input.Blur()
 			m.mode = ModeNormal
 			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
 			return m, nil
-		case key.Matches(msg, DefaultKeyMap.Submit):
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.resizeComponents() // the chatbox may have grown a row
+		if m.input.Submitted() {
 			text := strings.TrimSpace(m.input.Value())
 			m.input.Reset()
 			m.input.Blur()
 			m.mode = ModeNormal
-			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
+			m.resizeComponents()
 			if text == "" {
-				return m, nil
+				return m, cmd
 			}
 			m.chatEntries = append(m.chatEntries, youChatEntry(text))
 			m.syncViewport()
-			return m, sendUserInput(m.userInputCh, text)
-		default:
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, sendUserInput(m.userInputCh, text))
 		}
+		return m, cmd
 	}
 
 	// Normal mode.
 	switch {
 	case key.Matches(msg, DefaultKeyMap.Quit):
-		return m, tea.Quit
+		return m, m.quit()
 	case key.Matches(msg, DefaultKeyMap.Normal):
 		// Esc's only meaning in Normal mode: dismiss a finished/errored
 		// join's status (renderRealmJoinProgress) back to the plain
@@ -720,6 +765,20 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
 		m.showChatter = !m.showChatter
 		return m, nil
+	case key.Matches(msg, DefaultKeyMap.Interrupt):
+		// Phase 3: cancel the in-flight turn. A non-blocking send --
+		// the caller's own interrupt handling must never stall the TUI.
+		if m.interruptCh != nil {
+			select {
+			case m.interruptCh <- struct{}{}:
+				m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "interrupting the current turn..."})
+				m.syncViewport()
+			default:
+			}
+		}
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.CopyChat):
+		return m.copyLastAnswer()
 	case key.Matches(msg, DefaultKeyMap.ToggleLogs):
 		return m.openAgentLog()
 	case key.Matches(msg, DefaultKeyMap.ShowError):
@@ -746,6 +805,18 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
+	}
+
+	// Page keys scroll the chat pane a viewport at a time when no
+	// overlay is up -- the viewport's own key handling, forwarded rather
+	// than re-implemented (same reason the mouse wheel is forwarded).
+	if !m.meshExpanded && !m.realmExpanded && !m.meshServicesExpanded {
+		switch msg.String() {
+		case "pgup", "pgdown", "home", "end":
+			var cmd tea.Cmd
+			m.chatViewport, cmd = m.chatViewport.Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -853,6 +924,10 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		m.lastListeningAt = time.Now()
 	}
 
+	if ev.Kind == agent.EventApprovalRequested {
+		return m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
+	}
+
 	if isChatter(ev.Kind) && !m.showChatter {
 		// Routine tool-call activity, suppressed by default (see
 		// isChatter's own doc comment) -- genuinely dropped now, not
@@ -860,10 +935,64 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		// pane for anyone who wants the full detail.
 		return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
 	}
+
+	// D3 streaming: deltas grow the in-progress assistant entry, and the
+	// turn's completed message finishes it -- one chat entry per turn,
+	// however many chunks it took. The completed text replaces the
+	// accumulated deltas so a final message that differs from the sum of
+	// its chunks (never the case here, but the contract is the message is
+	// authoritative) wins.
+	if ev.Kind == agent.EventAssistantDelta {
+		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
+			m.chatEntries[n-1].text += ev.Text
+			m.syncViewport()
+			return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+		}
+	} else if ev.Kind == agent.EventAssistantMessage {
+		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
+			m.chatEntries[n-1].text = ev.Text
+			m.chatEntries[n-1].streaming = false
+			m.syncViewport()
+			return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+		}
+	}
+
 	entry := chatEntryFromAgentEvent(agent.Event(ev))
 	m.chatEntries = append(m.chatEntries, entry)
 	m.syncViewport()
 	return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+}
+
+// lastAssistantText is the finished (non-streaming) assistant entry's raw
+// markdown source, newest first — the thing worth sharing verbatim.
+func lastAssistantText(entries []chatEntry) (string, bool) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].kind == chatAssistant && !entries[i].streaming && entries[i].text != "" {
+			return entries[i].text, true
+		}
+	}
+	return "", false
+}
+
+// copyLastAnswer copies the last agent answer to the system clipboard via
+// OSC-52 tooling (atotto/clipboard) and reports the outcome in the chat —
+// a copy that silently fails is worse than one that names its reason, and
+// the clipboard helper is legitimately absent over a bare SSH session.
+func (m Model) copyLastAnswer() (Model, tea.Cmd) {
+	text, ok := lastAssistantText(m.chatEntries)
+	if !ok {
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "nothing to copy yet: no agent answer so far"})
+		m.syncViewport()
+		return m, nil
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not copy to clipboard: %v", err)})
+		m.syncViewport()
+		return m, nil
+	}
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: fmt.Sprintf("copied the last agent answer (%d bytes) to the clipboard", len(text))})
+	m.syncViewport()
+	return m, nil
 }
 
 // resizeComponents fits the chat viewport to whatever's left after the
@@ -900,7 +1029,12 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) resizeComponents() {
-	reserved := len(m.statusLines()) + 2 // input line + one blank line of slack
+	// The chatbox is a bordered textarea whose height grows with its
+	// content: reserve its ACTUAL rendered height (measured, not
+	// derived -- the border arithmetic differs between focused and
+	// blurred styles) plus one blank line of slack, so the chat
+	// viewport never sits under the box.
+	reserved := len(m.statusLines()) + m.input.RenderedHeight() + 1
 	h := m.height - reserved
 	if h < 3 {
 		h = 3
@@ -908,17 +1042,25 @@ func (m *Model) resizeComponents() {
 	m.chatViewport.Width = m.width
 	m.chatViewport.Height = h
 	if m.width > 6 {
-		m.input.Width = m.width - 4
+		m.input.SetWidth(m.width - 6)
 	}
 }
 
 func (m *Model) syncViewport() {
+	// Follow mode: new content pins the bottom ONLY when the operator was
+	// already reading the bottom. Someone scrolled up in the history must
+	// keep their place while new entries (and, mid-turn, every streaming
+	// delta) arrive below — SetContent preserves the offset on its own,
+	// so only the already-at-bottom case re-anchors.
+	atBottom := m.chatViewport.AtBottom()
 	lines := make([]string, 0, len(m.chatEntries))
-	for _, e := range m.chatEntries {
-		lines = append(lines, e.render(m.detailsExpanded))
+	for i := range m.chatEntries {
+		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
 	}
 	m.chatViewport.SetContent(strings.Join(lines, "\n"))
-	m.chatViewport.GotoBottom()
+	if atBottom {
+		m.chatViewport.GotoBottom()
+	}
 }
 
 // Colors match the macula brand palette (see chat.go's own comment) --
@@ -967,6 +1109,17 @@ func (m Model) View() string {
 		return strings.Join([]string{popup, status}, "\n")
 	}
 
+	// The approval pop-up takes over the same area the ring pop-up does:
+	// a waiting tool call blocks the turn, and the prompt is the one
+	// thing the operator needs to see.
+	if m.mode == ModeApprovalPopup && m.pendingApproval != nil {
+		popup := strings.Join(m.renderApprovalPopup(m.width), "\n")
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
 	if m.mode == ModeErrorPopup && m.errorPopup != nil {
 		popup := m.renderErrorPopup()
 		if m.statusBarPosition == "top" {
@@ -988,10 +1141,13 @@ func (m Model) View() string {
 	}
 	input := m.renderInputLine()
 
+	var screen string
 	if m.statusBarPosition == "top" {
-		return strings.Join([]string{status, body, input}, "\n")
+		screen = strings.Join([]string{status, body, input}, "\n")
+	} else {
+		screen = strings.Join([]string{body, input, status}, "\n")
 	}
-	return strings.Join([]string{body, input, status}, "\n")
+	return m.overlaySelection(screen)
 }
 
 // statusLines is the status block's content, one entry per rendered line.
@@ -1038,7 +1194,7 @@ func (m Model) renderHintLines() []string {
 	case ModeRingPopup:
 		return []string{mode}
 	case ModeInsert:
-		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
+		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  shift+enter: newline  ctrl+e: edit in $EDITOR")}
 	case ModeRealmJoin:
 		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
 	case ModeMeshServiceCall:
@@ -1058,7 +1214,7 @@ func (m Model) renderHintLines() []string {
 		if m.meshServicesExpanded && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 
@@ -1181,7 +1337,11 @@ func (m Model) padToBodyHeight(content string) string {
 // second overlay needed the identical layout.
 func (m Model) renderOverlay(panelContent string) string {
 	panel := strings.Split(panelContent, "\n")
-	target := m.height - len(m.statusLines()) - 2 // same target padToBodyHeight/resizeComponents use
+	// The body height, with the SAME reservation resizeComponents uses
+	// (status block + the chatbox's measured rendered height + slack) --
+	// the old "-2" assumed a one-line input and let a taller chatbox
+	// push the overlay past the terminal's bottom row.
+	target := m.height - len(m.statusLines()) - m.input.RenderedHeight() - 1
 	if target < 1 || len(panel) >= target {
 		// No room for a visible margin either way -- the panel alone
 		// already fills (or exceeds) the available height. Falls back to
@@ -1233,8 +1393,8 @@ func (m Model) renderRealmsOverlay() string {
 // (non-overlay) chat pane would show.
 func (m Model) chatContentLines() []string {
 	lines := make([]string, 0, len(m.chatEntries))
-	for _, e := range m.chatEntries {
-		lines = append(lines, e.render(m.detailsExpanded))
+	for i := range m.chatEntries {
+		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
 	}
 	joined := strings.Join(lines, "\n")
 	if joined == "" {
@@ -1325,3 +1485,11 @@ func lastN(msgs []roomMessage, n int) []roomMessage {
 	}
 	return msgs[len(msgs)-n:]
 }
+
+// chatboxBlurredStyle and chatboxFocusedStyle give the compose box its
+// opencode-style border: dim when idle, brand blue when focused — the
+// same pair panelStyle/titleStyle use for the rest of the chrome.
+var (
+	chatboxBlurredStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	chatboxFocusedStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#38BDF8")).Padding(0, 1)
+)

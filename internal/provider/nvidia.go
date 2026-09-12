@@ -60,6 +60,12 @@ func (n *NVIDIA) ChatCompletion(ctx context.Context, req ChatRequest) (ChatRespo
 	return callOpenAICompatChatCompletions(ctx, n.HTTP, n.BaseURL, n.Model, n.APIKey, req)
 }
 
+// ChatCompletionStream satisfies Streamer over NVIDIA's OpenAI-compatible
+// streaming endpoint -- see DeepSeek.ChatCompletionStream's own comment.
+func (n *NVIDIA) ChatCompletionStream(ctx context.Context, req ChatRequest, onDelta func(chunk string) error) (ChatResponse, error) {
+	return callOpenAICompatChatCompletionsStream(ctx, n.HTTP, n.BaseURL, n.Model, n.APIKey, req, onDelta)
+}
+
 // nvidiaKimiK3ContextWindow is NVIDIADefaultModel's (moonshotai/kimi-k3)
 // real context length -- not looked up, taken directly from a live
 // instance's own 400 error during the 2026-09-07 runaway-context

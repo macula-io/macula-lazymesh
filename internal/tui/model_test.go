@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -1321,5 +1322,194 @@ func TestNormalMode_IEntersMeshServiceCallModeAndCapturesSelectedProcedure(t *te
 	}
 	if want := entries[1].Procedure(); m.meshServiceCallProcedure != want {
 		t.Fatalf("expected the selected row's procedure %q captured, got %q", want, m.meshServiceCallProcedure)
+	}
+}
+
+// TestStreamingDeltasMergeIntoOneEntry pins the D3 contract: a streamed
+// turn's deltas grow ONE assistant chat entry, the completed message
+// finishes it (authoritative text), and the entry count stays one.
+func TestStreamingDeltasMergeIntoOneEntry(t *testing.T) {
+	m := newTestModel(t)
+	update := func(ev agent.Event) {
+		next, _ := m.Update(agentEventMsg(ev))
+		m = next.(Model)
+	}
+	update(agent.Event{Kind: agent.EventAssistantDelta, Text: "hel"})
+	update(agent.Event{Kind: agent.EventAssistantDelta, Text: "lo"})
+	update(agent.Event{Kind: agent.EventAssistantMessage, Text: "hello"})
+
+	if len(m.chatEntries) != 1 {
+		t.Fatalf("chat entries = %d, want 1", len(m.chatEntries))
+	}
+	entry := m.chatEntries[0]
+	if entry.kind != chatAssistant || entry.streaming {
+		t.Fatalf("entry = kind %v streaming %v, want a finished assistant entry", entry.kind, entry.streaming)
+	}
+	if entry.text != "hello" {
+		t.Fatalf("entry text = %q, want %q", entry.text, "hello")
+	}
+}
+
+// TestAssistantEntryRendersMarkdown proves D3's readability claim: a
+// markdown assistant answer renders as markdown (bold survives as ANSI),
+// not as collapsed raw text.
+func TestAssistantEntryRendersMarkdown(t *testing.T) {
+	entry := chatEntry{kind: chatAssistant, at: time.Now(), text: "**bold** answer"}
+	rendered := entry.render(false, 80)
+	if !strings.Contains(rendered, "agent:") {
+		t.Fatalf("render lost the agent label: %q", rendered)
+	}
+	if !strings.Contains(rendered, "bold") {
+		t.Fatalf("render lost the markdown content: %q", rendered)
+	}
+}
+
+// TestInterruptKeySignalsInterruptCh pins the TUI half of Phase 3: `x` in
+// normal mode sends on InterruptCh (non-blocking) and drops a system chat
+// line so the operator sees the request land.
+func TestInterruptKeySignalsInterruptCh(t *testing.T) {
+	interruptCh := make(chan struct{}, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), InterruptCh: interruptCh})
+	m.mode = ModeNormal
+	updated, _ := m.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'x'}}))
+	m = updated.(Model)
+
+	select {
+	case <-interruptCh:
+	default:
+		t.Fatal("x did not signal InterruptCh")
+	}
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
+		t.Fatalf("expected one system chat entry confirming the interrupt, got %+v", m.chatEntries)
+	}
+}
+
+// TestApprovalPopupAnswersOnCh pins the TUI half of G9: an approval
+// event shows the popup, `y` sends allow=true with the approval id, and
+// the mode returns to Normal.
+func TestApprovalPopupAnswersOnCh(t *testing.T) {
+	approvalCh := make(chan ApprovalAnswer, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), ApprovalCh: approvalCh})
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "approve-1", Text: `{"cmd":"true"}`}))
+	m = updated.(Model)
+	if m.mode != ModeApprovalPopup || m.pendingApproval == nil || m.pendingApproval.id != "approve-1" {
+		t.Fatalf("popup state = mode %v pending %+v", m.mode, m.pendingApproval)
+	}
+
+	updated, _ = m.Update(runeKey('y'))
+	m = updated.(Model)
+
+	select {
+	case answer := <-approvalCh:
+		if answer.ID != "approve-1" || !answer.Allow {
+			t.Fatalf("answer = %+v", answer)
+		}
+	default:
+		t.Fatal("y did not send an approval answer")
+	}
+	if m.mode != ModeNormal || m.pendingApproval != nil {
+		t.Fatalf("popup did not close: mode %v pending %+v", m.mode, m.pendingApproval)
+	}
+}
+
+// TestApprovalPopupDenyOnN pins the safe default: n (and esc) deny.
+func TestApprovalPopupDenyOnN(t *testing.T) {
+	approvalCh := make(chan ApprovalAnswer, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), ApprovalCh: approvalCh})
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "approve-2", Text: "{}"}))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('n'))
+	m = updated.(Model)
+
+	select {
+	case answer := <-approvalCh:
+		if answer.ID != "approve-2" || answer.Allow {
+			t.Fatalf("answer = %+v", answer)
+		}
+	default:
+		t.Fatal("n did not send a denial")
+	}
+	if m.pendingApproval != nil {
+		t.Fatalf("popup did not close: %+v", m.pendingApproval)
+	}
+}
+
+// TestLastAssistantTextPicksNewestFinishedAnswer pins the copy source:
+// the newest FINISHED assistant entry wins, streaming entries are
+// skipped (their text is still growing), and an empty history reports
+// nothing to copy.
+func TestLastAssistantTextPicksNewestFinishedAnswer(t *testing.T) {
+	entries := []chatEntry{
+		{kind: chatAssistant, text: "first", streaming: false},
+		{kind: chatYou, text: "hi"},
+		{kind: chatAssistant, text: "partial", streaming: true},
+		{kind: chatAssistant, text: "second", streaming: false},
+	}
+	got, ok := lastAssistantText(entries)
+	if !ok || got != "second" {
+		t.Fatalf("lastAssistantText = (%q, %v), want (second, true)", got, ok)
+	}
+
+	entries = []chatEntry{{kind: chatAssistant, text: "still streaming", streaming: true}}
+	if _, ok := lastAssistantText(entries); ok {
+		t.Fatal("a streaming-only history must report nothing to copy")
+	}
+
+	if _, ok := lastAssistantText(nil); ok {
+		t.Fatal("an empty history must report nothing to copy")
+	}
+}
+
+// TestCopyChatKeyReportsWithoutAnswer pins the feedback contract: `y`
+// with nothing to copy says so in the chat instead of silently doing
+// nothing (the actual clipboard call is one line mirroring the error
+// popup's, whose failure reporting has its own test).
+func TestCopyChatKeyReportsWithoutAnswer(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('y'))
+	m = updated.(Model)
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
+		t.Fatalf("expected a system note about nothing to copy, got %+v", m.chatEntries)
+	}
+}
+
+// TestComposeIsMultiline pins the chatbox fix: the compose input is a
+// textarea — shift+enter inserts a newline (multi-line paste and
+// composition work), while plain enter still submits the whole value.
+func TestComposeIsMultiline(t *testing.T) {
+	userInputCh := make(chan string, 4)
+	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "bottom"})
+	m.width, m.height = 80, 24
+	m.resizeComponents()
+
+	// Into insert mode and type two lines.
+	update := func(msg tea.Msg) {
+		next, _ := m.Update(msg)
+		m = next.(Model)
+	}
+	update(runeKey('i'))
+	update(runeKey('a'))
+	update(typeKey(tea.KeyCtrlJ)) // shift+enter's byte form: newline
+	update(runeKey('b'))
+
+	if got := m.input.Value(); got != "a\nb" {
+		t.Fatalf("multi-line compose value = %q, want a\\nb", got)
+	}
+
+	// Enter submits the whole multi-line value (the returned tea.Cmd is
+	// what actually delivers to userInputCh).
+	next, cmd := m.Update(typeKey(tea.KeyEnter))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter did not return the send command")
+	}
+	cmd()
+	select {
+	case sent := <-userInputCh:
+		if sent != "a\nb" {
+			t.Fatalf("submitted message = %q", sent)
+		}
+	default:
+		t.Fatal("enter did not submit the composed message")
 	}
 }

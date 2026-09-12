@@ -54,6 +54,12 @@ func (g *Groq) ChatCompletion(ctx context.Context, req ChatRequest) (ChatRespons
 	return callOpenAICompatChatCompletions(ctx, g.HTTP, g.BaseURL, g.Model, g.APIKey, req)
 }
 
+// ChatCompletionStream satisfies Streamer over Groq's OpenAI-compatible
+// streaming endpoint -- see DeepSeek.ChatCompletionStream's own comment.
+func (g *Groq) ChatCompletionStream(ctx context.Context, req ChatRequest, onDelta func(chunk string) error) (ChatResponse, error) {
+	return callOpenAICompatChatCompletionsStream(ctx, g.HTTP, g.BaseURL, g.Model, g.APIKey, req, onDelta)
+}
+
 // groqLlama33ContextWindow is GroqDefaultModel's (llama-3.3-70b-versatile)
 // published context length, from Groq's own current model list
 // (console.groq.com/docs/models' production models table), not guessed.

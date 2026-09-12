@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
@@ -32,9 +33,23 @@ type EventKind int
 
 const (
 	EventAssistantMessage EventKind = iota
+	// EventAssistantDelta is one incremental chunk of assistant content,
+	// emitted by Say when the Provider satisfies provider.Streamer, before
+	// the turn's single completed EventAssistantMessage. Consumers that
+	// render live (the chat pane, the control socket's delta lines)
+	// accumulate deltas; consumers that record (agent.log) only see the
+	// final message, so the log keeps one line per turn instead of one
+	// per chunk.
+	EventAssistantDelta
 	EventToolCall
 	EventToolResult
 	EventError
+	// EventApprovalRequested is emitted when a tool on the ask list wants
+	// to run (G9): ToolName is the tool, ID is the approval id the answer
+	// must carry, and Text is a display-truncated preview of the
+	// arguments. The approval itself arrives out of band (TUI key, socket
+	// approve message) — this event is the prompt, not the mechanism.
+	EventApprovalRequested
 	// EventBackoff and EventMaxFailuresReached are emitted by cmd/lazymesh's
 	// runAgent (not by Loop itself -- the retry/backoff policy lives at
 	// that level), not Say. They exist so a consumer like the TUI can
@@ -57,11 +72,13 @@ const (
 
 // Event is one step the loop took, emitted as it happens so a caller (the
 // TUI in particular) can render progress live instead of only seeing the
-// final result.
+// final result. ID carries a correlation identifier where the kind needs
+// one (an approval request's approval id); it is empty otherwise.
 type Event struct {
 	Kind     EventKind
 	Text     string // assistant content, or a tool's result text
 	ToolName string // set for EventToolCall / EventToolResult
+	ID       string // set for EventApprovalRequested (the approval id)
 	Err      error  // set for EventError
 }
 
@@ -74,6 +91,18 @@ type Loop struct {
 
 	messages []provider.Message
 	usage    provider.Usage
+	// appended records exactly the messages the current Say call added,
+	// in order — the persistence delta. A position-based diff against a
+	// pre-Say count would break under compaction: trimHistory evicts old
+	// turns (replacing them with a summary), so the slice can be SHORTER
+	// after Say than before, and Messages()[before:] panics on the
+	// out-of-range index (the live actor crash found 2026-09-12).
+	appended []provider.Message
+	// summary is the compacted record of every turn trimHistory has
+	// evicted so far (G6): it lives as a system message right after the
+	// real system prompt, so the model keeps the record while losing the
+	// verbatim text.
+	summary string
 }
 
 // Usage returns the cumulative token usage this Loop has consumed across
@@ -91,6 +120,38 @@ func (l *Loop) Usage() provider.Usage {
 // assumed messages-per-cycle count.
 func (l *Loop) MessageCount() int {
 	return len(l.messages)
+}
+
+// TakeAppended returns the messages the most recent Say call added, in
+// order, and clears the buffer -- the exact persistence delta, immune to
+// trimHistory's eviction of OLDER messages (which a position-based diff
+// would miscount). Say records every append: the user message, each
+// assistant reply and each tool result.
+func (l *Loop) TakeAppended() []provider.Message {
+	out := l.appended
+	l.appended = nil
+	return out
+}
+
+// Messages returns a snapshot of the conversation history, copied so a
+// caller can persist or inspect it without racing the loop.
+func (l *Loop) Messages() []provider.Message {
+	return append([]provider.Message(nil), l.messages...)
+}
+
+// Restore replaces the conversation with msgs — a loaded session log
+// (D2) — keeping this run's own leading system message: the system
+// prompt is rebuilt from the CURRENT config/flags on every start (rooms,
+// goal, tool availability all change between runs), so a persisted one
+// must never shadow it. The summary resets with the history; the first
+// Say compacts the restored conversation with its own context.
+func (l *Loop) Restore(msgs []provider.Message) {
+	var head []provider.Message
+	if len(l.messages) > 0 && l.messages[0].Role == provider.RoleSystem {
+		head = l.messages[:1]
+	}
+	l.messages = append(append([]provider.Message(nil), head...), msgs...)
+	l.summary = ""
 }
 
 // NewLoop starts a loop with the given system prompt as its first message.
@@ -184,7 +245,8 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		Role:    provider.RoleUser,
 		Content: userText,
 	})
-	l.trimHistory()
+	l.appended = append(l.appended, l.messages[len(l.messages)-1])
+	l.trimHistory(ctx, events)
 
 	tools, err := l.Tools.ListTools(ctx)
 	if err != nil {
@@ -197,24 +259,18 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 	// model/tool pair can't loop forever unattended.
 	const maxRounds = 25
 	for round := 0; round < maxRounds; round++ {
-		resp, err := l.Provider.ChatCompletion(ctx, provider.ChatRequest{
-			Messages: l.messages,
-			Tools:    toolSpecs,
-		})
+		resp, err := l.completionRound(ctx, toolSpecs, events)
 		if err != nil {
 			emit(events, Event{Kind: EventError, Err: fmt.Errorf("chat completion: %w", err)})
 			return err
 		}
 		l.messages = append(l.messages, resp.Message)
+		l.appended = append(l.appended, resp.Message)
 		l.usage.PromptTokens += resp.Usage.PromptTokens
 		l.usage.CompletionTokens += resp.Usage.CompletionTokens
 		l.usage.TotalTokens += resp.Usage.TotalTokens
 		l.usage.PromptCacheHitTokens += resp.Usage.PromptCacheHitTokens
 		l.usage.PromptCacheMissTokens += resp.Usage.PromptCacheMissTokens
-
-		if resp.Message.Content != "" {
-			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
-		}
 
 		if len(resp.Message.ToolCalls) == 0 {
 			return nil
@@ -241,41 +297,78 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 				emit(events, Event{Kind: EventToolResult, ToolName: tc.Name, Text: result})
 			}
 			l.messages = append(l.messages, toolMsg)
+			l.appended = append(l.appended, toolMsg)
 			// Trimmed after every tool result, not just once at Say's own
 			// start (2026-09-07 fix): a single Say call can run up to
 			// maxRounds rounds, each appending its own tool results --
 			// without this, a pathological single turn could already
 			// exceed the context window before the NEXT Say call ever
 			// got a chance to trim anything.
-			l.trimHistory()
+			l.trimHistory(ctx, events)
 		}
 	}
 	return fmt.Errorf("agent loop: exceeded %d tool-calling rounds without a final reply", maxRounds)
 }
 
-// trimHistory drops the oldest complete "turns" (a user message and
-// everything up to but not including the next user message) while
-// l.messages exceeds EITHER maxHistoryMessages OR maxHistoryBytes,
-// keeping any leading system message intact. Cutting at user-message
-// boundaries specifically is what keeps a tool_calls assistant message
-// and its tool-result messages together -- splitting those would send a
-// provider a tool result with no matching call, which most OpenAI-
-// compatible APIs reject outright.
-//
-// Byte-aware trimming added 2026-09-07 (the runaway-context incident):
-// the count-only cap alone let a real instance reach over a million
-// tokens of history while sitting at nowhere near maxHistoryMessages,
-// because a handful of its messages were tens of KB each. Both caps stay
-// -- message count still matters on its own (many small messages cost
-// real per-message overhead too), it's just no longer the ONLY thing
-// that can trigger eviction.
-func (l *Loop) trimHistory() {
-	systemOffset := 0
-	if len(l.messages) > 0 && l.messages[0].Role == provider.RoleSystem {
-		systemOffset = 1
+// completionRound runs one chat-completion call, streaming when the
+// provider can. The streaming path emits an EventAssistantDelta per
+// content chunk followed by the single completed EventAssistantMessage;
+// the plain path emits only the completed message — so consumers of the
+// event stream see identical final shape either way, and only live
+// renderers notice the difference.
+func (l *Loop) completionRound(ctx context.Context, toolSpecs []provider.ToolSpec, events chan<- Event) (provider.ChatResponse, error) {
+	req := provider.ChatRequest{Messages: l.messages, Tools: toolSpecs}
+	if streamer, ok := l.Provider.(provider.Streamer); ok {
+		resp, err := streamer.ChatCompletionStream(ctx, req, func(chunk string) error {
+			emit(events, Event{Kind: EventAssistantDelta, Text: chunk})
+			return nil
+		})
+		if err != nil {
+			return provider.ChatResponse{}, err
+		}
+		if resp.Message.Content != "" {
+			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
+		}
+		return resp, nil
 	}
-	rest := l.messages[systemOffset:]
-	for len(rest) > 0 && (systemOffset+len(rest) > maxHistoryMessages || messagesByteSize(rest) > maxHistoryBytes) {
+	resp, err := l.Provider.ChatCompletion(ctx, req)
+	if err != nil {
+		return provider.ChatResponse{}, err
+	}
+	if resp.Message.Content != "" {
+		emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
+	}
+	return resp, nil
+}
+
+// compactionPrompt is the fixed instruction for the summarization call
+// trimHistory makes when it must evict turns (G6): one plain completion,
+// no tools, so it can never recurse into another tool-calling round.
+const compactionPrompt = "You are compacting a conversation. Summarize the exchange below into a dense record that preserves: stated facts and their sources, decisions made and by whom, pending obligations, and open questions. Do not invent anything. Keep the summary under 500 words."
+
+// summaryPrefix labels the summary message the model sees, so it can tell
+// the compacted record apart from its own live instructions.
+const summaryPrefix = "[summary of earlier conversation]\n"
+
+// trimHistory keeps the conversation within maxHistoryMessages and
+// maxHistoryBytes. Evicted turns are NOT amputated (G6): they are
+// summarized by the provider and folded into l.summary, which rides as a
+// system message right after the real system prompt — the model keeps
+// the record, loses the verbatim text. When summarization fails, the old
+// amputation is the deliberate fallback, reported as an EventError so
+// the operator knows compaction degraded.
+func (l *Loop) trimHistory(ctx context.Context, events chan<- Event) {
+	headCount := 1
+	if len(l.messages) == 0 || l.messages[0].Role != provider.RoleSystem {
+		headCount = 0
+	}
+	restStart := headCount
+	if l.summary != "" {
+		restStart++
+	}
+	rest := l.messages[restStart:]
+	evicted := false
+	for len(rest) > 0 && (restStart+len(rest) > maxHistoryMessages || messagesByteSize(rest)+len(l.summary) > maxHistoryBytes) {
 		cut := 1
 		for cut < len(rest) && rest[cut].Role != provider.RoleUser {
 			cut++
@@ -283,15 +376,55 @@ func (l *Loop) trimHistory() {
 		if cut >= len(rest) {
 			break // nothing left we can safely cut at a turn boundary
 		}
+		evicted = true
+		if summary, err := l.summarize(ctx, rest[:cut]); err == nil && summary != "" {
+			l.summary = summary
+		} else {
+			reason := "summarization failed"
+			if err != nil {
+				reason = err.Error()
+			}
+			emit(events, Event{Kind: EventError, Err: fmt.Errorf("context compaction: %s -- %d turns evicted without a summary", reason, cut)})
+		}
 		rest = rest[cut:]
 	}
-	if systemOffset+len(rest) == len(l.messages) {
+	if !evicted {
 		return // nothing was actually cut -- avoid the reallocation below
 	}
-	trimmed := make([]provider.Message, 0, systemOffset+len(rest))
-	trimmed = append(trimmed, l.messages[:systemOffset]...)
+	trimmed := make([]provider.Message, 0, restStart+len(rest))
+	trimmed = append(trimmed, l.messages[:headCount]...)
+	if l.summary != "" {
+		trimmed = append(trimmed, provider.Message{Role: provider.RoleSystem, Content: summaryPrefix + l.summary})
+	}
 	trimmed = append(trimmed, rest...)
 	l.messages = trimmed
+}
+
+// summarize folds evicted (plus any existing summary) into one fresh
+// summary via a plain, tool-less completion on the loop's own provider.
+func (l *Loop) summarize(ctx context.Context, evicted []provider.Message) (string, error) {
+	var transcript strings.Builder
+	if l.summary != "" {
+		transcript.WriteString("Earlier summary:\n")
+		transcript.WriteString(l.summary)
+		transcript.WriteString("\n\nNew exchange to fold in:\n")
+	}
+	for _, m := range evicted {
+		fmt.Fprintf(&transcript, "%s: %s\n", m.Role, m.Content)
+		for _, tc := range m.ToolCalls {
+			fmt.Fprintf(&transcript, "tool_call %s(%s)\n", tc.Name, tc.Arguments)
+		}
+	}
+	resp, err := l.Provider.ChatCompletion(ctx, provider.ChatRequest{
+		Messages: []provider.Message{
+			{Role: provider.RoleSystem, Content: compactionPrompt},
+			{Role: provider.RoleUser, Content: transcript.String()},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Message.Content, nil
 }
 
 // messagesByteSize sums a rough content size across msgs -- Content plus
