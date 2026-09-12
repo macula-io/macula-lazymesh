@@ -628,10 +628,21 @@ become long-running.
       normal-stop-does-not-restart, plus the full pre-existing suite.
       The TUI itself still consumes channels; view-model actors (OD3) and
       the unix-socket control plane (D1) are the next phases, not Phase 0.
-- [ ] **Phase 1 — Headless mode + unix socket.** `--headless`,
-      `--unix-socket <path>`, `--session-id <id>`; control messages
-      `input`/`shutdown`/`query`/`session`; output stream as above.
-      TUI unchanged when socket is used alongside it.
+- [x] **Phase 1 — Headless mode + unix socket.** Landed 2026-09-12 as
+      `internal/frontend` + the run() wiring: `--headless`,
+      `--unix-socket <path>`, `--session-id <id>`; socket file 0600 in
+      `$XDG_RUNTIME_DIR/lazymesh/` (or a per-user /tmp dir); NDJSON
+      control messages `input`/`shutdown`/`query` (status|rooms|inbox|
+      agents|realms) with `query_result` replies to the asker only; output
+      stream `session` (handshake)/`assistant`/`tool_call`/`tool_result`/
+      `error`/`backoff`/`max_failures`/`turn_complete` (the settle point,
+      mapped from EventListening). input lands on the same channel as the
+      TUI compose line; the TUI is untouched and runs alongside the
+      socket. Headless without a socket exits on signal only. Proven by
+      six tests (perms 0600, handshake+input, event stream + turn_complete,
+      query round-trip, shutdown signal, Close removes the socket). Known
+      follow-ups: SO_PEERCRED peer-uid check, and `ring_pending` on the
+      wire (arrives with the ring/approve phase).
 - [ ] **Phase 2 — Streaming + chat UX (D3).** Streaming variant on the
       Provider interface; incremental assistant text in the TUI and
       `delta` events on the socket; glamour markdown rendering; chatbox

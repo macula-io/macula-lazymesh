@@ -27,10 +27,11 @@ import (
 type eventBridge struct {
 	act.Actor
 
-	ctx       context.Context
-	tuiEvents chan<- agent.Event
-	agentLog  *log.Logger
-	waiterMgr *roomwaiter.Manager
+	ctx            context.Context
+	tuiEvents      chan<- agent.Event
+	frontendEvents chan<- agent.Event
+	agentLog       *log.Logger
+	waiterMgr      *roomwaiter.Manager
 }
 
 func eventBridgeFactory() gen.ProcessBehavior { return &eventBridge{} }
@@ -38,8 +39,9 @@ func eventBridgeFactory() gen.ProcessBehavior { return &eventBridge{} }
 func (b *eventBridge) Init(args ...any) error {
 	b.ctx = args[0].(context.Context)
 	b.tuiEvents = args[1].(chan<- agent.Event)
-	b.agentLog = args[2].(*log.Logger)
-	b.waiterMgr = args[3].(*roomwaiter.Manager)
+	b.frontendEvents = args[2].(chan<- agent.Event)
+	b.agentLog = args[3].(*log.Logger)
+	b.waiterMgr = args[4].(*roomwaiter.Manager)
 	return nil
 }
 
@@ -76,10 +78,15 @@ func (b *eventBridge) HandleMessage(from gen.PID, message any) error {
 		}
 	}
 
-	// Non-blocking: the TUI is a slow, human-paced consumer and must never
-	// be able to stall event delivery (or block the session mid-turn).
+	// Non-blocking: the TUI and the control plane's socket are both slow,
+	// human- or controller-paced consumers that must never be able to
+	// stall event delivery (or block the session mid-turn).
 	select {
 	case b.tuiEvents <- msg.Event:
+	default:
+	}
+	select {
+	case b.frontendEvents <- msg.Event:
 	default:
 	}
 	return nil
@@ -105,8 +112,8 @@ type bridgeSubscribeTo struct {
 }
 
 // startEventBridge spawns the bridge on n and subscribes it to session.
-func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents chan<- agent.Event, agentLog *log.Logger, waiterMgr *roomwaiter.Manager) (gen.PID, error) {
-	bridge, err := n.Spawn(eventBridgeFactory, gen.ProcessOptions{}, ctx, tuiEvents, agentLog, waiterMgr)
+func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents chan<- agent.Event, agentLog *log.Logger, waiterMgr *roomwaiter.Manager) (gen.PID, error) {
+	bridge, err := n.Spawn(eventBridgeFactory, gen.ProcessOptions{}, ctx, tuiEvents, frontendEvents, agentLog, waiterMgr)
 	if err != nil {
 		return gen.PID{}, err
 	}

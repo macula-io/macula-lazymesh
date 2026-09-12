@@ -23,6 +23,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
@@ -50,6 +51,9 @@ func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
 	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs)")
 	goalText := flag.String("goal", "", "additional objective for the agent, beyond ordinary mesh participation (optional)")
+	headless := flag.Bool("headless", false, "run without the TUI (a unix control socket or a signal ends the session)")
+	socketPath := flag.String("unix-socket", "", "serve the control plane on this unix socket (default: $XDG_RUNTIME_DIR/lazymesh/<session-id>.sock)")
+	sessionID := flag.String("session-id", "", "session id reported to controllers (default: lazymesh-<pid>)")
 	flag.Parse()
 
 	if *showVersion {
@@ -57,13 +61,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *room, *goalText); err != nil {
+	if err := run(*configPath, *room, *goalText, *headless, *socketPath, *sessionID); err != nil {
 		fmt.Fprintln(os.Stderr, "lazymesh:", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, room, goalText string) error {
+func run(configPath, room, goalText string, headless bool, socketPath, sessionID string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -106,6 +110,11 @@ func run(configPath, room, goalText string) error {
 	// Buffered generously since the TUI side is the slow consumer (a human
 	// reading, not a tight loop) and the agent side must never block on it.
 	tuiEvents := make(chan agent.Event, 64)
+	// The control plane's own event fan-out: the event bridge and the
+	// driver broadcast every event here too, and the frontend server
+	// drains it. Without a socket there is no reader, and the non-blocking
+	// sends simply drop — the TUI's channel is unaffected.
+	frontendEvents := make(chan agent.Event, 64)
 	userInputCh := make(chan string, 8)
 
 	// Moved ahead of buildToolSource (2026-09-07, R2): meshservices.Source
@@ -236,11 +245,43 @@ func run(configPath, room, goalText string) error {
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer sessionhost.StopSession(node, sessPid)
-	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, agentLog, waiterMgr); err != nil {
+	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, frontendEvents, agentLog, waiterMgr); err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
 
-	go runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, userInputCh)
+	// The control plane (D1): a unix socket speaking NDJSON both ways,
+	// attached to the same bus the TUI uses. input lands on userInputCh
+	// exactly like the compose line; queries read live session and mesh
+	// state; shutdown ends the headless run.
+	resolvedSessionID := sessionID
+	if resolvedSessionID == "" {
+		resolvedSessionID = fmt.Sprintf("lazymesh-%d", os.Getpid())
+	}
+	var ctrl *frontend.Server
+	if socketPath != "" || headless {
+		path := socketPath
+		if path == "" {
+			path = frontend.DefaultSocketPath(resolvedSessionID)
+			if path == "" {
+				return fmt.Errorf("resolve control socket path for session %s", resolvedSessionID)
+			}
+		}
+		ctrl, err = frontend.Start(frontend.Options{
+			Path:      path,
+			Input:     userInputCh,
+			Events:    frontendEvents,
+			Query:     buildQueryHandler(node, sessPid, client),
+			SessionID: resolvedSessionID,
+			Model:     providerLabel(cfg) + "/" + cfg.Model,
+			Log:       logStack.StdFor("frontend"),
+		})
+		if err != nil {
+			return fmt.Errorf("start control plane: %w", err)
+		}
+		defer ctrl.Close()
+	}
+
+	go runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh)
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
@@ -271,8 +312,23 @@ func run(configPath, room, goalText string) error {
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
 	})
-	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
-	_, err = program.Run()
+
+	if headless {
+		// No TUI: the session runs until a controller says shutdown or a
+		// signal lands. The control socket is the deliberate primary exit
+		// path; SIGINT/SIGTERM (ctx) still work without one.
+		if ctrl == nil {
+			<-ctx.Done()
+		} else {
+			select {
+			case <-ctx.Done():
+			case <-ctrl.Shutdown():
+			}
+		}
+	} else {
+		program := tea.NewProgram(tuiModel, tea.WithAltScreen())
+		_, err = program.Run()
+	}
 	cancel()
 
 	// Every deliberate exit path converges here: the TUI's own Quit ("q")
@@ -618,7 +674,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // failure falls into the ordinary backoff accounting. Room/ring waiting
 // stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
 // this function supplies the cadence, driven by real events.
-func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents chan<- agent.Event, userInputCh <-chan string) {
+func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
 	prompt := agentInitialPrompt
@@ -635,7 +691,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// nothing was answered twice.
 			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
 			if rerr != nil {
-				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, rerr) {
+				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
 				}
 				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
@@ -652,7 +708,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// conversation has no record of it.
 			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
 			if rerr != nil {
-				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, rerr) {
+				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
 				}
 				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
@@ -665,7 +721,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// An ordinary failed turn: the session survived, the loop
 			// already emitted the EventError. Count it, back off, wait
 			// for the next reason to run.
-			if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, reply.Err) {
+			if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, reply.Err) {
 				return
 			}
 			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
@@ -681,7 +737,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			usageAfter = sessionhost.Status{}
 		}
 		logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
-		emitTui(tuiEvents, agent.Event{Kind: agent.EventListening})
+		emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventListening})
 		var ok bool
 		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 		if !ok {
@@ -723,6 +779,45 @@ func reattachSession(ctx context.Context, n gen.Node, root, oldPid gen.PID, agen
 	return gen.PID{}, fmt.Errorf("no replacement session appeared for %s", oldPid)
 }
 
+// buildQueryHandler answers the control plane's query messages: status
+// reads the supervised session; rooms/inbox/agents/realms call the mesh
+// directly through the client, bypassing the model — the same
+// deterministic-harness-plumbing posture as seedInitialRooms. Mesh tool
+// results travel as parsed JSON when they parse, raw text otherwise.
+func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client) func(ctx context.Context, what string) (any, error) {
+	meshTool := map[string]string{
+		"rooms":  "mesh_rooms",
+		"inbox":  "mesh_read_inbox",
+		"agents": "mesh_agents",
+		"realms": "mesh_list_realms",
+	}
+	return func(ctx context.Context, what string) (any, error) {
+		switch what {
+		case "status":
+			st, err := sessionhost.SessionStatus(n, sessPid)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"message_count": st.MessageCount,
+				"total_tokens":  st.Usage.TotalTokens,
+			}, nil
+		}
+		if tool, ok := meshTool[what]; ok {
+			result, err := client.CallTool(ctx, tool, nil)
+			if err != nil {
+				return nil, err
+			}
+			var data any
+			if err := json.Unmarshal([]byte(result), &data); err != nil {
+				return result, nil
+			}
+			return data, nil
+		}
+		return nil, fmt.Errorf("unknown query %q (want status|rooms|inbox|agents|realms)", what)
+	}
+}
+
 // maxConsecutiveErrors bounds how long the driver keeps retrying after
 // repeated failures (found by an adversarial review, 2026-09-06):
 // unbounded retries meant a wedged provider -- or a peer deliberately
@@ -734,31 +829,35 @@ const maxConsecutiveErrors = 8
 // count, report, back off with growth, and stop after
 // maxConsecutiveErrors so a wedged provider never retries forever
 // silently. Returns false when the driver should stop.
-func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Duration, agentLog *log.Logger, tuiEvents chan<- agent.Event, err error) bool {
+func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Duration, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, err error) bool {
 	*consecutiveErrors++
 	agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, *consecutiveErrors, maxConsecutiveErrors)
 	if *consecutiveErrors >= maxConsecutiveErrors {
 		agentLog.Printf("lazymesh agent: stopping after %d consecutive failures -- not retrying forever silently", *consecutiveErrors)
-		emitTui(tuiEvents, agent.Event{Kind: agent.EventMaxFailuresReached})
+		emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventMaxFailuresReached})
 		return false
 	}
-	emitTui(tuiEvents, agent.Event{Kind: agent.EventBackoff})
+	emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventBackoff})
 	select {
 	case <-ctx.Done():
 		return false
 	case <-time.After(*backoff):
 	}
 	*backoff = nextBackoff(*backoff)
-	emitTui(tuiEvents, agent.Event{Kind: agent.EventListening})
+	emitTui(tuiEvents, frontendEvents, agent.Event{Kind: agent.EventListening})
 	return true
 }
 
 // emitTui forwards a driver-level event to the TUI without ever blocking
 // on it — the TUI is a slow, human-paced consumer and must never stall
 // the agent's cadence.
-func emitTui(tuiEvents chan<- agent.Event, ev agent.Event) {
+func emitTui(tuiEvents, frontendEvents chan<- agent.Event, ev agent.Event) {
 	select {
 	case tuiEvents <- ev:
+	default:
+	}
+	select {
+	case frontendEvents <- ev:
 	default:
 	}
 }
