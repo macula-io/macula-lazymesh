@@ -3,7 +3,10 @@ package termkeys
 import (
 	"bytes"
 	"io"
+	"os"
 	"testing"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // readAll drains the reader until EOF.
@@ -126,4 +129,24 @@ func (c *chunkReader) Read(p []byte) (int, error) {
 	copy(p, c.data[:n])
 	c.data = c.data[n:]
 	return n, nil
+}
+
+// TestReaderSatisfiesTermFile pins the raw-mode contract: the wrapper
+// must present itself as a terminal file (ReadWriteCloser + Fd), or
+// bubbletea never enables raw mode and the terminal stays in cooked
+// mode -- the live "i doesn't work, chars echo at the cursor" bug.
+func TestReaderSatisfiesTermFile(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "termkeys-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer f.Close()
+	r := New(f)
+	var _ term.File = r // compile-time assertion
+	if r.Fd() == 0 {
+		t.Fatal("a wrapped file reader must report the file's descriptor")
+	}
+	if _, err := r.Write([]byte("x")); err != nil {
+		t.Fatalf("write passthrough: %v", err)
+	}
 }

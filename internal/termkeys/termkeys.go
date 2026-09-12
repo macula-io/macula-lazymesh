@@ -31,8 +31,24 @@ const Disable = "\x1b[<u"
 // ctrl+j byte. It is a byte-stream rewriter: bubbletea still parses the
 // output, so a translated sequence must be one of the byte forms
 // bubbletea already understands.
+//
+// Reader deliberately satisfies charmbracelet/x/term's File interface
+// (ReadWriteCloser + Fd) by delegating to the wrapped file: bubbletea
+// only puts the terminal in raw mode when the input reader it was given
+// IS a term.File, and a wrapper that hid the fd would leave the
+// terminal in cooked mode -- keys line-buffered, chars echoed by the
+// terminal at the cursor (the "typed chars appear in the wrong place"
+// bug found live 2026-09-12).
 type Reader struct {
 	inner io.Reader
+
+	// fd backs raw-mode setup: the wrapped file's descriptor, when the
+	// wrapped reader is a terminal file.
+	fd func() uintptr
+	// writeThrough and closeThrough delegate the rest of the File
+	// contract to the wrapped file, when it has one.
+	writeThrough func([]byte) (int, error)
+	closeThrough func() error
 
 	// out holds translated bytes ready to be delivered to the caller.
 	out []byte
@@ -42,9 +58,48 @@ type Reader struct {
 	eof     bool
 }
 
-// New wraps inner.
+// New wraps inner. When inner is a terminal file (os.Stdin), the
+// returned Reader presents itself as the same file, so bubbletea
+// applies raw mode to it.
 func New(inner io.Reader) *Reader {
-	return &Reader{inner: inner}
+	r := &Reader{inner: inner}
+	if f, ok := inner.(interface{ Fd() uintptr }); ok {
+		r.fd = f.Fd
+	}
+	if w, ok := inner.(io.Writer); ok {
+		r.writeThrough = w.Write
+	}
+	if c, ok := inner.(io.Closer); ok {
+		r.closeThrough = c.Close
+	}
+	return r
+}
+
+// Fd reports the wrapped file's descriptor (0 when not a file), which
+// is what lets bubbletea recognize the reader as a terminal.
+func (r *Reader) Fd() uintptr {
+	if r.fd != nil {
+		return r.fd()
+	}
+	return 0
+}
+
+// Write passes writes through to the wrapped file, for the File
+// contract.
+func (r *Reader) Write(p []byte) (int, error) {
+	if r.writeThrough != nil {
+		return r.writeThrough(p)
+	}
+	return 0, io.ErrClosedPipe
+}
+
+// Close passes the close through to the wrapped file, for the File
+// contract.
+func (r *Reader) Close() error {
+	if r.closeThrough != nil {
+		return r.closeThrough()
+	}
+	return nil
 }
 
 // Read satisfies io.Reader. It refills from inner whenever its output
