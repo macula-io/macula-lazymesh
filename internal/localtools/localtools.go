@@ -54,7 +54,9 @@ type Source struct {
 // New validates cfg and returns a Source. It errors rather than silently
 // falling back if WorkingDir is missing or not a real directory --
 // getting the sandbox root wrong here is exactly the kind of mistake that
-// shouldn't fail quietly.
+// shouldn't fail quietly. The root is resolved through symlinks once, at
+// construction, so every later containment check compares against the
+// canonical directory, not whatever spelling the operator typed.
 func New(cfg Config) (*Source, error) {
 	if cfg.WorkingDir == "" {
 		return nil, fmt.Errorf("localtools: working_dir is required")
@@ -66,11 +68,15 @@ func New(cfg Config) (*Source, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("localtools: create working_dir %s: %w", abs, err)
 	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, fmt.Errorf("localtools: resolve working_dir symlinks %s: %w", abs, err)
+	}
 	timeout := cfg.ShellTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Source{workingDir: abs, shellTimeout: timeout}, nil
+	return &Source{workingDir: canonical, shellTimeout: timeout}, nil
 }
 
 func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
@@ -192,16 +198,87 @@ func (s *Source) resolveInSandbox(relPath string) (string, error) {
 	}
 	joined := filepath.Join(s.workingDir, relPath)
 	cleaned := filepath.Clean(joined)
-	root := filepath.Clean(s.workingDir)
-	if cleaned != root && !strings.HasPrefix(cleaned, root+string(os.PathSeparator)) {
+	if err := s.checkContained(cleaned); err != nil {
 		return "", fmt.Errorf("path %q escapes the working directory", relPath)
 	}
 	return cleaned, nil
 }
 
+// resolveExisting is resolveInSandbox plus symlink resolution (G10): the
+// lexical containment check cannot see a symlink sitting INSIDE the
+// sandbox that points back out, so the final path is resolved through
+// symlinks and re-checked. read_file uses this; the target must exist.
+func (s *Source) resolveExisting(relPath string) (string, error) {
+	cleaned, err := s.resolveInSandbox(relPath)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", err
+	}
+	if err := s.checkContained(resolved); err != nil {
+		return "", fmt.Errorf("path %q escapes the working directory through a symlink", relPath)
+	}
+	return resolved, nil
+}
+
+// resolveForWrite resolves the DEEPEST EXISTING ancestor of a possibly
+// not-yet-existing target through symlinks and re-checks containment,
+// then rejoins the remainder: a write must not follow a symlinked
+// directory out of the sandbox, while the not-yet-created parts
+// legitimately have nothing to resolve yet. When the final component
+// itself exists and is a symlink, it is resolved and re-checked too —
+// os.WriteFile follows it, so it must be treated like the directories.
+func (s *Source) resolveForWrite(relPath string) (string, error) {
+	cleaned, err := s.resolveInSandbox(relPath)
+	if err != nil {
+		return "", err
+	}
+	existing := filepath.Dir(cleaned)
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", fmt.Errorf("write_file: no existing ancestor of %q inside the working directory", relPath)
+		}
+		existing = parent
+	}
+	resolved, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+	if err := s.checkContained(resolved); err != nil {
+		return "", fmt.Errorf("path %q escapes the working directory through a symlinked directory", relPath)
+	}
+	remainder := strings.TrimPrefix(cleaned, existing)
+	target := filepath.Join(resolved, remainder)
+	if final, err := filepath.EvalSymlinks(target); err == nil {
+		if err := s.checkContained(final); err != nil {
+			return "", fmt.Errorf("path %q escapes the working directory through a symlink", relPath)
+		}
+		return final, nil
+	}
+	return target, nil
+}
+
+// checkContained verifies path stays within the canonical working
+// directory.
+func (s *Source) checkContained(path string) error {
+	root := filepath.Clean(s.workingDir)
+	if path != root && !strings.HasPrefix(path, root+string(os.PathSeparator)) {
+		return fmt.Errorf("path %q escapes the working directory", path)
+	}
+	return nil
+}
+
 func (s *Source) readFile(args map[string]any) (string, error) {
 	relPath, _ := args["path"].(string)
-	path, err := s.resolveInSandbox(relPath)
+	path, err := s.resolveExisting(relPath)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
@@ -222,7 +299,7 @@ func (s *Source) readFile(args map[string]any) (string, error) {
 func (s *Source) writeFile(args map[string]any) (string, error) {
 	relPath, _ := args["path"].(string)
 	content, _ := args["content"].(string)
-	path, err := s.resolveInSandbox(relPath)
+	path, err := s.resolveForWrite(relPath)
 	if err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
