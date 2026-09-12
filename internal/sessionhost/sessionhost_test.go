@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ type subscribeTo struct{ Target gen.PID }
 // process by design (Node's own contract), so all tests ride the same one.
 func testNode(t *testing.T) gen.Node {
 	t.Helper()
-	n, err := Node()
+	n, err := Node(io.Discard)
 	if err != nil {
 		t.Fatalf("boot embedded node: %v", err)
 	}

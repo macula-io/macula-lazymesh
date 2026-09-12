@@ -28,6 +28,7 @@
 package sessionhost
 
 import (
+	"io"
 	"sync"
 
 	"ergo.services/ergo"
@@ -56,16 +57,23 @@ var (
 
 // Node returns this process's single embedded Ergo node, started on first
 // use. Networking is completely disabled (D4 condition 1), logging is
-// capped at error so the node stays quiet while the TUI owns the screen.
-// Boot failure is permanent: a process that cannot start its node cannot
-// host sessions, and retrying cannot change that.
-func Node() (gen.Node, error) {
+// capped at error so the node stays quiet while the TUI owns the screen,
+// and every error/panic line Ergo emits goes to logOutput (agent.log in
+// production) — actor crashes are invisible otherwise, because Ergo's
+// default logger writes to stdout (found live 2026-09-12). Boot failure
+// is permanent: a process that cannot start its node cannot host
+// sessions, and retrying cannot change that.
+func Node(logOutput io.Writer) (gen.Node, error) {
 	bootOnce.Do(func() {
 		bootNode, bootErr = ergo.StartNode(NodeName, gen.NodeOptions{
 			Network: gen.NetworkOptions{Mode: gen.NetworkModeDisabled},
 			// The logo banner writes to stdout on every node start; the
-			// TUI owns the screen, so the node must stay silent.
-			Log: gen.LogOptions{Level: gen.LogLevelError, DefaultLogger: gen.DefaultLoggerOptions{DisableBanner: true}},
+			// TUI owns the screen, so the node must stay silent — and
+			// what it DOES log belongs in the agent log, not stdout.
+			Log: gen.LogOptions{Level: gen.LogLevelError, DefaultLogger: gen.DefaultLoggerOptions{
+				DisableBanner: true,
+				Output:        logOutput,
+			}},
 		})
 	})
 	return bootNode, bootErr

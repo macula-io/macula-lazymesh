@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -240,7 +241,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// process handing loop events to the TUI, the agent log and the
 	// room-waiter. A provider panic now restarts the session instead of
 	// killing lazymesh — the whole point of the supervision tree.
-	node, err := sessionhost.Node()
+	node, err := sessionhost.Node(logFile)
 	if err != nil {
 		return fmt.Errorf("start actor node: %w", err)
 	}
@@ -352,7 +353,20 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		defer ctrl.Close()
 	}
 
-	go runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals())
+	go func() {
+		// The driver is a plain goroutine, not an Ergo process: a panic
+		// here crashes lazymesh WITHOUT any trace (Go writes the stack to
+		// stderr, and the alt-screen swallows it) — log the stack to
+		// agent.log first, then re-panic so the process still dies
+		// loudly.
+		defer func() {
+			if r := recover(); r != nil {
+				agentLog.Printf("lazymesh agent: PANIC in driver: %v\n%s", r, debug.Stack())
+				panic(r)
+			}
+		}()
+		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals())
+	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
 	tuiModel := tui.New(client, tui.Options{
