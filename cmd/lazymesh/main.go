@@ -39,6 +39,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
+	"github.com/macula-io/macula-lazymesh/internal/webfetch"
 )
 
 // version, commit, and date are set via -ldflags by .goreleaser.yml at
@@ -513,6 +514,12 @@ func providerLabel(cfg config.Config) string {
 // (the caller's job to keep those in sync -- see run).
 func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source) (agent.ToolSource, error) {
 	sources := []agent.ToolSource{client}
+	// web_fetch (G12) is always wired but never reachable by default: the
+	// default allowlist excludes it, so it costs nothing until an
+	// operator names it in tool_allowlist (or tool_asklist for per-call
+	// approval) — reachability stays an explicit choice, never a side
+	// effect of the source existing.
+	sources = append(sources, webfetch.New())
 	if meshSvc != nil {
 		sources = append(sources, meshSvc)
 	}
