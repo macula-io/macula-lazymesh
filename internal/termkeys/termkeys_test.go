@@ -77,13 +77,25 @@ func TestMixedContentTranslatesOnlyShiftEnter(t *testing.T) {
 }
 
 // TestSequenceSplitAcrossReads pins the state machine: the CSI-u
-// sequence arriving byte-by-byte (the realistic terminal case) must
-// translate exactly like the whole-chunk case.
+// sequence arriving across Read boundaries (split between the
+// surrounding text, not inside the ESC itself -- the pty delivers a
+// terminal write whole, and a lone ESC is the escape key, never a
+// sequence prefix) translates exactly like the whole-chunk case.
 func TestSequenceSplitAcrossReads(t *testing.T) {
-	in := "ab\x1b[13;2ucd"
-	r := New(&chunkReader{data: []byte(in), size: 1})
+	r := New(&chunkReader{data: []byte("ab\x1b[13;2ucd"), size: 6})
 	if got := string(readAll(t, r)); got != "ab\ncd" {
-		t.Fatalf("byte-at-a-time translation = %q", got)
+		t.Fatalf("split translation = %q", got)
+	}
+}
+
+// TestLoneEscapeIsFlushedImmediately pins the modal-TUI contract: a
+// lone ESC passes through as the escape key (bubbletea maps it to
+// KeyEscape the moment it arrives); holding it would deadlock the
+// escape key -- the live bug this test exists for.
+func TestLoneEscapeIsFlushedImmediately(t *testing.T) {
+	r := New(&chunkReader{data: []byte("ab\x1bx"), size: 1})
+	if got := string(readAll(t, r)); got != "ab\x1bx" {
+		t.Fatalf("escape handling = %q", got)
 	}
 }
 

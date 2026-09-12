@@ -125,11 +125,20 @@ type csi struct {
 
 // classifyCSI looks at an escape-starting run and decides: a complete
 // CSI-u sequence (translated if shift+enter), a complete non-CSI escape
-// (alt+key or lone escape, passed through), a complete legacy CSI
-// (passed through), or an incomplete candidate (complete=false).
+// (alt+key or the ESCAPE KEY ITSELF, passed through), a complete legacy
+// CSI (passed through), or an incomplete CSI candidate (complete=false).
+//
+// A lone trailing ESC is flushed immediately, never held: bubbletea's
+// parser treats ESC-alone as KeyEscape the moment it sees it, and the
+// modal TUI depends on that (esc leaves insert mode). Holding it broke
+// the escape key entirely (found live 2026-09-12). The trade-off: a
+// CSI-u sequence must therefore arrive within one read of its ESC — the
+// pty delivers terminal writes whole, which is the same boundary
+// assumption bubbletea's own alt+key handling already makes.
 func classifyCSI(data []byte) (csi, bool) {
-	if len(data) < 2 {
-		return csi{}, false // lone ESC so far: wait for more
+	if len(data) == 1 {
+		// A lone ESC: the escape key, complete as-is.
+		return csi{n: 1}, true
 	}
 	if data[1] != '[' {
 		// ESC followed by a normal byte: alt+key, a complete 2-byte
