@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -55,6 +56,12 @@ func (m Model) chatPaneTop() int {
 // the app must select on the plain events it is guaranteed to receive,
 // and the shift convention degrades gracefully either way.
 func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
+	// Debug-level trace of every mouse event, because a live "selection
+	// does not work" report can only be diagnosed against what the
+	// terminal ACTUALLY sent (action/button/shift/x/y) — these lines
+	// land in agent.log via cmd/lazymesh's default slog wiring, never on
+	// the screen.
+	slog.Debug("tui: mouse event", "action", int(msg.Action), "button", int(msg.Button), "shift", msg.Shift, "x", msg.X, "y", msg.Y, "selection_active", m.sel.active)
 	switch {
 	case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 		if m.chatOnScreen() {
