@@ -663,8 +663,23 @@ become long-running.
       tests in provider (SSE deltas/usage/tool-fragments/consumer-abort),
       agent (stream vs fallback), sessionhost (delta→message→listening
       order), tui (merge + markdown render) and frontend (delta wire).
-- [ ] **Phase 3 — Interrupt.** Per-turn cancellable context in
-      `Loop.Say`; `interrupt` control message + TUI key.
+- [x] **Phase 3 — Interrupt.** Landed 2026-09-12: every turn runs under a
+      per-turn cancellable context; the session registers its cancel func
+      in a concurrent registry (`sessionhost.Interrupt(pid)`) so an
+      interrupt can reach a session whose actor goroutine is blocked
+      inside the provider call — ctx-cancel at the boundary, never a
+      Kill, per Ergo condition 3. Two triggers: the TUI's `x` key (normal
+      mode, via a new InterruptCh option) and the control socket's
+      `{"type":"interrupt"}` message (no ack — the event stream's
+      EventError + turn_complete IS the answer). The driver recognizes
+      `context.Canceled` in SayReply.Err and treats an interrupted turn
+      as deliberate, not as a consecutive failure: it logs and returns to
+      its wait without backoff accounting; the interrupted message stays
+      in conversation history as the fact it is. Proven by tests:
+      sessionhost (provider blocked mid-call → interrupt → SayTurn
+      returns Canceled → error+listening events still delivered), frontend
+      (interrupt control message reaches the interrupt func), tui (`x`
+      signals InterruptCh + confirmation chat line).
 - [ ] **Phase 4 — Session persistence/resume (D2).** JSONL session
       files with workspace fingerprint + reference aliases;
       `--resume`/`--continue`; crash-safe append.

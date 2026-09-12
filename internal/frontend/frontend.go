@@ -17,6 +17,7 @@
 //
 //	controller -> lazymesh:
 //	  {"type":"input","session_id":"<id>","text":"<user message>"}
+//	  {"type":"interrupt"}
 //	  {"type":"query","what":"status|rooms|inbox|agents|realms"}
 //	  {"type":"shutdown"}
 //	lazymesh -> controller:
@@ -57,7 +58,10 @@ type Server struct {
 	inputCh chan<- string
 	events  <-chan agent.Event
 	query   func(ctx context.Context, what string) (any, error)
-	session sessionInfo
+	// interrupt cancels the in-flight turn (the caller's own ctx-cancel
+	// mechanism -- see sessionhost.Interrupt); nil means not wired.
+	interrupt func()
+	session   sessionInfo
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -87,6 +91,9 @@ type Options struct {
 	// Query answers a query control message synchronously, within its
 	// own deadline. It runs on the connection's reader goroutine.
 	Query func(ctx context.Context, what string) (any, error)
+	// Interrupt cancels the in-flight turn when a controller sends an
+	// interrupt control message; nil means not wired.
+	Interrupt func()
 	// SessionID identifies this lazymesh session to controllers (the
 	// --session-id flag, or a generated default).
 	SessionID string
@@ -126,14 +133,15 @@ func Start(opts Options) (*Server, error) {
 	}
 
 	s := &Server{
-		path:    opts.Path,
-		inputCh: opts.Input,
-		events:  opts.Events,
-		query:   opts.Query,
-		session: sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
-		ln:      ln,
-		conns:   make(map[net.Conn]*connection),
-		shutCh:  make(chan struct{}),
+		path:      opts.Path,
+		inputCh:   opts.Input,
+		events:    opts.Events,
+		query:     opts.Query,
+		interrupt: opts.Interrupt,
+		session:   sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
+		ln:        ln,
+		conns:     make(map[net.Conn]*connection),
+		shutCh:    make(chan struct{}),
 	}
 	go s.accept()
 	go s.broadcast()
@@ -275,6 +283,15 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 		// dropped, and the slow-consumer rule applies to output, not
 		// input.
 		s.inputCh <- msg.Text
+		return true
+	case "interrupt":
+		if s.interrupt == nil {
+			reply(map[string]any{"type": "error", "error": "interrupt is not wired"})
+			return true
+		}
+		// No ack: the turn's own event stream (EventError, then the
+		// settle-point turn_complete) IS the answer to an interrupt.
+		s.interrupt()
 		return true
 	case "query":
 		if s.query == nil {

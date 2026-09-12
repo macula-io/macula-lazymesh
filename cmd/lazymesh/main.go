@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -249,6 +250,17 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return fmt.Errorf("start event bridge: %w", err)
 	}
 
+	// The interrupt bus (Phase 3): the TUI's `x` key and the control
+	// socket's interrupt message both land here and cancel the session's
+	// in-flight turn via its per-turn context. One goroutine per signal;
+	// a turn that isn't running makes Interrupt a no-op.
+	interruptCh := make(chan struct{}, 4)
+	go func() {
+		for range interruptCh {
+			sessionhost.Interrupt(sessPid)
+		}
+	}()
+
 	// The control plane (D1): a unix socket speaking NDJSON both ways,
 	// attached to the same bus the TUI uses. input lands on userInputCh
 	// exactly like the compose line; queries read live session and mesh
@@ -271,6 +283,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			Input:     userInputCh,
 			Events:    frontendEvents,
 			Query:     buildQueryHandler(node, sessPid, client),
+			Interrupt: func() { sessionhost.Interrupt(sessPid) },
 			SessionID: resolvedSessionID,
 			Model:     providerLabel(cfg) + "/" + cfg.Model,
 			Log:       logStack.StdFor("frontend"),
@@ -287,6 +300,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	tuiModel := tui.New(client, tui.Options{
 		AgentEvents:       tuiEvents,
 		UserInputCh:       userInputCh,
+		InterruptCh:       interruptCh,
 		StatusBarPosition: cfg.StatusBarPosition,
 		ContactPolicyFile: cfg.ContactPolicyFile,
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
@@ -715,6 +729,17 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 				continue
 			}
 			sessPid = newPid
+			continue
+		}
+		if errors.Is(reply.Err, context.Canceled) {
+			// An interrupt (Phase 3): the turn was deliberately cut
+			// short, not a failure. The loop already emitted the
+			// EventError and the session its turn-complete marker; the
+			// interrupted message stays in the conversation history as
+			// the fact it is, and whatever the operator typed next (or
+			// the next room/ring event) picks the cadence back up.
+			agentLog.Printf("lazymesh agent: turn interrupted")
+			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
 			continue
 		}
 		if reply.Err != nil {

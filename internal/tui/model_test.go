@@ -1363,3 +1363,23 @@ func TestAssistantEntryRendersMarkdown(t *testing.T) {
 		t.Fatalf("render lost the markdown content: %q", rendered)
 	}
 }
+
+// TestInterruptKeySignalsInterruptCh pins the TUI half of Phase 3: `x` in
+// normal mode sends on InterruptCh (non-blocking) and drops a system chat
+// line so the operator sees the request land.
+func TestInterruptKeySignalsInterruptCh(t *testing.T) {
+	interruptCh := make(chan struct{}, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), InterruptCh: interruptCh})
+	m.mode = ModeNormal
+	updated, _ := m.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'x'}}))
+	m = updated.(Model)
+
+	select {
+	case <-interruptCh:
+	default:
+		t.Fatal("x did not signal InterruptCh")
+	}
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
+		t.Fatalf("expected one system chat entry confirming the interrupt, got %+v", m.chatEntries)
+	}
+}

@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"ergo.services/ergo/act"
 	"ergo.services/ergo/gen"
@@ -63,8 +64,29 @@ type Status struct {
 // eventBuffer bounds how many events one Say turn captures before it
 // would block the loop. Matches the generous-buffer posture of main.go's
 // own tuiEvents channel: the session must never stall on a slow consumer
-// mid-turn. The buffer is drained and broadcast after the turn.
+// mid-turn. The buffer is drained live and broadcast by the forwarding
+// goroutine (see runSay).
 const eventBuffer = 64
+
+// turns maps each live session to its in-flight turn's cancel func, the
+// one piece of session state legitimately touched from another goroutine:
+// an interrupt must cancel a provider call while the actor goroutine is
+// BLOCKED inside it, and Ergo condition 3 says that cancel is the ONLY
+// such mechanism (a Kill cannot preempt a blocked handler). The map is
+// concurrent because Interrupt runs on the controller's goroutine, while
+// the session's own mailbox state stays on the actor goroutine untouched.
+var turns sync.Map // gen.PID -> context.CancelFunc
+
+// Interrupt cancels session's in-flight turn, if one is running. Safe
+// from any goroutine at any time; a session with no active turn is a
+// no-op. The interrupted turn's error travels back to the driver as
+// SayReply.Err wrapping context.Canceled, and the loop has already
+// emitted the EventError describing it.
+func Interrupt(session gen.PID) {
+	if cancel, ok := turns.Load(session); ok {
+		cancel.(context.CancelFunc)()
+	}
+}
 
 // session is one agent conversation under the root supervisor.
 type session struct {
@@ -172,6 +194,10 @@ func (s *session) Terminate(reason error) {}
 // actor goroutine, and events reach subscribers live, in mailbox order,
 // ahead of the SayReply that ends the turn.
 func (s *session) runSay(text string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	turns.Store(s.PID(), cancel)
+	defer turns.Delete(s.PID())
+
 	events := make(chan agent.Event, eventBuffer)
 	drained := make(chan struct{})
 	go func() {
@@ -180,7 +206,7 @@ func (s *session) runSay(text string) error {
 		}
 		close(drained)
 	}()
-	err := s.loop.Say(context.Background(), text, events)
+	err := s.loop.Say(ctx, text, events)
 	close(events)
 	<-drained
 	// The turn-complete marker is emitted BY the session, appended to the
@@ -208,9 +234,10 @@ func (s *session) broadcast(ev agent.Event) {
 }
 
 // Say runs one turn on session and blocks until it completes: SayReply.Err
-// carries a turn failure, while a non-nil returned error means the session
-// process itself is gone (a panic-restart in flight, or a stop) and the
-// caller must reattach rather than count it as an ordinary failure.
+// carries a turn failure (an interrupt arrives as context.Canceled), while
+// a non-nil returned error means the session process itself is gone (a
+// panic-restart in flight, or a stop) and the caller must reattach rather
+// than count it as an ordinary failure.
 func SayTurn(n gen.Node, session gen.PID, text string) (SayReply, error) {
 	reply, err := n.Call(session, Say{Text: text})
 	if err != nil {

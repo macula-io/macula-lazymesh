@@ -79,6 +79,11 @@ type Options struct {
 	AgentEvents <-chan agent.Event // nil when no --room agent is running
 	UserInputCh chan<- string      // where a submitted message is sent for runAgent to pick up
 
+	// InterruptCh receives a signal on the `x` key (normal mode): the
+	// caller cancels the in-flight turn's context. nil when unwired, in
+	// which case `x` reports rather than sending.
+	InterruptCh chan<- struct{}
+
 	StatusBarPosition string // "top" or "bottom"
 
 	// ContactPolicyFile and AutoAcceptKnown together drive the ring
@@ -136,6 +141,7 @@ type Model struct {
 
 	agentEvents <-chan agent.Event
 	userInputCh chan<- string
+	interruptCh chan<- struct{}
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
@@ -268,6 +274,7 @@ func New(client toolCaller, opts Options) Model {
 		realmIdentityFile:    opts.RealmIdentityFile,
 		agentEvents:          opts.AgentEvents,
 		userInputCh:          opts.UserInputCh,
+		interruptCh:          opts.InterruptCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
@@ -719,6 +726,18 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
 		m.showChatter = !m.showChatter
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.Interrupt):
+		// Phase 3: cancel the in-flight turn. A non-blocking send --
+		// the caller's own interrupt handling must never stall the TUI.
+		if m.interruptCh != nil {
+			select {
+			case m.interruptCh <- struct{}{}:
+				m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "interrupting the current turn..."})
+				m.syncViewport()
+			default:
+			}
+		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleLogs):
 		return m.openAgentLog()

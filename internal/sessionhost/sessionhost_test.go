@@ -231,6 +231,91 @@ func TestStreamedTurnDeliversDeltasThenTurnComplete(t *testing.T) {
 	}
 }
 
+// blockingProvider enters the call and blocks until its context is done
+// — the exact shape an interrupt exists to cut short.
+type blockingProvider struct {
+	entered chan struct{}
+}
+
+func (b *blockingProvider) ChatCompletion(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	select {
+	case <-b.entered:
+	default:
+		close(b.entered)
+	}
+	<-ctx.Done()
+	return provider.ChatResponse{}, ctx.Err()
+}
+
+func (b *blockingProvider) ContextWindow() int { return 1000 }
+
+// TestInterruptCancelsInFlightTurn proves Phase 3's contract end to end:
+// a turn blocked inside its provider call is cancelled by Interrupt
+// (ctx-cancel at the boundary, never a Kill), the driver's SayTurn
+// returns with context.Canceled, and the event stream still delivers the
+// loop's error and the settle point.
+func TestInterruptCancelsInFlightTurn(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &blockingProvider{entered: make(chan struct{})}
+	sessPid := startSession(t, n, root, p)
+
+	events := make(chan Event, 16)
+	downs := make(chan gen.MessageDownPID, 8)
+	cPid, err := n.Spawn(collectorFactory, gen.ProcessOptions{}, events, downs)
+	if err != nil {
+		t.Fatalf("spawn collector: %v", err)
+	}
+	if _, err := n.Call(cPid, subscribeTo{Target: sessPid}); err != nil {
+		t.Fatalf("subscribe collector: %v", err)
+	}
+
+	replyCh := make(chan SayReply, 1)
+	go func() {
+		reply, err := SayTurn(n, sessPid, "a turn that will be interrupted")
+		if err != nil {
+			replyCh <- SayReply{Err: err}
+			return
+		}
+		replyCh <- reply
+	}()
+
+	select {
+	case <-p.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("provider call never started")
+	}
+
+	Interrupt(sessPid)
+
+	select {
+	case reply := <-replyCh:
+		if !errors.Is(reply.Err, context.Canceled) {
+			t.Fatalf("interrupted turn error = %v, want context.Canceled", reply.Err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("SayTurn never returned after the interrupt")
+	}
+
+	// The loop emitted its EventError and the session its settle marker,
+	// in order, through the same path every turn uses.
+	var sawError, sawListening bool
+	deadline := time.After(10 * time.Second)
+	for !sawError || !sawListening {
+		select {
+		case ev := <-events:
+			switch ev.Event.Kind {
+			case agent.EventError:
+				sawError = true
+			case agent.EventListening:
+				sawListening = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for error+listening events (error=%v listening=%v)", sawError, sawListening)
+		}
+	}
+}
+
 // TestNodeStartsWithNetworkingDisabled exercises the production bootstrap
 // path: the node boots, is alive, and carries the lazymesh name. The
 // disabled-network part is a config claim this test cannot observe

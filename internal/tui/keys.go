@@ -37,6 +37,8 @@ type KeyMap struct {
 	Copy       key.Binding
 	OlderError key.Binding // p -- step back through the error history
 	NewerError key.Binding // n -- step forward again
+
+	Interrupt key.Binding // x -- cancel the in-flight turn (normal mode)
 }
 
 var DefaultKeyMap = KeyMap{
@@ -62,4 +64,5 @@ var DefaultKeyMap = KeyMap{
 	Copy:               key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 	OlderError:         key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "older error")),
 	NewerError:         key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "newer error")),
+	Interrupt:          key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "interrupt the running turn")),
 }

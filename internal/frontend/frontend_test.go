@@ -192,6 +192,35 @@ func TestDeltaWireShape(t *testing.T) {
 	}
 }
 
+// TestInterruptControlMessageCallsInterrupt proves the interrupt control
+// message reaches the caller's interrupt function — the socket's half of
+// the Phase 3 chain (the sessionhost test covers the other half).
+func TestInterruptControlMessageCallsInterrupt(t *testing.T) {
+	called := make(chan struct{}, 1)
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	s, err := Start(Options{
+		Path:      path,
+		Input:     make(chan string, 8),
+		Events:    make(chan agent.Event, 8),
+		Interrupt: func() { called <- struct{}{} },
+		SessionID: "test-session",
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c := dial(t, path)
+	c.line(t) // handshake
+	c.send(t, `{"type":"interrupt"}`)
+
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupt function was never called")
+	}
+}
+
 // TestCloseRemovesSocketFile proves Close leaves no socket file behind.
 func TestCloseRemovesSocketFile(t *testing.T) {
 	s, path := startTestServer(t, make(chan string, 8), make(chan agent.Event, 8), nil)
