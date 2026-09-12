@@ -713,29 +713,29 @@ become long-running.
       Go client full-turn collection + query round-trip + interrupt/
       shutdown over a real server, and the Python client exercised end to
       end against a live server by a Go test (skips without python3).
-- [x] **Phase 6 — Quality features, work package G9 (approval/ask mode).**
-      Landed 2026-09-12: `agent.AskSource` gates a configured tool set
-      behind per-action `Consent`, layered OUTSIDE the allowlist (ask
-      never replaces allow); `config.tool_asklist` names the tools (empty
-      = no change). The session implements the consent itself: it
-      broadcasts an `EventApprovalRequested` (tool + approval id +
-      truncated args preview) to every subscriber — DIRECTLY, because a
-      self-Sent event would deadlock in the actor's own mailbox while
-      the turn waits for the answer — and waits on a per-turn channel,
-      bounded by the turn's context and a 2-minute timeout. The answer
-      arrives out of band: the TUI's approval popup (`y` allow / `n`/
-      esc deny, `ApprovalCh`) and the control socket's
-      `{"type":"approve","id":...,"allow":1}` message (`approval_request`
-      outbound) both funnel into `sessionhost.AnswerApproval`, which
-      matches on the approval id so a stale answer can never be
-      delivered to a newer question. A denial surfaces to the model as a
-      tool error ("denied by the operator"); a timeout or interrupted
-      turn refuses as unanswerable. Remaining Phase 6 packages: G6
-      compaction, G8 skills/AGENTS.md, G13 wakeups, G12 web fetch, G10
-      sandbox. Proven by tests: AskSource gating/denial, the end-to-end
-      approval chain (turn blocks at the prompt, allow completes it),
-      the deny path, the TUI popup y/n, and the socket approve round
-      trip.
+- [x] **Phase 6 — Quality features, work packages G9 (approval/ask mode)
+      and G6 (context compaction).** G9 landed 2026-09-12:
+      `agent.AskSource` gates a configured tool set behind per-action
+      `Consent`, layered OUTSIDE the allowlist; `config.tool_asklist`
+      names the tools. The session implements the consent itself:
+      broadcasts `EventApprovalRequested` directly to subscribers (a
+      self-Sent event would deadlock in the actor's own mailbox while the
+      turn waits), waits on a per-turn channel bounded by ctx + a
+      2-minute timeout; the TUI popup (`y`/`n`/esc) and the socket's
+      `{"type":"approve","id":...,"allow":1}` both funnel into
+      `sessionhost.AnswerApproval` (id-matched, stale answers discarded).
+      G6 landed same day: `trimHistory` now SUMMARIZES evicted turns via
+      a tool-less completion on the loop's own provider, folding them
+      into a `l.summary` that rides as a system message right after the
+      real system prompt — the model keeps the record, loses the verbatim
+      text. Summarization failure degrades to the old amputation with an
+      EventError saying so; `Restore` resets the summary with the
+      history. Remaining Phase 6 packages: G8 skills/AGENTS.md, G13
+      wakeups, G12 web fetch, G10 sandbox. Proven by tests: the full
+      approval chain (block → answer → complete), deny path, popup y/n,
+      socket approve round trip, summarization presence, failure
+      fallback + EventError, and the pre-G6 boundary discipline
+      (turn-cut, tool-call/result pairing) pinned on the fallback path.
 - [ ] **Phase 7 — Handoff discipline.** Envelope-kind prompting +
       schema restoration + `in_reply_to` injection wrapper (G11).
 - [ ] **Phase 8 — Anthropic provider, metrics, allowlist merge-mode
