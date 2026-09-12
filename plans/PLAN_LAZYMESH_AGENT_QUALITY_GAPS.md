@@ -753,8 +753,27 @@ become long-running.
       permission for well-formed replies and plain kinds, pass-through
       for non-mesh_say tools, grammar presence in the prompt, and the
       restored terse enum (lifecycle kinds still excluded).
-- [ ] **Phase 8 — Anthropic provider, metrics, allowlist merge-mode
-      fix.** (G14, G16, G18.)
+- [x] **Phase 8 — Anthropic provider, metrics, allowlist merge-mode
+      fix (G14, G16, G18).** Landed 2026-09-12, the last phase: G14
+      implements the real Anthropic Messages API (top-level system
+      blocks, content-block messages, tool_use/tool_result mapping, the
+      required headers, error mapping) AND its SSE stream (text deltas,
+      input_json_delta accumulation per block, usage from message_start/
+      message_delta) — Anthropic now satisfies both Provider and Streamer,
+      and every configured provider is functional. G16 adds
+      `internal/counters`: a mutex-guarded registry the event bridge
+      records into (turns at the listening boundary, tool activity per
+      kind and per tool, errors/backoffs/approvals), surfaced as a
+      structured `[counters] ...` line in agent.log at every turn
+      boundary and as a `counters` object in the control socket's status
+      query — Prometheus export remains the explicitly later step. G18
+      adds `tool_allowlist_extends`: a merge mode so naming one extra
+      tool adds it instead of silently removing every default (and the
+      mesh_service_* defaults); the replace semantics stay the default,
+      as the one way to REMOVE a default tool. Proven by tests: the
+      Anthropic wire mapping (request + response), tool round trip,
+      SSE stream, API errors; the counters contract + log line; and the
+      extends/replace merge behavior.
 
 ## Files to Create/Modify
 

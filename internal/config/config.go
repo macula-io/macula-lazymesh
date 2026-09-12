@@ -81,6 +81,14 @@ type Config struct {
 	// it does not mark peer-authored room text as untrusted. Only do this
 	// in a trusted/private mesh context.
 	ToolAllowlist []string `yaml:"tool_allowlist,omitempty"`
+	// ToolAllowlistExtends (G18) changes what a non-empty ToolAllowlist
+	// means: true MERGES the override with agent.DefaultToolAllowlist
+	// (plus the mesh_service_* defaults when MeshServicesEnabled), so
+	// naming one extra tool adds it instead of silently removing every
+	// default — the footgun the plain override always was. false (the
+	// default) keeps the override's replace semantics, which remains the
+	// only way to REMOVE a default tool.
+	ToolAllowlistExtends bool `yaml:"tool_allowlist_extends,omitempty"`
 	// ToolAsklist (G9) names tools that, on top of being allowed, require
 	// the operator's per-action approval before every call: the TUI
 	// pops an approval prompt and the control socket emits an

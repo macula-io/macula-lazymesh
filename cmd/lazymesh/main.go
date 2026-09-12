@@ -25,6 +25,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/counters"
 	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/logging"
@@ -289,7 +290,8 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer sessionhost.StopSession(node, sessPid)
-	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, frontendEvents, agentLog, waiterMgr); err != nil {
+	runtimeCounters := counters.New()
+	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, frontendEvents, agentLog, waiterMgr, runtimeCounters); err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
 
@@ -336,7 +338,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			Path:      path,
 			Input:     userInputCh,
 			Events:    frontendEvents,
-			Query:     buildQueryHandler(node, sessPid, client),
+			Query:     buildQueryHandler(node, sessPid, client, runtimeCounters),
 			Interrupt: func() { sessionhost.Interrupt(sessPid) },
 			Approve:   func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
 			Schedule:  schedulerMgr.Schedule,
@@ -561,13 +563,41 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 // this function's own job is to prevent.
 func resolveAllowlist(cfg config.Config) []string {
 	if len(cfg.ToolAllowlist) > 0 {
-		return cfg.ToolAllowlist
+		if !cfg.ToolAllowlistExtends {
+			// Replace semantics (the default): the operator wrote the
+			// whole list, which is the one way to REMOVE a default tool.
+			return cfg.ToolAllowlist
+		}
+		// Extend semantics (G18): the override ADDS to the defaults —
+		// naming one extra tool must never silently remove every other
+		// default, the footgun this flag exists to defuse.
+		names := append([]string{}, cfg.ToolAllowlist...)
+		names = appendUnique(names, agent.DefaultToolAllowlist...)
+		if cfg.MeshServicesEnabled {
+			names = appendUnique(names, meshservices.AllowedToolNames()...)
+		}
+		return names
 	}
 	names := append([]string{}, agent.DefaultToolAllowlist...)
 	if cfg.MeshServicesEnabled {
 		names = append(names, meshservices.AllowedToolNames()...)
 	}
 	return names
+}
+
+// appendUnique appends names not already present, preserving order.
+func appendUnique(base []string, names ...string) []string {
+	seen := make(map[string]bool, len(base)+len(names))
+	for _, n := range base {
+		seen[n] = true
+	}
+	for _, n := range names {
+		if !seen[n] {
+			base = append(base, n)
+			seen[n] = true
+		}
+	}
+	return base
 }
 
 func allowlistIncludes(allowlist []string, name string) bool {
@@ -923,7 +953,7 @@ func reattachSession(ctx context.Context, n gen.Node, root, oldPid gen.PID, agen
 // directly through the client, bypassing the model — the same
 // deterministic-harness-plumbing posture as seedInitialRooms. Mesh tool
 // results travel as parsed JSON when they parse, raw text otherwise.
-func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client) func(ctx context.Context, what string) (any, error) {
+func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client, runtimeCounters *counters.Registry) func(ctx context.Context, what string) (any, error) {
 	meshTool := map[string]string{
 		"rooms":  "mesh_rooms",
 		"inbox":  "mesh_read_inbox",
@@ -940,6 +970,7 @@ func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client) fu
 			return map[string]any{
 				"message_count": st.MessageCount,
 				"total_tokens":  st.Usage.TotalTokens,
+				"counters":      runtimeCounters.Snapshot(),
 			}, nil
 		}
 		if tool, ok := meshTool[what]; ok {

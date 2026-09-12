@@ -8,6 +8,7 @@ import (
 	"ergo.services/ergo/gen"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/counters"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 )
@@ -32,6 +33,7 @@ type eventBridge struct {
 	frontendEvents chan<- agent.Event
 	agentLog       *log.Logger
 	waiterMgr      *roomwaiter.Manager
+	counters       *counters.Registry
 }
 
 func eventBridgeFactory() gen.ProcessBehavior { return &eventBridge{} }
@@ -42,6 +44,7 @@ func (b *eventBridge) Init(args ...any) error {
 	b.frontendEvents = args[2].(chan<- agent.Event)
 	b.agentLog = args[3].(*log.Logger)
 	b.waiterMgr = args[4].(*roomwaiter.Manager)
+	b.counters = args[5].(*counters.Registry)
 	return nil
 }
 
@@ -53,6 +56,13 @@ func (b *eventBridge) HandleMessage(from gen.PID, message any) error {
 		return nil
 	}
 	logEvent(b.agentLog, msg.Event)
+	b.counters.Record(msg.Event)
+	if msg.Event.Kind == agent.EventListening {
+		// G16: one structured counters line per turn boundary — the
+		// cheapest structured telemetry that still surfaces "tool X
+		// keeps failing" or "no turns ran all day" at a glance.
+		b.agentLog.Print(b.counters.Snapshot().Line())
+	}
 
 	// Reactive room-churn detection, ported verbatim from runAgent's old
 	// forwarding goroutine: tool results drive waiterMgr.Sync/Add/Remove,
@@ -112,8 +122,8 @@ type bridgeSubscribeTo struct {
 }
 
 // startEventBridge spawns the bridge on n and subscribes it to session.
-func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents chan<- agent.Event, agentLog *log.Logger, waiterMgr *roomwaiter.Manager) (gen.PID, error) {
-	bridge, err := n.Spawn(eventBridgeFactory, gen.ProcessOptions{}, ctx, tuiEvents, frontendEvents, agentLog, waiterMgr)
+func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents chan<- agent.Event, agentLog *log.Logger, waiterMgr *roomwaiter.Manager, counters *counters.Registry) (gen.PID, error) {
+	bridge, err := n.Spawn(eventBridgeFactory, gen.ProcessOptions{}, ctx, tuiEvents, frontendEvents, agentLog, waiterMgr, counters)
 	if err != nil {
 		return gen.PID{}, err
 	}

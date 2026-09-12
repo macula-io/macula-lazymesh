@@ -721,3 +721,35 @@ func TestBuildSystemPrompt_TeachesHandoffGrammar(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveAllowlist_ExtendsMergesDefaults pins the G18 fix: with
+// tool_allowlist_extends, an override ADDS to the defaults instead of
+// silently replacing them; without it, the replace semantics stay (the
+// only way to remove a default tool).
+func TestResolveAllowlist_ExtendsMergesDefaults(t *testing.T) {
+	base := resolveAllowlist(config.Config{})
+	if !allowlistIncludes(base, "mesh_say") {
+		t.Fatalf("default allowlist missing mesh_say: %v", base)
+	}
+
+	// Plain override (extends false): replaces — mesh_say gone.
+	replaced := resolveAllowlist(config.Config{ToolAllowlist: []string{"shell_exec"}})
+	if allowlistIncludes(replaced, "mesh_say") {
+		t.Fatalf("plain override should replace defaults: %v", replaced)
+	}
+
+	// Extend: both the override and every default survive, deduplicated.
+	extended := resolveAllowlist(config.Config{ToolAllowlist: []string{"shell_exec", "mesh_say"}, ToolAllowlistExtends: true})
+	for _, want := range append([]string{"shell_exec"}, base...) {
+		if !allowlistIncludes(extended, want) {
+			t.Fatalf("extended allowlist missing %q: %v", want, extended)
+		}
+	}
+	seen := map[string]bool{}
+	for _, name := range extended {
+		if seen[name] {
+			t.Fatalf("extended allowlist duplicated %q: %v", name, extended)
+		}
+		seen[name] = true
+	}
+}
