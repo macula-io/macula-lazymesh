@@ -101,6 +101,27 @@ func (l *Loop) MessageCount() int {
 	return len(l.messages)
 }
 
+// Messages returns a snapshot of the conversation history, copied so a
+// caller can persist or inspect it without racing the loop.
+func (l *Loop) Messages() []provider.Message {
+	return append([]provider.Message(nil), l.messages...)
+}
+
+// Restore replaces the conversation with msgs — a loaded session log
+// (D2) — keeping this run's own leading system message: the system
+// prompt is rebuilt from the CURRENT config/flags on every start (rooms,
+// goal, tool availability all change between runs), so a persisted one
+// must never shadow it. The restored history is then trimmed to the same
+// bounds a live conversation respects.
+func (l *Loop) Restore(msgs []provider.Message) {
+	var head []provider.Message
+	if len(l.messages) > 0 && l.messages[0].Role == provider.RoleSystem {
+		head = l.messages[:1]
+	}
+	l.messages = append(append([]provider.Message(nil), head...), msgs...)
+	l.trimHistory()
+}
+
 // NewLoop starts a loop with the given system prompt as its first message.
 func NewLoop(p provider.Provider, tools ToolSource, systemPrompt string) *Loop {
 	l := &Loop{Provider: p, Tools: tools}

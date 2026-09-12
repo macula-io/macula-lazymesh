@@ -680,9 +680,25 @@ become long-running.
       returns Canceled → error+listening events still delivered), frontend
       (interrupt control message reaches the interrupt func), tui (`x`
       signals InterruptCh + confirmation chat line).
-- [ ] **Phase 4 — Session persistence/resume (D2).** JSONL session
-      files with workspace fingerprint + reference aliases;
-      `--resume`/`--continue`; crash-safe append.
+- [x] **Phase 4 — Session persistence/resume (D2).** Landed 2026-09-12 as
+      `internal/sessionstore`: JSONL append logs at
+      `~/.local/share/lazymesh/sessions/<sha256(cwd)[:16]>/<session-id>.jsonl`
+      (XDG_DATA_HOME respected), one JSON line per message, O_APPEND
+      writes (a crash loses at most the final line; a torn trailing line
+      is skipped on load, never fatal). Every run persists its turn's
+      completed state change (user + assistant + tool messages appended
+      after the turn); `--resume <id|latest|last>` and `--continue`
+      (alias of `--resume latest`) restore the conversation, with the
+      CURRENT run's system prompt kept (it is rebuilt from live
+      config/flags, never resurrected from a log) and the history trimmed
+      to live bounds. The same restore path a supervisor restart rides,
+      since SOFO hands the restarted instance its SessionArgs unchanged —
+      a panicked session now comes back with its conversation, closing
+      the last gap between "restart" and "resume". Proven by tests:
+      round-trip (roles/tool calls/order), incremental append, torn-line
+      tolerance, latest/ref resolution, fingerprint scoping, Loop.Restore
+      keeping the live system prompt, and the end-to-end resume test
+      (persist → stop → new session same id → 3 messages restored).
 - [ ] **Phase 5 — SDKs.** Tiny Go client library + Python client for
       the control protocol; example: two lazymesh processes on one box,
       parent hands a task to child over the socket (local

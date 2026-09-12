@@ -10,16 +10,25 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
 )
 
 // SessionArgs is everything one session actor needs to build its own
-// conversation: the provider, the tool sources, and the fixed system
-// prompt. Each session owns its own agent.Loop; nothing is shared between
-// sessions by construction.
+// conversation: the provider, the tool sources, the fixed system
+// prompt, and — when Store and SessionID are both set — the JSONL log
+// the conversation is restored from and appended to (D2). Each session
+// owns its own agent.Loop; nothing is shared between sessions by
+// construction.
 type SessionArgs struct {
 	Provider     provider.Provider
 	Tools        agent.ToolSource
 	SystemPrompt string
+
+	// Store persists the conversation as JSONL under SessionID. A nil
+	// Store (or an empty SessionID) disables persistence: the session
+	// runs in-memory exactly as it did before D2.
+	Store     *sessionstore.Store
+	SessionID string
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -94,14 +103,17 @@ type session struct {
 
 	loop        *agent.Loop
 	subscribers map[gen.PID]struct{}
+	store       *sessionstore.Store
+	sessionID   string
 }
 
 func sessionFactory() gen.ProcessBehavior { return &session{} }
 
-// Init builds this session's own Loop from its SessionArgs. A fresh Loop
-// is also what a supervisor restart yields: panic recovery means losing
-// the in-memory conversation, by design — persistence (D2) is what will
-// make restarts restore it.
+// Init builds this session's own Loop from its SessionArgs, then restores
+// the persisted conversation when a store is wired — a resumed session
+// (or a supervisor-restarted one, which gets the same SessionArgs per the
+// SOFO restart contract) starts from its log, not from zero. A fresh Loop
+// is still what a restart yields when nothing was ever persisted.
 func (s *session) Init(args ...any) error {
 	sessArgs, ok := args[0].(SessionArgs)
 	if !ok {
@@ -109,6 +121,16 @@ func (s *session) Init(args ...any) error {
 	}
 	s.loop = agent.NewLoop(sessArgs.Provider, sessArgs.Tools, sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})
+	if sessArgs.Store != nil && sessArgs.SessionID != "" {
+		s.store = sessArgs.Store
+		s.sessionID = sessArgs.SessionID
+		msgs, err := sessArgs.Store.Load(sessArgs.SessionID)
+		if err != nil {
+			s.Log().Error("sessionhost: restore conversation: %s", err)
+			return nil
+		}
+		s.loop.Restore(msgs)
+	}
 	return nil
 }
 
@@ -198,6 +220,7 @@ func (s *session) runSay(text string) error {
 	turns.Store(s.PID(), cancel)
 	defer turns.Delete(s.PID())
 
+	before := s.loop.MessageCount()
 	events := make(chan agent.Event, eventBuffer)
 	drained := make(chan struct{})
 	go func() {
@@ -209,6 +232,18 @@ func (s *session) runSay(text string) error {
 	err := s.loop.Say(ctx, text, events)
 	close(events)
 	<-drained
+	// Persist the turn's completed state change: the messages Say appended
+	// (user + assistant + tool results), appended to the log after the
+	// turn finishes. An in-flight turn lost to a crash is exactly that —
+	// lost; the log records completed changes, and the driver's reattach
+	// path retries the prompt against the restored state.
+	if s.store != nil {
+		if added := s.loop.Messages()[before:]; len(added) > 0 {
+			if err := s.store.Append(s.sessionID, added); err != nil {
+				s.Log().Error("sessionhost: persist turn: %s", err)
+			}
+		}
+	}
 	// The turn-complete marker is emitted BY the session, appended to the
 	// mailbox AFTER every event of the turn it just ran: it rides the
 	// same delivery path as the deltas, so the control plane's settle

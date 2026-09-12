@@ -12,6 +12,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
 )
 
 // fakeProvider answers every call with one fixed reply — or panics, which
@@ -135,11 +136,18 @@ func testRoot(t *testing.T, n gen.Node) gen.PID {
 // test wants.
 func startSession(t *testing.T, n gen.Node, root gen.PID, p provider.Provider) gen.PID {
 	t.Helper()
-	pid, err := StartSession(n, root, SessionArgs{
+	return startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
 		Tools:        fakeTools{},
 		SystemPrompt: "you are a test agent",
 	})
+}
+
+// startSessionWith starts a session with explicit args — the resume test
+// needs the store + session id wired.
+func startSessionWith(t *testing.T, n gen.Node, root gen.PID, args SessionArgs) gen.PID {
+	t.Helper()
+	pid, err := StartSession(n, root, args)
 	if err != nil {
 		t.Fatalf("start session: %v", err)
 	}
@@ -313,6 +321,50 @@ func TestInterruptCancelsInFlightTurn(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("timed out waiting for error+listening events (error=%v listening=%v)", sawError, sawListening)
 		}
+	}
+}
+
+// TestResumeRestoresPersistedConversation pins the D2 contract end to
+// end: a conversation persisted under a session id comes back when a new
+// session actor starts with the same store + id — the shape --resume
+// depends on, and the same path a supervisor restart rides (SOFO hands
+// the restarted instance its SessionArgs unchanged).
+func TestResumeRestoresPersistedConversation(t *testing.T) {
+	n := testNode(t)
+	store, err := sessionstore.New(t.TempDir(), sessionstore.Fingerprint(t.TempDir()))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	args := SessionArgs{
+		Provider:     &fakeProvider{reply: provider.ChatResponse{Message: provider.Message{Role: provider.RoleAssistant, Content: "hello again"}}},
+		Tools:        fakeTools{},
+		SystemPrompt: "you are a test agent",
+		Store:        store,
+		SessionID:    "resumed",
+	}
+
+	root := testRoot(t, n)
+	first := startSessionWith(t, n, root, args)
+	reply, err := SayTurn(n, first, "hi")
+	if err != nil {
+		t.Fatalf("first say: %v", err)
+	}
+	if reply.Err != nil {
+		t.Fatalf("first say failed: %v", reply.Err)
+	}
+	if err := StopSession(n, first); err != nil {
+		t.Fatalf("stop first session: %v", err)
+	}
+
+	// A brand-new session with the same store + id: the conversation is
+	// restored (system + user + assistant = 3 messages) before any Say.
+	second := startSessionWith(t, n, root, args)
+	status, err := SessionStatus(n, second)
+	if err != nil {
+		t.Fatalf("status on resumed session: %v", err)
+	}
+	if status.MessageCount != 3 {
+		t.Fatalf("resumed message count = %d, want 3", status.MessageCount)
 	}
 }
 

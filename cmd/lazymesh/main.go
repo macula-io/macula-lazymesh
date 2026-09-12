@@ -34,6 +34,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
+	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 )
@@ -55,6 +56,8 @@ func main() {
 	headless := flag.Bool("headless", false, "run without the TUI (a unix control socket or a signal ends the session)")
 	socketPath := flag.String("unix-socket", "", "serve the control plane on this unix socket (default: $XDG_RUNTIME_DIR/lazymesh/<session-id>.sock)")
 	sessionID := flag.String("session-id", "", "session id reported to controllers (default: lazymesh-<pid>)")
+	resumeRef := flag.String("resume", "", "resume a previous session: a session id, or \"latest\"/\"last\" for the newest one")
+	continueLatest := flag.Bool("continue", false, "resume the newest session (same as --resume latest)")
 	flag.Parse()
 
 	if *showVersion {
@@ -62,13 +65,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *room, *goalText, *headless, *socketPath, *sessionID); err != nil {
+	if err := run(*configPath, *room, *goalText, *headless, *socketPath, *sessionID, *resumeRef, *continueLatest); err != nil {
 		fmt.Fprintln(os.Stderr, "lazymesh:", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, room, goalText string, headless bool, socketPath, sessionID string) error {
+func run(configPath, room, goalText string, headless bool, socketPath, sessionID, resumeRef string, continueLatest bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -237,10 +240,46 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return fmt.Errorf("start session root: %w", err)
 	}
+
+	// Session persistence (D2): every run resolves its session id, wires
+	// the JSONL store, and either starts fresh or resumes. --continue and
+	// --resume resolve against the workspace-fingerprinted session dir;
+	// without them the default id (lazymesh-<pid>) starts a new log.
+	resolvedSessionID := sessionID
+	if resolvedSessionID == "" {
+		resolvedSessionID = fmt.Sprintf("lazymesh-%d", os.Getpid())
+	}
+	dataDir, err := sessionstore.DefaultDataDir()
+	if err != nil {
+		return fmt.Errorf("resolve session store dir: %w", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+	sessionStore, err := sessionstore.New(dataDir, sessionstore.Fingerprint(wd))
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	if continueLatest {
+		if resumeRef != "" {
+			return fmt.Errorf("--continue and --resume are the same thing; give one")
+		}
+		resumeRef = "latest"
+	}
+	if resumeRef != "" {
+		resolvedSessionID, err = sessionstore.Resolve(resumeRef, sessionStore, resolvedSessionID)
+		if err != nil {
+			return err
+		}
+	}
+
 	sessPid, err := sessionhost.StartSession(node, rootPid, sessionhost.SessionArgs{
 		Provider:     p,
 		Tools:        tools,
 		SystemPrompt: systemPrompt,
+		Store:        sessionStore,
+		SessionID:    resolvedSessionID,
 	})
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -265,10 +304,6 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// attached to the same bus the TUI uses. input lands on userInputCh
 	// exactly like the compose line; queries read live session and mesh
 	// state; shutdown ends the headless run.
-	resolvedSessionID := sessionID
-	if resolvedSessionID == "" {
-		resolvedSessionID = fmt.Sprintf("lazymesh-%d", os.Getpid())
-	}
 	var ctrl *frontend.Server
 	if socketPath != "" || headless {
 		path := socketPath
