@@ -58,6 +58,7 @@ type roomMessage struct {
 	Kind        string `json:"kind"`
 	Text        string `json:"text"`
 	SentAt      int64  `json:"sent_at"`
+	InReplyTo   string `json:"in_reply_to"`
 }
 
 type inboxRoom struct {
@@ -69,7 +70,8 @@ type meshReadInboxResult struct {
 	Rings struct {
 		Pending []pendingRing `json:"pending"`
 	} `json:"rings"`
-	Rooms []inboxRoom `json:"rooms"`
+	Rooms   []inboxRoom   `json:"rooms"`
+	Central []roomMessage `json:"central_broadcasts"`
 }
 
 type agentPresence struct {
@@ -102,14 +104,16 @@ type meshListRealmsResult struct {
 	Realms []realmMembership `json:"realms"`
 }
 
-// meshState is one refreshed snapshot of everything the TUI's four panels
+// meshState is one refreshed snapshot of everything the TUI's five panels
 // render.
 type meshState struct {
-	joined  []joinedRoom
-	pending []pendingRing
-	recent  map[string][]roomMessage // room_topic -> recent messages
-	agents  []agentPresence
-	realms  []realmMembership
+	joined      []joinedRoom
+	publicRooms []publicRoom
+	pending     []pendingRing
+	recent      map[string][]roomMessage // room_topic -> recent messages
+	central     []roomMessage            // lobby broadcasts (help, etc.)
+	agents      []agentPresence
+	realms      []realmMembership
 }
 
 // fetchMeshState calls macula-mcp's own read tools -- mesh_rooms,
@@ -131,6 +135,7 @@ func fetchMeshState(ctx context.Context, client toolCaller) (meshState, error) {
 		return state, fmt.Errorf("decode mesh_rooms: %w", err)
 	}
 	state.joined = rooms.Joined
+	state.publicRooms = rooms.SeenOnCentral
 
 	inboxText, err := client.CallTool(ctx, "mesh_read_inbox", nil)
 	if err != nil {
@@ -141,6 +146,7 @@ func fetchMeshState(ctx context.Context, client toolCaller) (meshState, error) {
 		return state, fmt.Errorf("decode mesh_read_inbox: %w", err)
 	}
 	state.pending = inbox.Rings.Pending
+	state.central = inbox.Central
 	state.recent = make(map[string][]roomMessage, len(inbox.Rooms))
 	for _, r := range inbox.Rooms {
 		state.recent[r.RoomTopic] = r.Messages

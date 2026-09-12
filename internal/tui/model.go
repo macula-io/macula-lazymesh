@@ -168,6 +168,7 @@ type Model struct {
 	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
 	meshServicesCursor   int  // selected row in the `s` panel's table -- clamped in handleKey's Up/Down cases, not here, since this field alone doesn't know the current entry count
 	realmExpanded        bool // `r` -- see renderRealmsOverlay
+	teamExpanded         bool // `t` -- see renderTeamOverlay
 	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
 	muted                bool
 	statusBarPosition    string // "top" or "bottom"
@@ -718,15 +719,17 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
 		return m, m.input.Focus()
 	case key.Matches(msg, DefaultKeyMap.ToggleMesh):
-		// Mutually exclusive with the other two overlays, not stacked --
+		// Mutually exclusive with the other overlays, not stacked --
 		// more than one showing at once would halve (or worse) the chat
 		// margin pin-to-top already keeps tight, for concerns (mesh
-		// STATE vs. available SERVICES vs. realm MEMBERSHIP) that are
-		// never all what an operator wants to see in the same glance.
+		// STATE vs. available SERVICES vs. realm MEMBERSHIP vs. TEAM
+		// activity) that are never all what an operator wants to see in
+		// the same glance.
 		m.meshExpanded = !m.meshExpanded
 		if m.meshExpanded {
 			m.meshServicesExpanded = false
 			m.realmExpanded = false
+			m.teamExpanded = false
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleMeshServices):
@@ -734,6 +737,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.meshServicesExpanded {
 			m.meshExpanded = false
 			m.realmExpanded = false
+			m.teamExpanded = false
 		} else {
 			// Reopening starts at the top, not wherever the cursor was
 			// left -- same reasoning as realmJoinLatest getting cleared
@@ -748,11 +752,20 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.realmExpanded {
 			m.meshExpanded = false
 			m.meshServicesExpanded = false
+			m.teamExpanded = false
 		} else {
 			// Leaving the panel entirely also dismisses whatever join
 			// status was showing -- reopening starts from the plain
 			// membership list, not a stale QR/error from last time.
 			m.realmJoinLatest = nil
+		}
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleTeam):
+		m.teamExpanded = !m.teamExpanded
+		if m.teamExpanded {
+			m.meshExpanded = false
+			m.meshServicesExpanded = false
+			m.realmExpanded = false
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleQuiet):
@@ -1136,6 +1149,8 @@ func (m Model) View() string {
 		body = m.renderMeshServicesOverlay()
 	case m.realmExpanded:
 		body = m.renderRealmsOverlay()
+	case m.teamExpanded:
+		body = m.renderTeamOverlay()
 	default:
 		body = m.chatViewport.View()
 	}
@@ -1214,7 +1229,7 @@ func (m Model) renderHintLines() []string {
 		if m.meshServicesExpanded && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  t: team view  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 
