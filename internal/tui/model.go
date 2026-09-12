@@ -14,6 +14,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -249,7 +250,7 @@ type Model struct {
 	chatEntries  []chatEntry
 	sel          selectionState // shift+drag selection over the chat pane
 	chatViewport viewport.Model
-	input        textinput.Model
+	input        textarea.Model
 
 	width  int
 	height int
@@ -260,10 +261,27 @@ type Model struct {
 // messages on userInputCh -- see Options' own doc comment for what each
 // zero value means.
 func New(client toolCaller, opts Options) Model {
-	ti := textinput.New()
+	// The chatbox (D3): a textarea, not a single-line textinput -- a
+	// pasted or composed multi-line message is the normal case for
+	// markdown test chunks. Enter still submits (Submit's own binding);
+	// InsertNewline is rebound to shift+enter so Enter alone always
+	// reaches the model's submit handling. MaxHeight keeps a large paste
+	// from eating the whole pane.
+	ti := textarea.New()
 	ti.Placeholder = "message the agent..."
-	ti.CharLimit = 2000
+	ti.CharLimit = 4000
 	ti.Prompt = "> "
+	// Grow with content, but start at one row: an empty compose line must
+	// not reserve six rows of the pane (textarea's default height).
+	ti.SetHeight(1)
+	ti.MaxHeight = 6
+	ti.ShowLineNumbers = false
+	// Enter submits (Submit's own binding); the newline key is ctrl+j
+	// because bubbletea's KeyMsg carries no Shift flag, so "shift+enter"
+	// could never match. Multi-line BRACKETED PASTE works regardless:
+	// the pasted runes (newlines included) arrive as KeyRunes with
+	// Paste=true and the textarea splits them into rows.
+	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline"))
 
 	realmInput := textinput.New()
 	realmInput.Placeholder = "io.macula"
@@ -1020,7 +1038,7 @@ func (m *Model) resizeComponents() {
 	m.chatViewport.Width = m.width
 	m.chatViewport.Height = h
 	if m.width > 6 {
-		m.input.Width = m.width - 4
+		m.input.SetWidth(m.width - 4)
 	}
 }
 
@@ -1172,7 +1190,7 @@ func (m Model) renderHintLines() []string {
 	case ModeRingPopup:
 		return []string{mode}
 	case ModeInsert:
-		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+e: edit in $EDITOR")}
+		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+j: newline  ctrl+e: edit in $EDITOR")}
 	case ModeRealmJoin:
 		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
 	case ModeMeshServiceCall:

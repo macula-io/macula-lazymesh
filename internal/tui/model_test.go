@@ -1472,3 +1472,44 @@ func TestCopyChatKeyReportsWithoutAnswer(t *testing.T) {
 		t.Fatalf("expected a system note about nothing to copy, got %+v", m.chatEntries)
 	}
 }
+
+// TestComposeIsMultiline pins the chatbox fix: the compose input is a
+// textarea — shift+enter inserts a newline (multi-line paste and
+// composition work), while plain enter still submits the whole value.
+func TestComposeIsMultiline(t *testing.T) {
+	userInputCh := make(chan string, 4)
+	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "bottom"})
+	m.width, m.height = 80, 24
+	m.resizeComponents()
+
+	// Into insert mode and type two lines.
+	update := func(msg tea.Msg) {
+		next, _ := m.Update(msg)
+		m = next.(Model)
+	}
+	update(runeKey('i'))
+	update(runeKey('a'))
+	update(typeKey(tea.KeyCtrlJ))
+	update(runeKey('b'))
+
+	if got := m.input.Value(); got != "a\nb" {
+		t.Fatalf("multi-line compose value = %q, want a\\nb", got)
+	}
+
+	// Plain enter submits the whole multi-line value (the returned
+	// tea.Cmd is what actually delivers to userInputCh).
+	next, cmd := m.Update(typeKey(tea.KeyEnter))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter did not return the send command")
+	}
+	cmd()
+	select {
+	case sent := <-userInputCh:
+		if sent != "a\nb" {
+			t.Fatalf("submitted message = %q", sent)
+		}
+	default:
+		t.Fatal("enter did not submit the composed message")
+	}
+}
