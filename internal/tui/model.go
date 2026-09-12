@@ -23,6 +23,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
+	"github.com/macula-io/macula-lazymesh/internal/termkeys"
 )
 
 // refreshInterval is how often the mesh-state panels re-poll macula-mcp.
@@ -309,11 +310,26 @@ func New(client toolCaller, opts Options) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	// Push the kitty keyboard protocol NOW: Init is the first thing that
+	// runs after bubbletea enters the alternate screen, and kitty scopes
+	// protocol pushes to the screen that is active when they arrive. A
+	// push from before the TUI started would sit on the main screen's
+	// stack and never affect this screen. Popped on the quit paths below,
+	// while the alternate screen is still current.
+	fmt.Fprint(os.Stdout, termkeys.Enable)
 	cmds := []tea.Cmd{m.refreshCmd(), tick(), textinput.Blink}
 	if m.agentEvents != nil {
 		cmds = append(cmds, waitForAgentEvent(m.agentEvents))
 	}
 	return tea.Batch(cmds...)
+}
+
+// quit pops the keyboard protocol from the alternate screen's stack --
+// bubbletea leaves the screen only after this Update returns, so the pop
+// still lands on the right screen -- and quits the program.
+func (m Model) quit() tea.Cmd {
+	fmt.Fprint(os.Stdout, termkeys.Disable)
+	return tea.Quit
 }
 
 func tick() tea.Cmd {
@@ -554,7 +570,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, DefaultKeyMap.ForceQuit) {
-		return m, tea.Quit
+		return m, m.quit()
 	}
 
 	if m.mode == ModeRingPopup {
@@ -664,7 +680,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Normal mode.
 	switch {
 	case key.Matches(msg, DefaultKeyMap.Quit):
-		return m, tea.Quit
+		return m, m.quit()
 	case key.Matches(msg, DefaultKeyMap.Normal):
 		// Esc's only meaning in Normal mode: dismiss a finished/errored
 		// join's status (renderRealmJoinProgress) back to the plain

@@ -414,21 +414,23 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			}
 		}
 	} else {
-		// The kitty keyboard protocol, flag 4 (alternate keys): without
-		// it, terminals report shift+enter as a plain enter and the
-		// standard chat binding cannot exist. termkeys.Reader rewrites
-		// shift+enter (CSI 13;2u) into the ctrl+j byte the compose
-		// newline binding matches, and presents itself as a term.File
-		// so bubbletea still enables raw mode. Popped again on exit so
-		// the shell underneath never sees the protocol.
-		fmt.Fprint(os.Stdout, termkeys.Enable)
+		// The kitty keyboard protocol, flag 8 (report all keys as escape
+		// codes), is what makes shift+enter distinguishable from enter at
+		// all. kitty keeps SEPARATE protocol stacks for the main and
+		// alternate screens, and this program's TUI runs on the alternate
+		// screen -- so the push cannot happen here, before the TUI starts:
+		// it would land on the main screen's stack and the TUI would see
+		// plain legacy bytes (the exact failure this comment documents,
+		// reproduced live 2026-09-12). The TUI model therefore pushes the
+		// protocol in its Init (the first thing that runs once the
+		// alternate screen is active) and pops it on its quit paths,
+		// before bubbletea leaves the alternate screen.
 		program := tea.NewProgram(tuiModel,
 			tea.WithAltScreen(),
 			tea.WithMouseCellMotion(),
 			tea.WithInput(termkeys.New(os.Stdin)),
 		)
 		_, err = program.Run()
-		fmt.Fprint(os.Stdout, termkeys.Disable)
 	}
 	cancel()
 
