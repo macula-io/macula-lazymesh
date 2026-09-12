@@ -43,13 +43,62 @@ func TestPromptEditor_StandardChatSemantics(t *testing.T) {
 	}
 }
 
-// TestPromptEditor_PasteSplitsLines pins the multi-line paste path: a
-// KeyRunes paste with embedded newlines lands as rows.
-func TestPromptEditor_PasteSplitsLines(t *testing.T) {
+// TestPromptEditor_PasteChips pins the compact-paste contract: a
+// multi-line paste is held out of the editor as a chip (never rendered
+// into the box), joins the typed text on submit, and is discarded by
+// backspace on the empty box. Single-line pastes insert normally.
+func TestPromptEditor_PasteChips(t *testing.T) {
 	e := NewPromptEditor()
 	e.Focus()
+
 	e, _ = e.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Paste: true, Runes: []rune("x\ny\nz")}))
+	if e.pasted != "x\ny\nz" {
+		t.Fatalf("paste was not chipped: %q", e.pasted)
+	}
+	if got := e.ta.Value(); got != "" {
+		t.Fatalf("the paste leaked into the textarea: %q", got)
+	}
 	if got := e.Value(); got != "x\ny\nz" {
-		t.Fatalf("pasted value = %q", got)
+		t.Fatalf("payload without typed text = %q", got)
+	}
+	if h, h0 := e.RenderedHeight(), NewPromptEditor().RenderedHeight(); h != h0+1 {
+		t.Fatalf("chip must reserve one extra line: %d vs %d", h, h0)
+	}
+
+	e, _ = e.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune("typed")}))
+	if e.pasted == "" {
+		t.Fatal("typing must not discard the chip")
+	}
+	if got := e.Value(); got != "typed\nx\ny\nz" {
+		t.Fatalf("payload with typed text = %q", got)
+	}
+
+	// Backspace with text in the box is normal editing, not a discard.
+	e, _ = e.Update(keyMsg(tea.KeyBackspace, false))
+	if e.pasted == "" {
+		t.Fatal("backspace with text present must not discard the chip")
+	}
+
+	e, _ = e.Update(keyMsg(tea.KeyEnter, false))
+	if !e.Submitted() {
+		t.Fatal("enter must submit with a chip held")
+	}
+	e.Reset()
+	if e.pasted != "" || e.Value() != "" {
+		t.Fatal("reset must clear the chip and the text")
+	}
+}
+
+// TestPromptEditor_SingleLinePasteInsertsNormally pins the other paste
+// path: a paste without newlines is ordinary text.
+func TestPromptEditor_SingleLinePasteInsertsNormally(t *testing.T) {
+	e := NewPromptEditor()
+	e.Focus()
+	e, _ = e.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Paste: true, Runes: []rune("one line")}))
+	if e.pasted != "" {
+		t.Fatal("a single-line paste must not chip")
+	}
+	if got := e.Value(); got != "one line" {
+		t.Fatalf("single-line paste value = %q", got)
 	}
 }

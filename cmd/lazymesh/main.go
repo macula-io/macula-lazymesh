@@ -430,6 +430,9 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			tea.WithAltScreen(),
 			tea.WithMouseCellMotion(),
 			tea.WithInput(termkeys.New(os.Stdin)),
+			// bracketed paste is on by default in bubbletea: paste
+			// events arrive as KeyMsg{Paste: true}, which the
+			// PromptEditor turns into the compact pasted-lines chip.
 		)
 		_, err = program.Run()
 	}
