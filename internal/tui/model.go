@@ -247,6 +247,7 @@ type Model struct {
 	meshServiceCallInFlight  bool
 
 	chatEntries  []chatEntry
+	sel          selectionState // shift+drag selection over the chat pane
 	chatViewport viewport.Model
 	input        textinput.Model
 
@@ -517,20 +518,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAgentEvent(msg)
 
 	case tea.MouseMsg:
-		// Wheel scrolling for the chat pane (the program runs with
-		// WithMouseCellMotion). Overlays own the screen while open, and
-		// popup modes answer keys, not wheels -- so the chat viewport
-		// only receives the mouse when it is actually the surface on
-		// screen.
-		if m.meshExpanded || m.realmExpanded || m.meshServicesExpanded {
-			return m, nil
-		}
-		if m.mode != ModeNormal && m.mode != ModeInsert {
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.chatViewport, cmd = m.chatViewport.Update(msg)
-		return m, cmd
+		return m.handleMouse(msg)
 
 	case ringAnsweredMsg:
 		return m.handleRingAnswered(msg)
@@ -1131,10 +1119,13 @@ func (m Model) View() string {
 	}
 	input := m.renderInputLine()
 
+	var screen string
 	if m.statusBarPosition == "top" {
-		return strings.Join([]string{status, body, input}, "\n")
+		screen = strings.Join([]string{status, body, input}, "\n")
+	} else {
+		screen = strings.Join([]string{body, input, status}, "\n")
 	}
-	return strings.Join([]string{body, input, status}, "\n")
+	return m.overlaySelection(screen)
 }
 
 // statusLines is the status block's content, one entry per rendered line.
