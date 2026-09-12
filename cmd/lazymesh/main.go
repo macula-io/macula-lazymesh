@@ -734,6 +734,14 @@ const meshGrammarLine = "Mesh conversation grammar: choose mesh_say's kind delib
 	"claim_confirmed, claim_disputed) REQUIRES in_reply_to set to the message_id it answers, " +
 	"which you read from mesh_read_inbox -- a reply without it is refused."
 
+// styleLine is the anti-narration rule (2026-09-12, from a live run whose
+// model opened with "I'll start by..." and closed with a bulleted report):
+// the transcript IS the record, so the model must act, not announce.
+const styleLine = "Style: act, do not narrate. Call the tool you intend to use immediately -- " +
+	"never open a turn with \"I'll start by...\" or a plan announcement, and never restate " +
+	"what a tool result already shows. Reply in one or two lines unless a question genuinely " +
+	"needs more."
+
 // buildSystemPrompt is the agent's fixed opening instruction, pulled out of
 // runAgent as its own pure function so the room-scoping behavior (macula-
 // io/macula-lazymesh#1) has a direct unit test independent of the loop's
@@ -805,7 +813,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"they fit naturally. Don't force it into every message, and keep it to conversation " +
 			"text, not tool arguments."
 	}
-	systemPrompt += "\n\n" + meshGrammarLine
+	systemPrompt += "\n\n" + meshGrammarLine + "\n\n" + styleLine
 	if goalText != "" {
 		systemPrompt += " Additional objective: " + goalText
 	}
@@ -1276,10 +1284,11 @@ const (
 // macula-lazymesh#1 (2026-09-06): "the room" is now "every room
 // mesh_rooms reports," not one hardcoded topic -- a room joined later via
 // an accepted ring must stay in scope too.
-const agentInitialPrompt = "First, call mesh_read_inbox (no room_topic) and answer any pending ring " +
+const agentInitialPrompt = "First, call mesh_read_inbox with limit 20 and answer any pending ring " +
 	"addressed to you via mesh_answer_ring. Then call mesh_rooms; join any room you were " +
 	"pointed at only if its room_topic is not already in mesh_rooms's own joined list, and " +
-	"start participating in every room you are a member of."
+	"start participating in every room you are a member of. Act, do not narrate: call the " +
+	"tools directly."
 
 // nextBackoff doubles d, capped at maxBackoff -- pulled out as a pure
 // function so the growth/cap behavior has its own test independent of the

@@ -753,3 +753,25 @@ func TestResolveAllowlist_ExtendsMergesDefaults(t *testing.T) {
 		seen[name] = true
 	}
 }
+
+// TestBuildSystemPrompt_TeachesAntiNarrationStyle pins the 2026-09-12
+// live-run fix: the style line forbids preamble and restatement, so a
+// model cannot open with "I'll start by...".
+func TestBuildSystemPrompt_TeachesAntiNarrationStyle(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, false, "")
+	if !strings.Contains(got, "do not narrate") || !strings.Contains(got, "I'll start by") {
+		t.Fatalf("anti-narration style missing from the prompt")
+	}
+}
+
+// TestAgentInitialPrompt_ReadsLimitedInboxAndActs pins the lean first
+// turn: the startup prompt names limit 20 (the lobby backlog once cost
+// ~12.5K prompt tokens) and forbids narration.
+func TestAgentInitialPrompt_ReadsLimitedInboxAndActs(t *testing.T) {
+	if !strings.Contains(agentInitialPrompt, "limit 20") {
+		t.Fatalf("initial prompt does not bound the first inbox read: %s", agentInitialPrompt)
+	}
+	if !strings.Contains(agentInitialPrompt, "do not narrate") {
+		t.Fatalf("initial prompt does not forbid narration: %s", agentInitialPrompt)
+	}
+}

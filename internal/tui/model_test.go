@@ -1355,7 +1355,7 @@ func TestStreamingDeltasMergeIntoOneEntry(t *testing.T) {
 // not as collapsed raw text.
 func TestAssistantEntryRendersMarkdown(t *testing.T) {
 	entry := chatEntry{kind: chatAssistant, at: time.Now(), text: "**bold** answer"}
-	rendered := entry.render(false, 80)
+	rendered := entry.render(false)
 	if !strings.Contains(rendered, "agent:") {
 		t.Fatalf("render lost the agent label: %q", rendered)
 	}

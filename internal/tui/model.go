@@ -976,7 +976,7 @@ func (m *Model) resizeComponents() {
 func (m *Model) syncViewport() {
 	lines := make([]string, 0, len(m.chatEntries))
 	for i := range m.chatEntries {
-		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
+		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded))
 	}
 	m.chatViewport.SetContent(strings.Join(lines, "\n"))
 	m.chatViewport.GotoBottom()
@@ -1306,7 +1306,7 @@ func (m Model) renderRealmsOverlay() string {
 func (m Model) chatContentLines() []string {
 	lines := make([]string, 0, len(m.chatEntries))
 	for i := range m.chatEntries {
-		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
+		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded))
 	}
 	joined := strings.Join(lines, "\n")
 	if joined == "" {

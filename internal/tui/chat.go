@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -123,10 +124,10 @@ var (
 // render returns this entry's line(s), in expanded form if detailsExpanded
 // is on and this entry actually has separate detail to show. Assistant
 // entries render through glamour (D3: markdown-capable answers made
-// readable), word-wrapped to width; every other kind stays a single line.
-// Must be a pointer receiver: a completed assistant entry caches its
-// markdown rendering in md.
-func (e *chatEntry) render(detailsExpanded bool, width int) string {
+// readable); every other kind stays a single line. Must be a pointer
+// receiver: a completed assistant entry caches its markdown rendering in
+// md.
+func (e *chatEntry) render(detailsExpanded bool) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
 	text := e.text
 	if detailsExpanded && e.detail != "" && e.detail != e.text {
@@ -144,7 +145,7 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	case chatYou:
 		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
 	case chatAssistant:
-		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
+		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody())
 	case chatToolCall, chatToolResult:
 		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
 	case chatError:
@@ -156,22 +157,38 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	}
 }
 
-// markdownBody renders the entry's text through glamour, word-wrapped to
-// fit the pane. A finished entry caches the rendering (re-rendering every
+// markdownRenderer is ONE glamour renderer for the process lifetime,
+// created lazily: glamour renderers are not cheap to construct, and the
+// TUI's single render loop makes one shared instance safe. Fixed dark
+// style, deliberately NOT WithAutoStyle — auto style queries the terminal
+// for its background color and WAITS for the answer, which never arrives
+// through bubbletea's alt screen: the first markdown render would block
+// the Update loop forever (the "TUI hangs, shortcuts dead" symptom found
+// live 2026-09-12). No word wrap either: the chat viewport soft-wraps
+// its own content, and a fixed renderer must not depend on the pane's
+// current width.
+var markdownRenderer = sync.OnceValue(func() *glamour.TermRenderer {
+	renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"))
+	if err != nil {
+		// The only honest fallback: a renderer that cannot be built must
+		// not take the chat pane down — raw text renders.
+		return nil
+	}
+	return renderer
+})
+
+// markdownBody renders the entry's text through the shared glamour
+// renderer. A finished entry caches the rendering (re-rendering every
 // assistant entry on every viewport sync would turn a long chat into a
-// glamour benchmark); a streaming entry re-renders as its text grows, and
-// falls back to the raw text if rendering fails -- a display concern must
+// glamour benchmark); a streaming entry re-renders as its text grows,
+// and any failure falls back to the raw text — a display concern must
 // never lose content.
-func (e *chatEntry) markdownBody(width int) string {
+func (e *chatEntry) markdownBody() string {
 	if !e.streaming && e.md != "" {
 		return e.md
 	}
-	wrap := width - 8
-	if wrap < 20 {
-		wrap = 20
-	}
-	renderer, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(wrap))
-	if err != nil {
+	renderer := markdownRenderer()
+	if renderer == nil {
 		return e.text
 	}
 	rendered, err := renderer.Render(e.text)
