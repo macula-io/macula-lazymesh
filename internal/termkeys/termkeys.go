@@ -1,17 +1,31 @@
 // Package termkeys implements the kitty keyboard protocol the way the
-// TUI-ecosystem apps that support shift+enter do: request flag 8
-// (report ALL keys as escape codes), then translate every incoming
-// CSI-u sequence back into the legacy byte forms bubbletea understands.
+// TUI-ecosystem apps that support shift+enter do: request the extended
+// key reporting flags, then translate every incoming CSI sequence back
+// into the legacy byte forms bubbletea understands.
 //
-// Why the earlier partial attempts failed (found live 2026-09-12): the
-// kitty protocol's flag 4 (alternate keys) and flag 1 (disambiguate)
-// only affect keys ALREADY reported as escape codes -- enter is a
-// text-generating key, so it kept arriving as a plain \r no matter what
-// combination of those flags was pushed. Flag 8 makes the terminal
-// report EVERY key as CSI-u, including Enter/Tab/Backspace, which is
-// what OpenCode and Claude Code request; the cost is that the wrapper
-// must translate every key back, which is exactly what this package
-// does.
+// Why the earlier partial attempts failed (all found live 2026-09-12):
+//   - The spec's flag 4 (alternate keys) and flag 1 (disambiguate) only
+//     affect keys already reported as escape codes; enter is a
+//     text-generating key, so it stayed a plain \r.
+//   - kitty 0.48.2 does not implement the spec's flag 8 ("report all
+//     keys") at all: its flag 8 is the older "report associated text"
+//     and flag 16 is "embed the text" (verified in kitty's own
+//     key_encoding.c). Pushing 24 (8+16) is what makes kitty report
+//     EVERY key -- including enter -- as a CSI sequence, with the
+//     produced text embedded as the third parameter.
+//   - The push must land on the screen the TUI runs on: kitty keeps
+//     separate protocol stacks for the main and alternate screens, so
+//     a push written before the TUI starts is ignored.
+//   - kitty includes the keyboard LOCK bits (caps=64, num=128) in the
+//     modifier value; a keyboard with num-lock on reports every key
+//     with mods >= 129. They describe keyboard state, not the chord.
+//   - kitty reports shift+letter as the BASE codepoint plus the shift
+//     bit (shift+l = CSI 108;130u); the shifted character comes from
+//     the embedded text ('L' = CSI 108;130;76u), not from the code.
+//
+// The Reader below rewrites kitty's wire forms into the legacy bytes
+// bubbletea parses natively, so the rest of the TUI needs no kitty
+// awareness.
 package termkeys
 
 import (
@@ -21,15 +35,15 @@ import (
 	"log/slog"
 )
 
-// Enable is the push sequence written to the terminal once, before the
-// TUI starts: report all keys as escape codes (flag 8).
-const Enable = "\x1b[>8u"
+// Enable is the push sequence written to the terminal once the
+// alternate screen is active: report_text (8) + embed_text (16).
+const Enable = "\x1b[>24u"
 
-// Disable is the pop sequence written after the TUI exits, restoring
-// the terminal's default key reporting.
+// Disable is the pop sequence written before the alternate screen is
+// left, restoring the terminal's default key reporting.
 const Disable = "\x1b[<u"
 
-// Reader wraps stdin and translates kitty CSI-u key reports back into
+// Reader wraps stdin and translates kitty CSI key reports back into
 // legacy byte sequences. It is a byte-stream rewriter: bubbletea still
 // parses the output.
 //
@@ -187,15 +201,14 @@ type csi struct {
 }
 
 // classifyCSI looks at an escape-starting run and decides: a complete
-// CSI-u sequence (translated via translateU), a complete non-CSI escape
-// (alt+key or the ESCAPE KEY ITSELF, passed through), a complete legacy
-// CSI (passed through), or an incomplete CSI candidate (complete=false).
+// kitty CSI sequence (translated), a complete legacy CSI (passed
+// through), or an incomplete CSI candidate (complete=false).
 //
 // A lone trailing ESC is flushed immediately, never held: bubbletea's
 // parser treats ESC-alone as KeyEscape the moment it sees it, and the
 // modal TUI depends on that (esc leaves insert mode). Holding it broke
 // the escape key entirely (found live 2026-09-12). The trade-off: a
-// CSI-u sequence must therefore arrive within one read of its ESC — the
+// CSI sequence must therefore arrive within one read of its ESC -- the
 // pty delivers terminal writes whole, which is the same boundary
 // assumption bubbletea's own alt+key handling already makes.
 func classifyCSI(data []byte) (csi, bool) {
@@ -213,12 +226,7 @@ func classifyCSI(data []byte) (csi, bool) {
 	for j := 2; j < len(data); j++ {
 		b := data[j]
 		if b >= 0x40 && b <= 0x7e {
-			if b == 'u' {
-				return csi{n: j + 1, translated: translateU(data[2:j])}, true
-			}
-			// A legacy CSI (arrows, mouse, bracketed paste markers):
-			// pass through untouched.
-			return csi{n: j + 1}, true
+			return csi{n: j + 1, translated: translateCSI(data[2:j], b)}, true
 		}
 		if b < 0x20 || b > 0x3f {
 			// Not a CSI after all: ESC plus garbage. Flush the two
@@ -229,60 +237,88 @@ func classifyCSI(data []byte) (csi, bool) {
 	return csi{}, false // ran out of bytes mid-sequence
 }
 
-// splitCodeMods splits a CSI-u body ("13;2", "105;1", or just "105")
-// into the key code and the modifier value (1 when omitted).
-func splitCodeMods(body []byte) (code int, mods int) {
-	mods = 1
-	for i := 0; i < len(body); i++ {
-		if body[i] == ';' {
-			code = atoi(body[:i])
-			mods = atoi(body[i+1:])
-			if mods < 1 {
-				mods = 1
-			}
-			return code, mods
-		}
-		if body[i] == ':' {
-			// Alternate-key form (flag 4 also enabled): ignore the
-			// alternate code.
-			body = body[i+1:]
-			i = -1
+// translateCSI converts one kitty CSI key report into the legacy bytes
+// bubbletea understands, or nil when the sequence has no legacy form
+// (e.g. modifier-only key events) -- it then passes through unchanged
+// and bubbletea drops it.
+func translateCSI(body []byte, final byte) []byte {
+	switch final {
+	case 'u':
+		return translateU(body)
+	case '~':
+		return translateTilde(body)
+	case 'A', 'B', 'C', 'D', 'H', 'F', 'P', 'Q', 'R', 'S':
+		if len(body) > 0 && body[0] == '1' {
+			return translateLetter(body, final)
 		}
 	}
-	code = atoi(body)
-	if mods < 1 {
-		mods = 1
-	}
-	return code, mods
+	return nil
 }
 
-// translateU converts one CSI-u key report into the legacy bytes
-// bubbletea understands, or nil when the key has no legacy form (e.g.
-// super/hyper-modified) -- the sequence then passes through unchanged
-// and bubbletea drops it.
-//
-// The kitty modifier value is 1 plus the sum of bit flags (shift=1,
-// alt=2, ctrl=4, super=8, hyper=16, meta=32), the same encoding the
-// legacy CSI modifier parameter uses -- so the mods value carries over
-// to legacy sequences verbatim.
+// parseU splits a CSI-u body: "105", "105;129", or "105;129;76" (with
+// the embedded text), and tolerates the alternate-key form
+// ("13:10;2"). Returns code, the lock-masked modifier value, and the
+// embedded text codepoint (0 when absent or not a printable ASCII).
+func parseU(body []byte) (code, mods, text int) {
+	mods = 1
+	// Field 1: code, possibly with an ":alternate" suffix.
+	first := body
+	if i := indexByte(body, ';'); i >= 0 {
+		first = body[:i]
+		rest := body[i+1:]
+		if j := indexByte(rest, ';'); j >= 0 {
+			mods = atoiNonEmpty(rest[:j])
+			text = atoiNonEmpty(rest[j+1:])
+		} else {
+			mods = atoiNonEmpty(rest)
+		}
+	}
+	if i := indexByte(first, ':'); i >= 0 {
+		first = first[:i]
+	}
+	code = atoi(first)
+	mods = maskedMods(mods)
+	if text < 32 || text > 126 {
+		text = 0
+	}
+	return code, mods, text
+}
+
+// splitCodeMods splits a "code;mods" body (no text field) into the key
+// code and the lock-masked modifier value (1 when omitted).
+func splitCodeMods(body []byte) (code int, mods int) {
+	mods = 1
+	if i := indexByte(body, ';'); i >= 0 {
+		code = atoi(body[:i])
+		mods = atoiNonEmpty(body[i+1:])
+	} else {
+		code = atoi(body)
+	}
+	return code, maskedMods(mods)
+}
+
+// maskedMods drops the lock bits (caps=64, num=128): keyboard state,
+// not part of the chord, and kitty includes them on every key of a
+// keyboard with num-lock on.
+func maskedMods(mods int) int {
+	if mods < 1 {
+		return 1
+	}
+	return (mods-1)&^(64|128) + 1
+}
+
+// translateU converts one CSI-u report: enter, tab, backspace, escape,
+// printable keys (with the embedded text deciding the shifted
+// character), and the functional keys that use the 'u' trailer.
 func translateU(body []byte) []byte {
-	code, mods := splitCodeMods(body)
-	// The kitty modifier value is 1 plus the sum of bit flags (shift=1,
-	// alt=2, ctrl=4, super=8, hyper=16, meta=32, caps_lock=64,
-	// num_lock=128), the same encoding the legacy CSI modifier parameter
-	// uses -- so the mods value carries over to legacy sequences
-	// verbatim. The two LOCK bits describe keyboard state, not the
-	// chord: a keyboard with num-lock always on reports every key with
-	// mods >= 129, which must not turn an ordinary key into an
-	// "unknown modifier" key. Drop them before deciding.
-	bits := (mods - 1) &^ (64 | 128)
+	code, mods, text := parseU(body)
+	bits := mods - 1
 	shift := bits&1 != 0
 	alt := bits&2 != 0
 	ctrl := bits&4 != 0
 	if bits&^0x7 != 0 {
 		return nil // super/hyper/meta: no legacy encoding
 	}
-	mods = bits + 1 // lock-masked modifier for legacy parameters
 
 	switch {
 	case code == 13: // ENTER
@@ -311,14 +347,22 @@ func translateU(body []byte) []byte {
 		if ctrl {
 			return legacyCtrl(b)
 		}
-		return []byte{b} // shift is already folded into the codepoint
+		if shift {
+			// kitty reports the BASE codepoint for shifted keys; the
+			// shifted character is the embedded text.
+			if text != 0 {
+				return []byte{byte(text)}
+			}
+			if b >= 'a' && b <= 'z' {
+				b -= 'a' - 'A'
+			}
+		}
+		return []byte{b}
 	}
 
-	// Functional keys. The code numbers are kitty's canonical wire
-	// numbers (kitty's own key_encoding.py generated tables): the
-	// legacy-terminal CSI numbers where a key has one, the Unicode
-	// Private Use Area number for the arrow keys and F3, which only
-	// exist as letter-trailer sequences.
+	// Functional keys that arrive with the 'u' trailer (kitty encodes
+	// most nav keys with letter/tilde trailers instead; those are
+	// handled below). Numbers follow kitty's csi-numbering table.
 	switch code {
 	case 2: // INSERT
 		return legacyTilde(mods, 2)
@@ -354,7 +398,7 @@ func translateU(body []byte) []byte {
 		return legacyTilde(mods, 23)
 	case 24: // F12
 		return legacyTilde(mods, 24)
-	case 57350: // LEFT
+	case 57350: // LEFT (spec-style PUA number)
 		return legacyCursor(mods, 'D')
 	case 57351: // RIGHT
 		return legacyCursor(mods, 'C')
@@ -362,8 +406,40 @@ func translateU(body []byte) []byte {
 		return legacyCursor(mods, 'A')
 	case 57353: // DOWN
 		return legacyCursor(mods, 'B')
-	case 57366: // F3
+	case 57366: // F3 (has no csi-number)
 		return legacyF(mods, 'R')
+	}
+	return nil
+}
+
+// translateTilde converts a "n;mods~" report: kitty 0.48.2 encodes
+// insert, delete, page keys and F5-F12 with the '~' trailer, and F3 as
+// code 13.
+func translateTilde(body []byte) []byte {
+	code, mods := splitCodeMods(body)
+	switch code {
+	case 2, 3, 5, 6, 15, 17, 18, 19, 20, 21, 23, 24:
+		return legacyTilde(mods, code)
+	case 13: // F3
+		return legacyF(mods, 'R')
+	}
+	return nil
+}
+
+// translateLetter converts a "1;mods<letter>" report: kitty 0.48.2
+// encodes arrows, home/end and F1/F2/F4 as code 1 with a letter
+// trailer. Idempotent for legacy terminals that already send the
+// xterm extended forms (e.g. CSI 1;2A stays CSI 1;2A).
+func translateLetter(body []byte, final byte) []byte {
+	code, mods := splitCodeMods(body)
+	if code != 1 {
+		return nil
+	}
+	switch final {
+	case 'A', 'B', 'C', 'D', 'H', 'F':
+		return legacyCursor(mods, final)
+	case 'P', 'Q', 'R', 'S':
+		return legacyF(mods, final)
 	}
 	return nil
 }
@@ -433,7 +509,16 @@ func legacyCtrl(code byte) []byte {
 	return []byte{code}
 }
 
-// atoi parses a small decimal byte string; -1 on any non-digit.
+func indexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// atoi parses a decimal byte string; -1 on any non-digit.
 func atoi(b []byte) int {
 	n := 0
 	for _, c := range b {
@@ -443,4 +528,13 @@ func atoi(b []byte) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// atoiNonEmpty is atoi with the empty string meaning 1 (an omitted
+// parameter).
+func atoiNonEmpty(b []byte) int {
+	if len(b) == 0 {
+		return 1
+	}
+	return atoi(b)
 }
