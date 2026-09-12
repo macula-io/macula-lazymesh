@@ -611,12 +611,15 @@ become long-running.
 
 ## Phases
 
-- [ ] **Phase 0 — Engine seam (the control bus).** Extract
-      `userInputCh`/`tuiEvents` into a shared bus with pluggable
-      frontends. No behavior change. **Gated on D4**: the Ergo deep study
-      decides bus-vs-actors first — if actors win, Phase 0 becomes the
-      actor-core port (session actors + supervisor + mailbox bus) instead
-      of the channel-bus extraction.
+- [ ] **Phase 0 — Actor-core port (bus-vs-actors decided: ACTORS — D4).**
+      Walking skeleton landed 2026-09-12 as `internal/sessionhost`: embedded
+      Ergo node with `NetworkModeDisabled` + silent logger, root one_for_one
+      supervisor, and a supervised session actor hosting the real
+      `agent.Loop`. Proven by tests: node boot, say→events→subscribers,
+      and panic→`TerminateReasonPanic`→supervisor restart with fresh state.
+      Still open before Phase 0 is done: dynamic N-session hosting (OD2),
+      main.go wiring onto the tree, and the frontend bus as actor
+      mailboxes.
 - [ ] **Phase 1 — Headless mode + unix socket.** `--headless`,
       `--unix-socket <path>`, `--session-id <id>`; control messages
       `input`/`shutdown`/`query`/`session`; output stream as above.
