@@ -28,7 +28,7 @@ var (
 	// promptSendKey submits: plain enter, the standard chat binding.
 	promptSendKey = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send"))
 	// promptNewlineKey inserts a newline: shift+enter arrives as the
-	// ctrl+j byte via the termkeys wrapper (kitty protocol, flag 4), and
+	// ctrl+j byte via the termkeys wrapper (kitty protocol), and
 	// ctrl+j is the universal fallback on terminals without it.
 	promptNewlineKey = key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline"))
 )
