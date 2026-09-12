@@ -414,9 +414,10 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			}
 		}
 	} else {
-		// The kitty keyboard protocol, flag 8 (report all keys as escape
-		// codes), is what makes shift+enter distinguishable from enter at
-		// all. kitty keeps SEPARATE protocol stacks for the main and
+		// The kitty keyboard protocol (report_text + embed_text, kitty
+		// 0.48.2's flags 8+16 -- this version has no spec-style
+		// "report all keys" flag), which is what makes shift+enter
+		// distinguishable from enter at all. kitty keeps SEPARATE protocol stacks for the main and
 		// alternate screens, and this program's TUI runs on the alternate
 		// screen -- so the push cannot happen here, before the TUI starts:
 		// it would land on the main screen's stack and the TUI would see
