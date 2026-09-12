@@ -216,12 +216,56 @@ func markdownRenderer(width int) *glamour.TermRenderer {
 	return renderer
 }
 
+// collapseBlankLines folds runs of two-or-more blank lines into one, so
+// a verbose model's double-spaced output does not push real content out
+// of a chat pane with a small viewport. In CommonMark extra blank lines
+// carry no structure, so the collapse is semantically safe — EXCEPT
+// inside fenced code blocks, where blank lines are content and are
+// preserved exactly. A single blank line (block separation) is kept.
+func collapseBlankLines(md string) string {
+	lines := strings.Split(md, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	fence := ""
+	previousBlank := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inFence && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
+			inFence = true
+			fence = trimmed[:3]
+			previousBlank = false
+			out = append(out, line)
+			continue
+		}
+		if inFence {
+			if strings.HasPrefix(trimmed, fence) {
+				inFence = false
+			}
+			out = append(out, line)
+			continue
+		}
+		blank := trimmed == ""
+		if blank && previousBlank {
+			continue
+		}
+		previousBlank = blank
+		if blank {
+			// Normalize the survivor: a whitespace-only line IS a blank
+			// line, and the renderer gets a clean "".
+			out = append(out, "")
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // markdownBody renders the entry's text through the shared glamour
-// renderer, after flattening any table too wide for the pane. A finished
-// entry caches the rendering keyed by width (the table preprocessor is
-// width-dependent); a streaming entry re-renders as its text grows, and
-// any failure falls back to the raw text — a display concern must never
-// lose content.
+// renderer, after flattening any table too wide for the pane and
+// collapsing double-spaced blank runs. A finished entry caches the
+// rendering keyed by width (the table preprocessor is width-dependent);
+// a streaming entry re-renders as its text grows, and any failure falls
+// back to the raw text — a display concern must never lose content.
 func (e *chatEntry) markdownBody(width int) string {
 	if !e.streaming && e.md != "" && e.mdWidth == width {
 		return e.md
@@ -230,7 +274,7 @@ func (e *chatEntry) markdownBody(width int) string {
 	if renderer == nil {
 		return e.text
 	}
-	rendered, err := renderer.Render(flattenWideTables(e.text, width-8))
+	rendered, err := renderer.Render(flattenWideTables(collapseBlankLines(e.text), width-8))
 	if err != nil {
 		return e.text
 	}
