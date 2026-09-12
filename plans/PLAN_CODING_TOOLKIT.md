@@ -91,7 +91,34 @@ stack. No new plumbing.
       token-budget machinery (`internal/agent`, "[budget]" lines) —
       verify one MiB cap is compatible, lower if needed.
 
-### Phase D — Subagents (out of scope of this plan)
+### Phase D — Operation modes (BUILD / ASK / PLAN), Claude Code parity
+
+The input bar gets a mode badge cycled with Shift+Tab (arrives intact
+through termkeys: `CSI 9;2u` → `\x1b[Z` → `KeyShiftTab`), mirroring
+Claude Code's three:
+
+- [ ] **BUILD** (default): the current behavior — allowlist +
+      asklist exactly as configured.
+- [ ] **ASK** (auto-accept): the existing ask handler answers yes
+      automatically for the session; toggled, not config.
+- [ ] **PLAN**: a session-scoped read-only allowlist (read_file,
+      glob, grep, ls, web_fetch, all mesh reads) plus a system-prompt
+      hint ("you are in plan mode: research and present a plan; do not
+      modify anything"). Mutating tool calls are refused by the
+      allowlist gate, which already runs at both list and execute time
+      (`internal/agent/allowlist.go:103-121`) — no new enforcement
+      code. v1 does NOT do Claude Code's "show the refused mutation as
+      a suggestion that exits plan mode on accept"; that is a follow-up.
+- [ ] Badge rendering: mode word in the chatbox border or status
+      strip; the mode is model state in `internal/tui/model.go`,
+      threaded to the session's allowlist + ask function
+      (`internal/sessionhost`, `internal/agent`).
+
+Scope note: modes are orthogonal to the coding toolkit — plan mode is
+useful for pure mesh work too. They land here because the trigger was
+PromptEditor parity, not because they depend on Phase A.
+
+### Phase E — Subagents (out of scope of this plan)
 
 `task`-style subagents are the one genuinely hard item (fresh context,
 result-only return channel, supervision). Deferred to a dedicated plan;
@@ -107,6 +134,8 @@ this plan deliberately does NOT sketch them.
 | `internal/config/config.go` | `mcp_servers:` list; default ask/allow split | Pending |
 | `internal/agent/allowlist.go` | default allowlist entries for read-only tools | Pending |
 | `cmd/lazymesh/main.go` | buildToolSource merges per-server sources | Pending |
+| `internal/tui/model.go` | mode state, Shift+Tab cycle, badge (Phase D) | Pending |
+| `internal/sessionhost/`, `internal/agent/ask.go` | mode-aware ask + read-only allowlist (Phase D) | Pending |
 | `plans/PLAN_CODING_TOOLKIT.md` | this plan | Done |
 
 ## Success Criteria
