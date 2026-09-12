@@ -399,7 +399,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			}
 		}
 	} else {
-		program := tea.NewProgram(tuiModel, tea.WithAltScreen())
+		program := tea.NewProgram(tuiModel, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		_, err = program.Run()
 	}
 	cancel()

@@ -515,6 +515,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return m.handleAgentEvent(msg)
 
+	case tea.MouseMsg:
+		// Wheel scrolling for the chat pane (the program runs with
+		// WithMouseCellMotion). Overlays own the screen while open, and
+		// popup modes answer keys, not wheels -- so the chat viewport
+		// only receives the mouse when it is actually the surface on
+		// screen.
+		if m.meshExpanded || m.realmExpanded || m.meshServicesExpanded {
+			return m, nil
+		}
+		if m.mode != ModeNormal && m.mode != ModeInsert {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		return m, cmd
+
 	case ringAnsweredMsg:
 		return m.handleRingAnswered(msg)
 
@@ -782,6 +798,18 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+
+	// Page keys scroll the chat pane a viewport at a time when no
+	// overlay is up -- the viewport's own key handling, forwarded rather
+	// than re-implemented (same reason the mouse wheel is forwarded).
+	if !m.meshExpanded && !m.realmExpanded && !m.meshServicesExpanded {
+		switch msg.String() {
+		case "pgup", "pgdown", "home", "end":
+			var cmd tea.Cmd
+			m.chatViewport, cmd = m.chatViewport.Update(msg)
+			return m, cmd
+		}
+	}
 	return m, nil
 }
 
@@ -974,12 +1002,20 @@ func (m *Model) resizeComponents() {
 }
 
 func (m *Model) syncViewport() {
+	// Follow mode: new content pins the bottom ONLY when the operator was
+	// already reading the bottom. Someone scrolled up in the history must
+	// keep their place while new entries (and, mid-turn, every streaming
+	// delta) arrive below — SetContent preserves the offset on its own,
+	// so only the already-at-bottom case re-anchors.
+	atBottom := m.chatViewport.AtBottom()
 	lines := make([]string, 0, len(m.chatEntries))
 	for i := range m.chatEntries {
 		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
 	}
 	m.chatViewport.SetContent(strings.Join(lines, "\n"))
-	m.chatViewport.GotoBottom()
+	if atBottom {
+		m.chatViewport.GotoBottom()
+	}
 }
 
 // Colors match the macula brand palette (see chat.go's own comment) --
