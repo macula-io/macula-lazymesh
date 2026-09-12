@@ -261,27 +261,30 @@ type Model struct {
 // messages on userInputCh -- see Options' own doc comment for what each
 // zero value means.
 func New(client toolCaller, opts Options) Model {
-	// The chatbox (D3): a textarea, not a single-line textinput -- a
-	// pasted or composed multi-line message is the normal case for
-	// markdown test chunks. Enter still submits (Submit's own binding);
-	// InsertNewline is rebound to shift+enter so Enter alone always
-	// reaches the model's submit handling. MaxHeight keeps a large paste
-	// from eating the whole pane.
+	// The chatbox (D3, opencode's own look-and-feel): a BORDERED
+	// textarea, visibly a box even when empty -- not a single-line
+	// prompt string. Enter submits (Submit's own binding); the newline
+	// key is ctrl+j because bubbletea's KeyMsg carries no Shift flag, so
+	// "shift+enter" could never match. Multi-line bracketed paste works
+	// regardless: the pasted runes (newlines included) arrive as
+	// KeyRunes with Paste=true and the textarea splits them into rows.
 	ti := textarea.New()
 	ti.Placeholder = "message the agent..."
 	ti.CharLimit = 4000
-	ti.Prompt = "> "
-	// Grow with content, but start at one row: an empty compose line must
-	// not reserve six rows of the pane (textarea's default height).
-	ti.SetHeight(1)
-	ti.MaxHeight = 6
+	ti.Prompt = ""
+	ti.SetHeight(3)
+	ti.MaxHeight = 8
 	ti.ShowLineNumbers = false
-	// Enter submits (Submit's own binding); the newline key is ctrl+j
-	// because bubbletea's KeyMsg carries no Shift flag, so "shift+enter"
-	// could never match. Multi-line BRACKETED PASTE works regardless:
-	// the pasted runes (newlines included) arrive as KeyRunes with
-	// Paste=true and the textarea splits them into rows.
 	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline"))
+	focusedStyle, blurredStyle := textarea.DefaultStyles()
+	blurredStyle.Base = chatboxBlurredStyle
+	focusedStyle.Base = chatboxFocusedStyle
+	ti.FocusedStyle = focusedStyle
+	ti.BlurredStyle = blurredStyle
+	// Blur() re-points the textarea's internal style reference at the
+	// BlurredStyle above (New()'s own pointer targets its built-in
+	// defaults, which would silently ignore these).
+	ti.Blur()
 
 	realmInput := textinput.New()
 	realmInput.Placeholder = "io.macula"
@@ -674,6 +677,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
+			m.resizeComponents() // the chatbox may have grown a row
 			return m, cmd
 		}
 	}
@@ -1030,7 +1034,12 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) resizeComponents() {
-	reserved := len(m.statusLines()) + 2 // input line + one blank line of slack
+	// The chatbox is a bordered textarea whose height grows with its
+	// content: reserve its ACTUAL rendered height (measured, not
+	// derived -- the border arithmetic differs between focused and
+	// blurred styles) plus one blank line of slack, so the chat
+	// viewport never sits under the box.
+	reserved := len(m.statusLines()) + lipgloss.Height(m.input.View()) + 1
 	h := m.height - reserved
 	if h < 3 {
 		h = 3
@@ -1038,7 +1047,7 @@ func (m *Model) resizeComponents() {
 	m.chatViewport.Width = m.width
 	m.chatViewport.Height = h
 	if m.width > 6 {
-		m.input.SetWidth(m.width - 4)
+		m.input.SetWidth(m.width - 6)
 	}
 }
 
@@ -1333,7 +1342,11 @@ func (m Model) padToBodyHeight(content string) string {
 // second overlay needed the identical layout.
 func (m Model) renderOverlay(panelContent string) string {
 	panel := strings.Split(panelContent, "\n")
-	target := m.height - len(m.statusLines()) - 2 // same target padToBodyHeight/resizeComponents use
+	// The body height, with the SAME reservation resizeComponents uses
+	// (status block + the chatbox's measured rendered height + slack) --
+	// the old "-2" assumed a one-line input and let a taller chatbox
+	// push the overlay past the terminal's bottom row.
+	target := m.height - len(m.statusLines()) - lipgloss.Height(m.input.View()) - 1
 	if target < 1 || len(panel) >= target {
 		// No room for a visible margin either way -- the panel alone
 		// already fills (or exceeds) the available height. Falls back to
@@ -1477,3 +1490,11 @@ func lastN(msgs []roomMessage, n int) []roomMessage {
 	}
 	return msgs[len(msgs)-n:]
 }
+
+// chatboxBlurredStyle and chatboxFocusedStyle give the compose box its
+// opencode-style border: dim when idle, brand blue when focused — the
+// same pair panelStyle/titleStyle use for the rest of the chrome.
+var (
+	chatboxBlurredStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	chatboxFocusedStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#38BDF8")).Padding(0, 1)
+)
