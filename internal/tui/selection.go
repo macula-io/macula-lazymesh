@@ -22,6 +22,16 @@ var sgrStripper = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // terminal does NOT select for an app that has mouse reporting enabled —
 // the shift modifier arrives as a flag on the mouse events themselves —
 // so selection is the app's job (found live 2026-09-12).
+
+// debugKey logs enter-class keys at debug level: the decisive evidence
+// for "shift+enter still submits" — what bubbletea DELIVERED, as the
+// counterpart to termkeys' log of what the terminal SENT.
+func debugKey(msg tea.KeyMsg) {
+	if msg.Type == tea.KeyCtrlM || msg.Type == tea.KeyCtrlJ || msg.Type == tea.KeyEnter {
+		slog.Debug("tui: key delivered", "type", int(msg.Type), "alt", msg.Alt, "runes", string(msg.Runes))
+	}
+}
+
 type selectionState struct {
 	anchorRow int
 	endRow    int

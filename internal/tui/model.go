@@ -506,6 +506,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		debugKey(msg)
 		return m.handleKey(msg)
 
 	case tickMsg:

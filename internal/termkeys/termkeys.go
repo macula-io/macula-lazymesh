@@ -16,7 +16,9 @@
 package termkeys
 
 import (
+	"encoding/hex"
 	"io"
+	"log/slog"
 )
 
 // Enable is the push sequence written to the terminal once, before the
@@ -140,8 +142,17 @@ func (r *Reader) Read(p []byte) (int, error) {
 
 // process consumes one input chunk: non-escape bytes pass through
 // verbatim, escape-starting runs are classified and either translated,
-// passed through, or held as partial.
+// passed through, or held as partial. Chunks containing enter/escape
+// bytes are hex-logged at debug level, so a live "shift+enter still
+// submits" report can be answered with the terminal's actual bytes
+// instead of a guess (2026-09-12).
 func (r *Reader) process(data []byte) {
+	for _, b := range data {
+		if b == 0x0d || b == 0x0a || b == 0x1b || b >= 0x80 {
+			slog.Debug("termkeys: input bytes", "hex", hex.EncodeToString(data))
+			break
+		}
+	}
 	buf := append(r.partial, data...)
 	r.partial = nil
 	i := 0
