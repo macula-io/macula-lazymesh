@@ -1383,3 +1383,53 @@ func TestInterruptKeySignalsInterruptCh(t *testing.T) {
 		t.Fatalf("expected one system chat entry confirming the interrupt, got %+v", m.chatEntries)
 	}
 }
+
+// TestApprovalPopupAnswersOnCh pins the TUI half of G9: an approval
+// event shows the popup, `y` sends allow=true with the approval id, and
+// the mode returns to Normal.
+func TestApprovalPopupAnswersOnCh(t *testing.T) {
+	approvalCh := make(chan ApprovalAnswer, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), ApprovalCh: approvalCh})
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "approve-1", Text: `{"cmd":"true"}`}))
+	m = updated.(Model)
+	if m.mode != ModeApprovalPopup || m.pendingApproval == nil || m.pendingApproval.id != "approve-1" {
+		t.Fatalf("popup state = mode %v pending %+v", m.mode, m.pendingApproval)
+	}
+
+	updated, _ = m.Update(runeKey('y'))
+	m = updated.(Model)
+
+	select {
+	case answer := <-approvalCh:
+		if answer.ID != "approve-1" || !answer.Allow {
+			t.Fatalf("answer = %+v", answer)
+		}
+	default:
+		t.Fatal("y did not send an approval answer")
+	}
+	if m.mode != ModeNormal || m.pendingApproval != nil {
+		t.Fatalf("popup did not close: mode %v pending %+v", m.mode, m.pendingApproval)
+	}
+}
+
+// TestApprovalPopupDenyOnN pins the safe default: n (and esc) deny.
+func TestApprovalPopupDenyOnN(t *testing.T) {
+	approvalCh := make(chan ApprovalAnswer, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), ApprovalCh: approvalCh})
+	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "approve-2", Text: "{}"}))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('n'))
+	m = updated.(Model)
+
+	select {
+	case answer := <-approvalCh:
+		if answer.ID != "approve-2" || answer.Allow {
+			t.Fatalf("answer = %+v", answer)
+		}
+	default:
+		t.Fatal("n did not send a denial")
+	}
+	if m.pendingApproval != nil {
+		t.Fatalf("popup did not close: %+v", m.pendingApproval)
+	}
+}

@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -366,6 +367,178 @@ func TestResumeRestoresPersistedConversation(t *testing.T) {
 	if status.MessageCount != 3 {
 		t.Fatalf("resumed message count = %d, want 3", status.MessageCount)
 	}
+}
+
+// scriptedProvider answers from a fixed script of responses — round 1
+// asks for a tool, round 2 replies plainly; the approval test's shape.
+type scriptedProvider struct {
+	responses []provider.ChatResponse
+	at        int
+}
+
+func (s *scriptedProvider) ChatCompletion(context.Context, provider.ChatRequest) (provider.ChatResponse, error) {
+	resp := s.responses[s.at]
+	if s.at < len(s.responses)-1 {
+		s.at++
+	}
+	return resp, nil
+}
+
+func (s *scriptedProvider) ContextWindow() int { return 1000 }
+
+// TestApprovalGatesAnAskListedToolCall proves the G9 chain end to end: a
+// tool call on the ask list stops the turn, an approval_request event
+// reaches subscribers, the answer arrives out of band through
+// AnswerApproval, and only then does the inner tool run and the turn
+// complete.
+func TestApprovalGatesAnAskListedToolCall(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "risky", Arguments: `{"cmd":"true"}`}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "done, and approved"}},
+	}}
+	pid := startSessionWith(t, n, root, SessionArgs{
+		Provider:     p,
+		Tools:        fakeTools{},
+		SystemPrompt: "you are a test agent",
+		AskTools:     []string{"risky"},
+	})
+
+	events := make(chan Event, 16)
+	downs := make(chan gen.MessageDownPID, 8)
+	cPid, err := n.Spawn(collectorFactory, gen.ProcessOptions{}, events, downs)
+	if err != nil {
+		t.Fatalf("spawn collector: %v", err)
+	}
+	if _, err := n.Call(cPid, subscribeTo{Target: pid}); err != nil {
+		t.Fatalf("subscribe collector: %v", err)
+	}
+
+	replyCh := make(chan SayReply, 1)
+	go func() {
+		reply, err := SayTurn(n, pid, "run the risky thing")
+		if err != nil {
+			replyCh <- SayReply{Err: err}
+			return
+		}
+		replyCh <- reply
+	}()
+
+	// The turn must stop at the approval prompt: collect events until the
+	// approval_request appears, then verify SayTurn is still blocked.
+	var approvalID string
+	deadline := time.After(10 * time.Second)
+	for approvalID == "" {
+		select {
+		case ev := <-events:
+			if ev.Event.Kind == agent.EventApprovalRequested && ev.Event.ToolName == "risky" {
+				approvalID = ev.Event.ID
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the approval request")
+		}
+	}
+	select {
+	case <-replyCh:
+		t.Fatal("turn completed before the approval was answered")
+	default:
+	}
+
+	// The answer arrives out of band — the TUI popup and the socket
+	// approve message both funnel here.
+	AnswerApproval(pid, approvalID, true)
+
+	select {
+	case reply := <-replyCh:
+		if reply.Err != nil {
+			t.Fatalf("say turn failed: %v", reply.Err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn never completed after approval")
+	}
+}
+
+// TestApprovalDenialRefusesWithoutRunning proves the deny path: the same
+// chain, answered with allow=false — the inner tool never runs and the
+// loop reports the refusal as a tool error.
+func TestApprovalDenialRefusesWithoutRunning(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "risky", Arguments: "{}"}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "understood, refusing"}},
+	}}
+	pid := startSessionWith(t, n, root, SessionArgs{
+		Provider:     p,
+		Tools:        fakeTools{},
+		SystemPrompt: "you are a test agent",
+		AskTools:     []string{"risky"},
+	})
+
+	events := make(chan Event, 16)
+	downs := make(chan gen.MessageDownPID, 8)
+	cPid, err := n.Spawn(collectorFactory, gen.ProcessOptions{}, events, downs)
+	if err != nil {
+		t.Fatalf("spawn collector: %v", err)
+	}
+	if _, err := n.Call(cPid, subscribeTo{Target: pid}); err != nil {
+		t.Fatalf("subscribe collector: %v", err)
+	}
+
+	replyCh := make(chan SayReply, 1)
+	go func() {
+		reply, err := SayTurn(n, pid, "run the risky thing")
+		if err != nil {
+			replyCh <- SayReply{Err: err}
+			return
+		}
+		replyCh <- reply
+	}()
+
+	var approvalID string
+	deadline := time.After(10 * time.Second)
+	for approvalID == "" {
+		select {
+		case ev := <-events:
+			if ev.Event.Kind == agent.EventApprovalRequested {
+				approvalID = ev.Event.ID
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the approval request")
+		}
+	}
+	AnswerApproval(pid, approvalID, false)
+
+	select {
+	case reply := <-replyCh:
+		if reply.Err != nil {
+			t.Fatalf("say turn failed: %v", reply.Err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn never completed after the denial")
+	}
+
+	// The loop reported the denial as a tool error on its way past.
+	sawDenial := false
+	deadline = time.After(10 * time.Second)
+	for !sawDenial {
+		select {
+		case ev := <-events:
+			if ev.Event.Kind == agent.EventError && containsDenial(ev.Event.Err) {
+				sawDenial = true
+			}
+		case <-deadline:
+			t.Fatal("the denial never surfaced as a tool error")
+		}
+	}
+}
+
+func containsDenial(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "denied")
 }
 
 // TestNodeStartsWithNetworkingDisabled exercises the production bootstrap

@@ -18,6 +18,7 @@
 //	controller -> lazymesh:
 //	  {"type":"input","session_id":"<id>","text":"<user message>"}
 //	  {"type":"interrupt"}
+//	  {"type":"approve","id":"<approval-id>","allow":1}   (1 allow, 0 deny)
 //	  {"type":"query","what":"status|rooms|inbox|agents|realms"}
 //	  {"type":"shutdown"}
 //	lazymesh -> controller:
@@ -28,6 +29,7 @@
 //	  {"type":"error","tool":"<name>","error":"..."}
 //	  {"type":"backoff"}
 //	  {"type":"max_failures"}
+//	  {"type":"approval_request","id":"<approval-id>","tool":"<name>","args":"<preview>"}
 //	  {"type":"turn_complete"}   (the settle point: a controller sends one
 //	                              input and waits for this)
 //	  {"type":"query_result","what":"...","data":...}
@@ -61,7 +63,9 @@ type Server struct {
 	// interrupt cancels the in-flight turn (the caller's own ctx-cancel
 	// mechanism -- see sessionhost.Interrupt); nil means not wired.
 	interrupt func()
-	session   sessionInfo
+	// approve answers an approval request; nil means not wired.
+	approve func(id string, allow bool)
+	session sessionInfo
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -94,6 +98,9 @@ type Options struct {
 	// Interrupt cancels the in-flight turn when a controller sends an
 	// interrupt control message; nil means not wired.
 	Interrupt func()
+	// Approve answers an approval request (G9) when a controller sends an
+	// approve control message; nil means not wired.
+	Approve func(id string, allow bool)
 	// SessionID identifies this lazymesh session to controllers (the
 	// --session-id flag, or a generated default).
 	SessionID string
@@ -138,6 +145,7 @@ func Start(opts Options) (*Server, error) {
 		events:    opts.Events,
 		query:     opts.Query,
 		interrupt: opts.Interrupt,
+		approve:   opts.Approve,
 		session:   sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
 		ln:        ln,
 		conns:     make(map[net.Conn]*connection),
@@ -267,6 +275,8 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 		SessionID string `json:"session_id"`
 		Text      string `json:"text"`
 		What      string `json:"what"`
+		ID        string `json:"id"`
+		Allow     int    `json:"allow"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		reply(map[string]any{"type": "error", "error": "malformed control message"})
@@ -292,6 +302,17 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 		// No ack: the turn's own event stream (EventError, then the
 		// settle-point turn_complete) IS the answer to an interrupt.
 		s.interrupt()
+		return true
+	case "approve":
+		if s.approve == nil {
+			reply(map[string]any{"type": "error", "error": "approve is not wired"})
+			return true
+		}
+		if msg.ID == "" {
+			reply(map[string]any{"type": "error", "error": "approve requires an approval id"})
+			return true
+		}
+		s.approve(msg.ID, msg.Allow == 1)
 		return true
 	case "query":
 		if s.query == nil {
@@ -346,6 +367,8 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 		line, err = json.Marshal(map[string]any{"type": "backoff"})
 	case agent.EventMaxFailuresReached:
 		line, err = json.Marshal(map[string]any{"type": "max_failures"})
+	case agent.EventApprovalRequested:
+		line, err = json.Marshal(map[string]any{"type": "approval_request", "id": ev.ID, "tool": ev.ToolName, "args": ev.Text})
 	case agent.EventListening:
 		line, err = json.Marshal(map[string]any{"type": "turn_complete"})
 	default:

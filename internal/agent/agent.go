@@ -43,6 +43,12 @@ const (
 	EventToolCall
 	EventToolResult
 	EventError
+	// EventApprovalRequested is emitted when a tool on the ask list wants
+	// to run (G9): ToolName is the tool, ID is the approval id the answer
+	// must carry, and Text is a display-truncated preview of the
+	// arguments. The approval itself arrives out of band (TUI key, socket
+	// approve message) — this event is the prompt, not the mechanism.
+	EventApprovalRequested
 	// EventBackoff and EventMaxFailuresReached are emitted by cmd/lazymesh's
 	// runAgent (not by Loop itself -- the retry/backoff policy lives at
 	// that level), not Say. They exist so a consumer like the TUI can
@@ -65,11 +71,13 @@ const (
 
 // Event is one step the loop took, emitted as it happens so a caller (the
 // TUI in particular) can render progress live instead of only seeing the
-// final result.
+// final result. ID carries a correlation identifier where the kind needs
+// one (an approval request's approval id); it is empty otherwise.
 type Event struct {
 	Kind     EventKind
 	Text     string // assistant content, or a tool's result text
 	ToolName string // set for EventToolCall / EventToolResult
+	ID       string // set for EventApprovalRequested (the approval id)
 	Err      error  // set for EventError
 }
 

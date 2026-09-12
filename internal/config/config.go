@@ -81,6 +81,15 @@ type Config struct {
 	// it does not mark peer-authored room text as untrusted. Only do this
 	// in a trusted/private mesh context.
 	ToolAllowlist []string `yaml:"tool_allowlist,omitempty"`
+	// ToolAsklist (G9) names tools that, on top of being allowed, require
+	// the operator's per-action approval before every call: the TUI
+	// pops an approval prompt and the control socket emits an
+	// approval_request, and the call runs only when a human (or a
+	// controller acting for one) answers allow. The sharp tools —
+	// shell_exec above all — are the intended use; ask is layered on top
+	// of the allowlist, never instead of it, so a tool must already be
+	// allowed before it can ask. Empty by default: no behavior change.
+	ToolAsklist []string `yaml:"tool_asklist,omitempty"`
 	// StatusBarPosition is where the TUI's persistent one-line mesh-status
 	// strip renders: "top" or "bottom". Any other value (including empty)
 	// is treated as "bottom" -- matching vim's statusline and tmux's

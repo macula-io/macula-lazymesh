@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"ergo.services/ergo/act"
 	"ergo.services/ergo/gen"
@@ -29,6 +30,13 @@ type SessionArgs struct {
 	// runs in-memory exactly as it did before D2.
 	Store     *sessionstore.Store
 	SessionID string
+
+	// AskTools lists tools gated behind per-action operator approval
+	// (G9): the session wraps its tool source with agent.AskSource using
+	// its own consent — the approval prompt goes out as an event to every
+	// subscriber (TUI popup, control socket), and the answer comes back
+	// through AnswerApproval. Empty means nothing asks.
+	AskTools []string
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -97,6 +105,81 @@ func Interrupt(session gen.PID) {
 	}
 }
 
+// approvalTimeout is how long a consent question waits for an answer
+// before the call is refused as unanswerable — an operator who isn't
+// there must not be able to hang a turn forever (the interrupt path
+// still cuts it sooner when asked).
+const approvalTimeout = 2 * time.Minute
+
+// approvalSlot is what AnswerApproval looks up: the one question the
+// session currently has outstanding, keyed by the approval id so a stale
+// answer can never be delivered to a newer question.
+type approvalSlot struct {
+	id string
+	ch chan approvalAnswer
+}
+
+// approvalAnswer is the operator's decision.
+type approvalAnswer struct {
+	allow bool
+}
+
+// approvals maps each live session to its current outstanding consent
+// question — the same side-channel shape as turns: the session's actor
+// goroutine is blocked inside the tool call while it waits, so the
+// answer must arrive from another goroutine.
+var approvals sync.Map // gen.PID -> *approvalSlot
+
+// AnswerApproval delivers an operator decision for approval id on
+// session. Safe from any goroutine; a session with no outstanding
+// question, or one whose question's id no longer matches, is a no-op
+// (never delivered to the wrong call).
+func AnswerApproval(session gen.PID, id string, allow bool) {
+	if slot, ok := approvals.Load(session); ok {
+		s := slot.(*approvalSlot)
+		if s.id == id {
+			select {
+			case s.ch <- approvalAnswer{allow: allow}:
+			default:
+			}
+		}
+	}
+}
+
+// consent is the session's own Consent: surface the question to every
+// subscriber as an EventApprovalRequested, then wait for the answer on
+// this turn's private channel, bounded by the turn's context and the
+// approval timeout.
+//
+// It runs inside the loop's tool-call path, on the session's actor
+// goroutine — which is exactly why it BROADCASTS directly instead of
+// self-Sending: a self-Sent event would sit in the mailbox unprocessed
+// while the actor is blocked in Say, and the prompt would deadlock the
+// very answer it is waiting for. A direct broadcast from the actor's own
+// goroutine touches only what the actor already owns.
+func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool, error) {
+	id := fmt.Sprintf("approve-%d", time.Now().UnixNano())
+	ch := make(chan approvalAnswer, 1)
+	approvals.Store(s.PID(), &approvalSlot{id: id, ch: ch})
+	defer approvals.Delete(s.PID())
+	s.broadcast(agent.Event{
+		Kind:     agent.EventApprovalRequested,
+		ToolName: tool,
+		ID:       id,
+		Text:     agent.ApprovalPreview(argumentsJSON, 200),
+	})
+	timer := time.NewTimer(approvalTimeout)
+	defer timer.Stop()
+	select {
+	case answer := <-ch:
+		return answer.allow, nil
+	case <-ctx.Done():
+		return false, fmt.Errorf("approval for %q was interrupted", tool)
+	case <-timer.C:
+		return false, fmt.Errorf("approval for %q timed out after %s", tool, approvalTimeout)
+	}
+}
+
 // session is one agent conversation under the root supervisor.
 type session struct {
 	act.Actor
@@ -119,7 +202,11 @@ func (s *session) Init(args ...any) error {
 	if !ok {
 		return fmt.Errorf("sessionhost: expected SessionArgs, got %T", args[0])
 	}
-	s.loop = agent.NewLoop(sessArgs.Provider, sessArgs.Tools, sessArgs.SystemPrompt)
+	tools := sessArgs.Tools
+	if len(sessArgs.AskTools) > 0 {
+		tools = agent.NewAskSource(sessArgs.Tools, sessArgs.AskTools, s.consent)
+	}
+	s.loop = agent.NewLoop(sessArgs.Provider, tools, sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})
 	if sessArgs.Store != nil && sessArgs.SessionID != "" {
 		s.store = sessArgs.Store

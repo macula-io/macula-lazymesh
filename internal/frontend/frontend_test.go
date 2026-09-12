@@ -231,3 +231,42 @@ func TestCloseRemovesSocketFile(t *testing.T) {
 		t.Fatalf("socket file still exists after Close (stat err = %v)", err)
 	}
 }
+
+// TestApproveControlMessageAndApprovalRequestWire pins G9's socket half:
+// an approval request event travels out as an approval_request line, and
+// an approve control message reaches the wired Approve func.
+func TestApproveControlMessageAndApprovalRequestWire(t *testing.T) {
+	approveCalls := make(chan [2]any, 1)
+	events := make(chan agent.Event, 8)
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	s, err := Start(Options{
+		Path:      path,
+		Input:     make(chan string, 8),
+		Events:    events,
+		Approve:   func(id string, allow bool) { approveCalls <- [2]any{id, allow} },
+		SessionID: "approve-test",
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c := dial(t, path)
+	c.line(t) // handshake
+
+	events <- agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "approve-9", Text: `{"cmd":"true"}`}
+	line := c.line(t)
+	if line["type"] != "approval_request" || line["id"] != "approve-9" || line["tool"] != "shell_exec" {
+		t.Fatalf("approval_request line = %v", line)
+	}
+
+	c.send(t, `{"type":"approve","id":"approve-9","allow":1}`)
+	select {
+	case got := <-approveCalls:
+		if got[0] != "approve-9" || got[1] != true {
+			t.Fatalf("approve call = %v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Approve func never called")
+	}
+}

@@ -71,6 +71,9 @@ const (
 	// the others -- "c" means copy only while it is open, and "esc"
 	// closes it rather than leaving whatever mode was underneath.
 	ModeErrorPopup
+	// ModeApprovalPopup: answering a per-action approval prompt (G9) --
+	// the tool call waits, nothing else proceeds until y/n lands.
+	ModeApprovalPopup
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -83,6 +86,12 @@ type Options struct {
 	// caller cancels the in-flight turn's context. nil when unwired, in
 	// which case `x` reports rather than sending.
 	InterruptCh chan<- struct{}
+
+	// ApprovalCh receives the operator's decision on an approval popup
+	// (G9). nil when unwired, in which case the popup's y/n still
+	// dismisses the prompt but the answer goes nowhere (the session's
+	// own approval timeout then refuses the call).
+	ApprovalCh chan<- ApprovalAnswer
 
 	StatusBarPosition string // "top" or "bottom"
 
@@ -139,9 +148,11 @@ type Model struct {
 	mcp          toolCaller
 	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
 
-	agentEvents <-chan agent.Event
-	userInputCh chan<- string
-	interruptCh chan<- struct{}
+	agentEvents     <-chan agent.Event
+	userInputCh     chan<- string
+	interruptCh     chan<- struct{}
+	approvalCh      chan<- ApprovalAnswer
+	pendingApproval *pendingApproval
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
@@ -275,6 +286,7 @@ func New(client toolCaller, opts Options) Model {
 		agentEvents:          opts.AgentEvents,
 		userInputCh:          opts.UserInputCh,
 		interruptCh:          opts.InterruptCh,
+		approvalCh:           opts.ApprovalCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
@@ -541,6 +553,10 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.mode == ModeRingPopup {
 		return m.handleRingPopupKey(msg)
+	}
+
+	if m.mode == ModeApprovalPopup {
+		return m.handleApprovalPopupKey(msg)
 	}
 
 	if m.mode == ModeErrorPopup {
@@ -872,6 +888,10 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		m.lastListeningAt = time.Now()
 	}
 
+	if ev.Kind == agent.EventApprovalRequested {
+		return m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
+	}
+
 	if isChatter(ev.Kind) && !m.showChatter {
 		// Routine tool-call activity, suppressed by default (see
 		// isChatter's own doc comment) -- genuinely dropped now, not
@@ -1002,6 +1022,17 @@ func (m Model) View() string {
 	// principle as the mesh view's own expand/collapse.
 	if m.mode == ModeRingPopup && m.pendingRingPopup != nil {
 		popup := m.renderRingPopup()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
+	// The approval pop-up takes over the same area the ring pop-up does:
+	// a waiting tool call blocks the turn, and the prompt is the one
+	// thing the operator needs to see.
+	if m.mode == ModeApprovalPopup && m.pendingApproval != nil {
+		popup := strings.Join(m.renderApprovalPopup(m.width), "\n")
 		if m.statusBarPosition == "top" {
 			return strings.Join([]string{status, popup}, "\n")
 		}

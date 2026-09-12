@@ -280,6 +280,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		SystemPrompt: systemPrompt,
 		Store:        sessionStore,
 		SessionID:    resolvedSessionID,
+		AskTools:     cfg.ToolAsklist,
 	})
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -297,6 +298,16 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	go func() {
 		for range interruptCh {
 			sessionhost.Interrupt(sessPid)
+		}
+	}()
+
+	// The approval bus (G9): the TUI's approval popup and the control
+	// socket's approve message both land here and answer the session's
+	// outstanding consent question.
+	approvalCh := make(chan tui.ApprovalAnswer, 4)
+	go func() {
+		for answer := range approvalCh {
+			sessionhost.AnswerApproval(sessPid, answer.ID, answer.Allow)
 		}
 	}()
 
@@ -319,6 +330,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			Events:    frontendEvents,
 			Query:     buildQueryHandler(node, sessPid, client),
 			Interrupt: func() { sessionhost.Interrupt(sessPid) },
+			Approve:   func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
 			SessionID: resolvedSessionID,
 			Model:     providerLabel(cfg) + "/" + cfg.Model,
 			Log:       logStack.StdFor("frontend"),
@@ -336,6 +348,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		AgentEvents:       tuiEvents,
 		UserInputCh:       userInputCh,
 		InterruptCh:       interruptCh,
+		ApprovalCh:        approvalCh,
 		StatusBarPosition: cfg.StatusBarPosition,
 		ContactPolicyFile: cfg.ContactPolicyFile,
 		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
