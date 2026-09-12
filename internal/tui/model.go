@@ -1177,7 +1177,7 @@ func (m Model) renderHintLines() []string {
 	case ModeRingPopup:
 		return []string{mode}
 	case ModeInsert:
-		return []string{mode + "  " + dimStyle.Render("esc: normal mode  alt+enter: send  enter: newline  ctrl+e: edit in $EDITOR")}
+		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  shift+enter: newline  ctrl+e: edit in $EDITOR")}
 	case ModeRealmJoin:
 		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
 	case ModeMeshServiceCall:

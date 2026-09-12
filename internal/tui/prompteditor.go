@@ -25,13 +25,12 @@ type PromptEditor struct {
 }
 
 var (
-	// promptSendKey submits: alt+enter, because plain enter is the
-	// newline key. Alt IS representable in bubbletea's key events,
-	// unlike shift.
-	promptSendKey = key.NewBinding(key.WithKeys("alt+enter"), key.WithHelp("alt+enter", "send"))
-	// promptNewlineKey inserts a newline. ctrl+j is the universal alias
-	// (the byte-level form of the same intent).
-	promptNewlineKey = key.NewBinding(key.WithKeys("enter", "ctrl+j"), key.WithHelp("enter", "newline"))
+	// promptSendKey submits: plain enter, the standard chat binding.
+	promptSendKey = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send"))
+	// promptNewlineKey inserts a newline: shift+enter arrives as the
+	// ctrl+j byte via the termkeys wrapper (kitty protocol, flag 4), and
+	// ctrl+j is the universal fallback on terminals without it.
+	promptNewlineKey = key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline"))
 )
 
 // NewPromptEditor builds the chatbox: bordered (dim when idle, brand

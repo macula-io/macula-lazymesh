@@ -39,6 +39,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/scheduler"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/termkeys"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 	"github.com/macula-io/macula-lazymesh/internal/webfetch"
@@ -413,8 +414,21 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			}
 		}
 	} else {
-		program := tea.NewProgram(tuiModel, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		// The kitty keyboard protocol, flag 4 (alternate keys): without
+		// it, terminals report shift+enter as a plain enter and the
+		// standard chat binding cannot exist. termkeys.Reader rewrites
+		// shift+enter (CSI 13;2u) into the ctrl+j byte the compose
+		// newline binding matches, and presents itself as a term.File
+		// so bubbletea still enables raw mode. Popped again on exit so
+		// the shell underneath never sees the protocol.
+		fmt.Fprint(os.Stdout, termkeys.Enable)
+		program := tea.NewProgram(tuiModel,
+			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
+			tea.WithInput(termkeys.New(os.Stdin)),
+		)
 		_, err = program.Run()
+		fmt.Fprint(os.Stdout, termkeys.Disable)
 	}
 	cancel()
 
