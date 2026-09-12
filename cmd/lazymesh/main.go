@@ -39,6 +39,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/scheduler"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/termkeys"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 	"github.com/macula-io/macula-lazymesh/internal/webfetch"
@@ -413,8 +414,21 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			}
 		}
 	} else {
-		program := tea.NewProgram(tuiModel, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		// The kitty keyboard protocol (2026-09-12): terminals conflate
+		// enter and shift+enter unless the app opts in; pushing the
+		// protocol makes modified keys arrive as CSI-u sequences, and
+		// termkeys.Reader rewrites shift+enter into the ctrl+j byte the
+		// compose box's newline binding understands. Popped again after
+		// exit so the shell underneath never sees CSI-u for its own
+		// shift+keys.
+		fmt.Fprint(os.Stdout, termkeys.Enable)
+		program := tea.NewProgram(tuiModel,
+			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
+			tea.WithInput(termkeys.New(os.Stdin)),
+		)
 		_, err = program.Run()
+		fmt.Fprint(os.Stdout, termkeys.Disable)
 	}
 	cancel()
 
