@@ -1433,3 +1433,42 @@ func TestApprovalPopupDenyOnN(t *testing.T) {
 		t.Fatalf("popup did not close: %+v", m.pendingApproval)
 	}
 }
+
+// TestLastAssistantTextPicksNewestFinishedAnswer pins the copy source:
+// the newest FINISHED assistant entry wins, streaming entries are
+// skipped (their text is still growing), and an empty history reports
+// nothing to copy.
+func TestLastAssistantTextPicksNewestFinishedAnswer(t *testing.T) {
+	entries := []chatEntry{
+		{kind: chatAssistant, text: "first", streaming: false},
+		{kind: chatYou, text: "hi"},
+		{kind: chatAssistant, text: "partial", streaming: true},
+		{kind: chatAssistant, text: "second", streaming: false},
+	}
+	got, ok := lastAssistantText(entries)
+	if !ok || got != "second" {
+		t.Fatalf("lastAssistantText = (%q, %v), want (second, true)", got, ok)
+	}
+
+	entries = []chatEntry{{kind: chatAssistant, text: "still streaming", streaming: true}}
+	if _, ok := lastAssistantText(entries); ok {
+		t.Fatal("a streaming-only history must report nothing to copy")
+	}
+
+	if _, ok := lastAssistantText(nil); ok {
+		t.Fatal("an empty history must report nothing to copy")
+	}
+}
+
+// TestCopyChatKeyReportsWithoutAnswer pins the feedback contract: `y`
+// with nothing to copy says so in the chat instead of silently doing
+// nothing (the actual clipboard call is one line mirroring the error
+// popup's, whose failure reporting has its own test).
+func TestCopyChatKeyReportsWithoutAnswer(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runeKey('y'))
+	m = updated.(Model)
+	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
+		t.Fatalf("expected a system note about nothing to copy, got %+v", m.chatEntries)
+	}
+}

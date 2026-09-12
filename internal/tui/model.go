@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -771,6 +772,8 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case key.Matches(msg, DefaultKeyMap.CopyChat):
+		return m.copyLastAnswer()
 	case key.Matches(msg, DefaultKeyMap.ToggleLogs):
 		return m.openAgentLog()
 	case key.Matches(msg, DefaultKeyMap.ShowError):
@@ -953,6 +956,38 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	m.chatEntries = append(m.chatEntries, entry)
 	m.syncViewport()
 	return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+}
+
+// lastAssistantText is the finished (non-streaming) assistant entry's raw
+// markdown source, newest first — the thing worth sharing verbatim.
+func lastAssistantText(entries []chatEntry) (string, bool) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].kind == chatAssistant && !entries[i].streaming && entries[i].text != "" {
+			return entries[i].text, true
+		}
+	}
+	return "", false
+}
+
+// copyLastAnswer copies the last agent answer to the system clipboard via
+// OSC-52 tooling (atotto/clipboard) and reports the outcome in the chat —
+// a copy that silently fails is worse than one that names its reason, and
+// the clipboard helper is legitimately absent over a bare SSH session.
+func (m Model) copyLastAnswer() (Model, tea.Cmd) {
+	text, ok := lastAssistantText(m.chatEntries)
+	if !ok {
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "nothing to copy yet: no agent answer so far"})
+		m.syncViewport()
+		return m, nil
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not copy to clipboard: %v", err)})
+		m.syncViewport()
+		return m, nil
+	}
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: fmt.Sprintf("copied the last agent answer (%d bytes) to the clipboard", len(text))})
+	m.syncViewport()
+	return m, nil
 }
 
 // resizeComponents fits the chat viewport to whatever's left after the
@@ -1166,7 +1201,7 @@ func (m Model) renderHintLines() []string {
 		if m.meshServicesExpanded && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 
