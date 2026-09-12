@@ -41,6 +41,7 @@ type KeyMap struct {
 	Interrupt key.Binding // x -- cancel the in-flight turn (normal mode)
 
 	CopyChat key.Binding // y -- copy the last agent answer to the clipboard (normal mode)
+
 }
 
 var DefaultKeyMap = KeyMap{

@@ -95,10 +95,10 @@ func TestInsertMode_EnterSubmitsAndReturnsToNormal(t *testing.T) {
 		m = updated.(Model)
 	}
 
-	updated, cmd := m.Update(typeKey(tea.KeyEnter))
+	updated, cmd := m.Update(tea.KeyMsg(tea.Key{Type: tea.KeyCtrlM, Alt: true}))
 	m = updated.(Model)
 	if m.mode != ModeNormal {
-		t.Fatalf("expected normal mode after Enter, got %v", m.mode)
+		t.Fatalf("expected normal mode after alt+enter, got %v", m.mode)
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("expected input to be cleared after submit, got %q", m.input.Value())
@@ -126,7 +126,7 @@ func TestInsertMode_SubmittingEmptyInputDoesNothing(t *testing.T) {
 	updated, _ := m.Update(runeKey('i'))
 	m = updated.(Model)
 
-	updated, _ = m.Update(typeKey(tea.KeyEnter))
+	updated, _ = m.Update(tea.KeyMsg(tea.Key{Type: tea.KeyCtrlM, Alt: true}))
 	m = updated.(Model)
 	if len(m.chatEntries) != 0 {
 		t.Fatalf("expected no chat entry for an empty submit, got %+v", m.chatEntries)
@@ -1489,16 +1489,16 @@ func TestComposeIsMultiline(t *testing.T) {
 	}
 	update(runeKey('i'))
 	update(runeKey('a'))
-	update(typeKey(tea.KeyCtrlJ))
+	update(typeKey(tea.KeyEnter)) // enter = newline in the textarea
 	update(runeKey('b'))
 
 	if got := m.input.Value(); got != "a\nb" {
 		t.Fatalf("multi-line compose value = %q, want a\\nb", got)
 	}
 
-	// Plain enter submits the whole multi-line value (the returned
+	// Alt+enter submits the whole multi-line value (the returned
 	// tea.Cmd is what actually delivers to userInputCh).
-	next, cmd := m.Update(typeKey(tea.KeyEnter))
+	next, cmd := m.Update(tea.KeyMsg(tea.Key{Type: tea.KeyCtrlM, Alt: true}))
 	m = next.(Model)
 	if cmd == nil {
 		t.Fatal("enter did not return the send command")

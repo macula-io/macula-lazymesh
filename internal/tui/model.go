@@ -14,7 +14,6 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -250,7 +249,7 @@ type Model struct {
 	chatEntries  []chatEntry
 	sel          selectionState // shift+drag selection over the chat pane
 	chatViewport viewport.Model
-	input        textarea.Model
+	input        PromptEditor
 
 	width  int
 	height int
@@ -261,30 +260,10 @@ type Model struct {
 // messages on userInputCh -- see Options' own doc comment for what each
 // zero value means.
 func New(client toolCaller, opts Options) Model {
-	// The chatbox (D3, opencode's own look-and-feel): a BORDERED
-	// textarea, visibly a box even when empty -- not a single-line
-	// prompt string. Enter submits (Submit's own binding); the newline
-	// key is ctrl+j because bubbletea's KeyMsg carries no Shift flag, so
-	// "shift+enter" could never match. Multi-line bracketed paste works
-	// regardless: the pasted runes (newlines included) arrive as
-	// KeyRunes with Paste=true and the textarea splits them into rows.
-	ti := textarea.New()
-	ti.Placeholder = "message the agent..."
-	ti.CharLimit = 4000
-	ti.Prompt = ""
-	ti.SetHeight(3)
-	ti.MaxHeight = 8
-	ti.ShowLineNumbers = false
-	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline"))
-	focusedStyle, blurredStyle := textarea.DefaultStyles()
-	blurredStyle.Base = chatboxBlurredStyle
-	focusedStyle.Base = chatboxFocusedStyle
-	ti.FocusedStyle = focusedStyle
-	ti.BlurredStyle = blurredStyle
-	// Blur() re-points the textarea's internal style reference at the
-	// BlurredStyle above (New()'s own pointer targets its built-in
-	// defaults, which would silently ignore these).
-	ti.Blur()
+	// The chatbox (D3, opencode's own look-and-feel): the PromptEditor
+	// component owns the key semantics (enter = newline, alt+enter =
+	// send) -- see prompteditor.go.
+	ti := NewPromptEditor()
 
 	realmInput := textinput.New()
 	realmInput.Placeholder = "io.macula"
@@ -656,30 +635,29 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.mode == ModeInsert {
-		switch {
-		case key.Matches(msg, DefaultKeyMap.Normal):
+		if key.Matches(msg, DefaultKeyMap.Normal) {
 			m.input.Blur()
 			m.mode = ModeNormal
 			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
 			return m, nil
-		case key.Matches(msg, DefaultKeyMap.Submit):
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.resizeComponents() // the chatbox may have grown a row
+		if m.input.Submitted() {
 			text := strings.TrimSpace(m.input.Value())
 			m.input.Reset()
 			m.input.Blur()
 			m.mode = ModeNormal
-			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
+			m.resizeComponents()
 			if text == "" {
-				return m, nil
+				return m, cmd
 			}
 			m.chatEntries = append(m.chatEntries, youChatEntry(text))
 			m.syncViewport()
-			return m, sendUserInput(m.userInputCh, text)
-		default:
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			m.resizeComponents() // the chatbox may have grown a row
-			return m, cmd
+			return m, tea.Batch(cmd, sendUserInput(m.userInputCh, text))
 		}
+		return m, cmd
 	}
 
 	// Normal mode.
@@ -1039,7 +1017,7 @@ func (m *Model) resizeComponents() {
 	// derived -- the border arithmetic differs between focused and
 	// blurred styles) plus one blank line of slack, so the chat
 	// viewport never sits under the box.
-	reserved := len(m.statusLines()) + lipgloss.Height(m.input.View()) + 1
+	reserved := len(m.statusLines()) + m.input.RenderedHeight() + 1
 	h := m.height - reserved
 	if h < 3 {
 		h = 3
@@ -1199,7 +1177,7 @@ func (m Model) renderHintLines() []string {
 	case ModeRingPopup:
 		return []string{mode}
 	case ModeInsert:
-		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  ctrl+j: newline  ctrl+e: edit in $EDITOR")}
+		return []string{mode + "  " + dimStyle.Render("esc: normal mode  alt+enter: send  enter: newline  ctrl+e: edit in $EDITOR")}
 	case ModeRealmJoin:
 		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
 	case ModeMeshServiceCall:
@@ -1346,7 +1324,7 @@ func (m Model) renderOverlay(panelContent string) string {
 	// (status block + the chatbox's measured rendered height + slack) --
 	// the old "-2" assumed a one-line input and let a taller chatbox
 	// push the overlay past the terminal's bottom row.
-	target := m.height - len(m.statusLines()) - lipgloss.Height(m.input.View()) - 1
+	target := m.height - len(m.statusLines()) - m.input.RenderedHeight() - 1
 	if target < 1 || len(panel) >= target {
 		// No room for a visible margin either way -- the panel alone
 		// already fills (or exceeds) the available height. Falls back to
