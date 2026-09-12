@@ -33,7 +33,8 @@ const (
 // streaming marks the entry currently being built from EventAssistantDelta
 // chunks: its text grows with every delta until the turn's completed
 // EventAssistantMessage finishes it, and only a finished entry may cache
-// its markdown rendering (md).
+// its markdown rendering (md, keyed by the width it was rendered at —
+// the table preprocessor is width-dependent).
 type chatEntry struct {
 	kind      chatEntryKind
 	at        time.Time
@@ -42,6 +43,7 @@ type chatEntry struct {
 	detail    string // full text, shown only when details are expanded
 	streaming bool   // assistant entry still accumulating deltas
 	md        string // glamour rendering, cached once finished
+	mdWidth   int    // the width md was rendered at
 }
 
 // chatEntryFromAgentEvent converts one agent.Event into a chat line. Plain
@@ -124,10 +126,11 @@ var (
 // render returns this entry's line(s), in expanded form if detailsExpanded
 // is on and this entry actually has separate detail to show. Assistant
 // entries render through glamour (D3: markdown-capable answers made
-// readable); every other kind stays a single line. Must be a pointer
-// receiver: a completed assistant entry caches its markdown rendering in
-// md.
-func (e *chatEntry) render(detailsExpanded bool) string {
+// readable), with over-wide tables flattened first (see
+// flattenWideTables); every other kind stays a single line. Must be a
+// pointer receiver: a completed assistant entry caches its markdown
+// rendering in md.
+func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
 	text := e.text
 	if detailsExpanded && e.detail != "" && e.detail != e.text {
@@ -145,7 +148,7 @@ func (e *chatEntry) render(detailsExpanded bool) string {
 	case chatYou:
 		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
 	case chatAssistant:
-		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody())
+		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
 	case chatToolCall, chatToolResult:
 		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
 	case chatError:
@@ -178,27 +181,134 @@ var markdownRenderer = sync.OnceValue(func() *glamour.TermRenderer {
 })
 
 // markdownBody renders the entry's text through the shared glamour
-// renderer. A finished entry caches the rendering (re-rendering every
-// assistant entry on every viewport sync would turn a long chat into a
-// glamour benchmark); a streaming entry re-renders as its text grows,
-// and any failure falls back to the raw text — a display concern must
-// never lose content.
-func (e *chatEntry) markdownBody() string {
-	if !e.streaming && e.md != "" {
+// renderer, after flattening any table too wide for the pane. A finished
+// entry caches the rendering keyed by width (the table preprocessor is
+// width-dependent); a streaming entry re-renders as its text grows, and
+// any failure falls back to the raw text — a display concern must never
+// lose content.
+func (e *chatEntry) markdownBody(width int) string {
+	if !e.streaming && e.md != "" && e.mdWidth == width {
 		return e.md
 	}
 	renderer := markdownRenderer()
 	if renderer == nil {
 		return e.text
 	}
-	rendered, err := renderer.Render(e.text)
+	rendered, err := renderer.Render(flattenWideTables(e.text, width-8))
 	if err != nil {
 		return e.text
 	}
 	if !e.streaming {
 		e.md = rendered
+		e.mdWidth = width
 	}
 	return rendered
+}
+
+// flattenWideTables rewrites pipe tables whose rendered width would
+// exceed maxWidth into a "column: value" list per row. glamour (via
+// goldmark) does not wrap table cells, so an over-wide table arrives as
+// full-width border lines that the chat viewport then soft-wraps into
+// misaligned noise — flattening is strictly more readable than broken
+// borders. A table that fits is left untouched for glamour to render
+// properly, and anything that is not a table passes through unchanged.
+func flattenWideTables(md string, maxWidth int) string {
+	if maxWidth < 20 {
+		maxWidth = 20
+	}
+	lines := strings.Split(md, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		if i+1 >= len(lines) || !isTableRow(lines[i]) || !isSeparatorRow(lines[i+1]) {
+			out = append(out, lines[i])
+			continue
+		}
+		header := splitRow(lines[i])
+		j := i + 2
+		var rows [][]string
+		for j < len(lines) && isTableRow(lines[j]) {
+			rows = append(rows, splitRow(lines[j]))
+			j++
+		}
+		if tableWidth(header, rows) <= maxWidth {
+			out = append(out, lines[i:j]...)
+			i = j - 1
+			continue
+		}
+		for _, row := range rows {
+			for c := 0; c < len(header) && c < len(row); c++ {
+				value := strings.TrimSpace(row[c])
+				if value == "" {
+					value = "-"
+				}
+				out = append(out, fmt.Sprintf("- %s: %s", strings.TrimSpace(header[c]), value))
+			}
+			out = append(out, "")
+		}
+		i = j - 1
+	}
+	return strings.Join(out, "\n")
+}
+
+// isTableRow reports whether a line is a pipe-table row of any kind
+// (header, separator, or data): it must start and end with a pipe and
+// hold at least one inner pipe.
+func isTableRow(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 || trimmed[0] != '|' || trimmed[len(trimmed)-1] != '|' {
+		return false
+	}
+	return strings.Contains(trimmed[1:len(trimmed)-1], "|")
+}
+
+// isSeparatorRow reports whether a table row is the |-|-| alignment row.
+func isSeparatorRow(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !isTableRow(trimmed) {
+		return false
+	}
+	for _, cell := range splitRow(trimmed) {
+		cell = strings.TrimSpace(cell)
+		if cell == "" || !strings.Contains(cell, "-") {
+			return false
+		}
+	}
+	return true
+}
+
+// splitRow splits one pipe-table row into its cells (leading/trailing
+// pipes stripped, cells trimmed).
+func splitRow(line string) []string {
+	trimmed := strings.TrimSpace(line)
+	inner := strings.TrimPrefix(strings.TrimSuffix(trimmed, "|"), "|")
+	parts := strings.Split(inner, "|")
+	cells := make([]string, 0, len(parts))
+	for _, p := range parts {
+		cells = append(cells, strings.TrimSpace(p))
+	}
+	return cells
+}
+
+// tableWidth is the rendered width of a table with the given header and
+// rows: each column is as wide as its widest cell plus padding.
+func tableWidth(header []string, rows [][]string) int {
+	cols := len(header)
+	widths := make([]int, cols)
+	for c := 0; c < cols; c++ {
+		widths[c] = utf8.RuneCountInString(header[c])
+	}
+	for _, row := range rows {
+		for c := 0; c < cols && c < len(row); c++ {
+			if w := utf8.RuneCountInString(row[c]); w > widths[c] {
+				widths[c] = w
+			}
+		}
+	}
+	total := 1 // leading pipe
+	for c := 0; c < cols; c++ {
+		total += 1 + widths[c] + 2 // " cell " padding
+	}
+	return total + 1 // trailing pipe
 }
 
 // collapseNewlines flattens embedded newlines to spaces before a string
