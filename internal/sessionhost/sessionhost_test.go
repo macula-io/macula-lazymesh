@@ -211,7 +211,7 @@ func TestStreamedTurnDeliversDeltasThenTurnComplete(t *testing.T) {
 		t.Fatalf("subscribe collector: %v", err)
 	}
 
-	reply, err := SayTurn(n, sessPid, "stream please")
+	reply, err := SayTurn(n, root, sessPid, "stream please")
 	if err != nil {
 		t.Fatalf("say turn: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestInterruptCancelsInFlightTurn(t *testing.T) {
 
 	replyCh := make(chan SayReply, 1)
 	go func() {
-		reply, err := SayTurn(n, sessPid, "a turn that will be interrupted")
+		reply, err := SayTurn(n, root, sessPid, "a turn that will be interrupted")
 		if err != nil {
 			replyCh <- SayReply{Err: err}
 			return
@@ -346,7 +346,7 @@ func TestResumeRestoresPersistedConversation(t *testing.T) {
 
 	root := testRoot(t, n)
 	first := startSessionWith(t, n, root, args)
-	reply, err := SayTurn(n, first, "hi")
+	reply, err := SayTurn(n, root, first, "hi")
 	if err != nil {
 		t.Fatalf("first say: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestApprovalGatesAnAskListedToolCall(t *testing.T) {
 
 	replyCh := make(chan SayReply, 1)
 	go func() {
-		reply, err := SayTurn(n, pid, "run the risky thing")
+		reply, err := SayTurn(n, root, pid, "run the risky thing")
 		if err != nil {
 			replyCh <- SayReply{Err: err}
 			return
@@ -488,7 +488,7 @@ func TestApprovalDenialRefusesWithoutRunning(t *testing.T) {
 
 	replyCh := make(chan SayReply, 1)
 	go func() {
-		reply, err := SayTurn(n, pid, "run the risky thing")
+		reply, err := SayTurn(n, root, pid, "run the risky thing")
 		if err != nil {
 			replyCh <- SayReply{Err: err}
 			return
@@ -572,12 +572,37 @@ func TestSlowTurnOutlastsTheCallDefault(t *testing.T) {
 	}}
 	pid := startSession(t, n, root, p)
 
-	reply, err := SayTurn(n, pid, "take your time")
+	reply, err := SayTurn(n, root, pid, "take your time")
 	if err != nil {
 		t.Fatalf("slow turn's call failed: %v", err)
 	}
 	if reply.Err != nil {
 		t.Fatalf("slow turn reported an error: %v", reply.Err)
+	}
+}
+
+// TestSlowTurnOutcomeLostDistinguishesBusyFromDead pins the state
+// machine the 2026-09-12 fix is built on: with the call timeout
+// compressed, a turn that outlasts it (while the session stays alive)
+// returns ErrTurnOutcomeLost — not a death error, not a retry.
+func TestSlowTurnOutcomeLostDistinguishesBusyFromDead(t *testing.T) {
+	old := sayTurnTimeoutSeconds
+	sayTurnTimeoutSeconds = 1
+	defer func() { sayTurnTimeoutSeconds = old }()
+
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &slowProvider{delay: 2 * time.Second, reply: provider.ChatResponse{
+		Message: provider.Message{Role: provider.RoleAssistant, Content: "done after the timeout"},
+	}}
+	pid := startSession(t, n, root, p)
+
+	reply, err := SayTurn(n, root, pid, "slow one")
+	if err != nil {
+		t.Fatalf("a slow-but-alive turn reported death: %v", err)
+	}
+	if !errors.Is(reply.Err, ErrTurnOutcomeLost) {
+		t.Fatalf("reply.Err = %v, want ErrTurnOutcomeLost", reply.Err)
 	}
 }
 
@@ -623,7 +648,7 @@ func TestSayRunsTheRealLoopAndSubscribersSeeEvents(t *testing.T) {
 		t.Fatalf("subscribe collector: %v", err)
 	}
 
-	reply, err := SayTurn(n, sessPid, "hi")
+	reply, err := SayTurn(n, root, sessPid, "hi")
 	if err != nil {
 		t.Fatalf("say turn: %v", err)
 	}
@@ -664,6 +689,12 @@ func TestSayRunsTheRealLoopAndSubscribersSeeEvents(t *testing.T) {
 // TerminateReasonPanic, its monitor is told, and the root supervisor
 // restarts it — a new pid, same SessionArgs, fresh conversation.
 func TestPanicRestartsWithFreshState(t *testing.T) {
+	// Compress the say-turn timeout: the death detection rides the
+	// timeout-then-alive-check path, and 60s is not a test duration.
+	old := sayTurnTimeoutSeconds
+	sayTurnTimeoutSeconds = 1
+	defer func() { sayTurnTimeoutSeconds = old }()
+
 	n := testNode(t)
 	root := testRoot(t, n)
 	p := &fakeProvider{panicNow: true}
@@ -683,7 +714,7 @@ func TestPanicRestartsWithFreshState(t *testing.T) {
 	// the process down mid-turn, so SayTurn either returns a reply with an
 	// error value or fails outright — either way the DOWN is the real
 	// assertion.
-	_, _ = SayTurn(n, oldPid, "trigger the panic")
+	_, _ = SayTurn(n, root, oldPid, "trigger the panic")
 
 	down := waitDowns(t, downs)
 	if !errors.Is(down.Reason, gen.TerminateReasonPanic) {

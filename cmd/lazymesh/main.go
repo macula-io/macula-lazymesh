@@ -864,7 +864,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			continue
 		}
 
-		reply, err := sessionhost.SayTurn(n, sessPid, prompt)
+		reply, err := sessionhost.SayTurn(n, root, sessPid, prompt)
 		if err != nil {
 			// The session died mid-turn. Its replacement gets the SAME
 			// prompt: the crashed turn was never answered, and the fresh
@@ -889,6 +889,28 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// the next room/ring event) picks the cadence back up.
 			agentLog.Printf("lazymesh agent: turn interrupted")
 			prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+			continue
+		}
+		if errors.Is(reply.Err, sessionhost.ErrTurnOutcomeLost) {
+			// The turn ran to completion while the driver's call had
+			// already timed out (a slow turn, alive the whole time): the
+			// conversation state is correct and the turn ran exactly
+			// once — only its reply was dropped. Neither a failure to
+			// count nor a success to celebrate: log, reset the error
+			// streak, and wait for the next event.
+			agentLog.Printf("lazymesh agent: turn finished during the wait; outcome not observed -- conversation state is intact")
+			consecutiveErrors = 0
+			backoff = initialBackoff
+			usageAfter, err := sessionhost.SessionStatus(n, sessPid)
+			if err != nil {
+				usageAfter = sessionhost.Status{}
+			}
+			logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
+			var ok bool
+			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+			if !ok {
+				return
+			}
 			continue
 		}
 		if reply.Err != nil {

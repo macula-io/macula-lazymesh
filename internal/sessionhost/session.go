@@ -2,6 +2,7 @@ package sessionhost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -355,34 +356,82 @@ func (s *session) broadcast(ev agent.Event) {
 	}
 }
 
-// turnCallTimeoutSeconds bounds the driver's SayTurn call. Ergo's Call
-// has a 5-second default and NO infinite mode, and a turn's real bounds
-// are the provider's own timeouts and the loop's maxRounds — this
-// constant is deliberately huge, not tuned. Found live 2026-09-12: with
-// the 5s default, every slow turn (its tool calls queued behind the
-// ring waiter's blocking mesh_wait_ring on the shared MCP client) timed
-// out the driver's call and was misdiagnosed as a dead session — the
-// driver backed off with "agent hit an error" while the turn itself
-// completed moments later. A genuinely dead session still fails the
-// call immediately, so the reattach path is unaffected; the operator's
-// abort is the interrupt, not a call timeout.
-const turnCallTimeoutSeconds = 3600
+// sayTurnTimeoutSeconds bounds one SayTurn call attempt. Ergo's calls
+// have NO fast-fail when the target dies mid-handling — the caller waits
+// out the full timeout — so the bound matters twice over: short enough
+// that a dead session is noticed promptly (the alive-check then tells
+// death apart from busy), long enough that a normally slow turn does not
+// trip it. Found live 2026-09-12: the 5-second default misdiagnosed
+// every slow turn (tool calls queued behind the ring waiter's blocking
+// mesh_wait_ring on the shared MCP client) as a dead session. A var, not
+// a const, so the sessionhost tests can compress it.
+var sayTurnTimeoutSeconds = 60
+
+// ErrTurnOutcomeLost reports a turn that completed while the driver's
+// call had already timed out: the conversation state is correct and the
+// turn ran exactly once, but its reply arrived after the caller stopped
+// waiting and was dropped (Ergo's own stale-response semantics). The
+// driver treats it as neither success nor failure — it logs and carries
+// on without backoff accounting.
+var ErrTurnOutcomeLost = fmt.Errorf("sessionhost: the turn completed during a slow wait; its outcome was not observed")
 
 // Say runs one turn on session and blocks until it completes: SayReply.Err
-// carries a turn failure (an interrupt arrives as context.Canceled), while
-// a non-nil returned error means the session process itself is gone (a
-// panic-restart in flight, or a stop) and the caller must reattach rather
-// than count it as an ordinary failure.
-func SayTurn(n gen.Node, session gen.PID, text string) (SayReply, error) {
-	reply, err := n.CallWithTimeout(session, Say{Text: text}, turnCallTimeoutSeconds)
+// carries a turn failure (an interrupt arrives as context.Canceled, an
+// outcome-lost wait as ErrTurnOutcomeLost), while a non-nil returned
+// error means the session process itself is gone (a panic-restart in
+// flight, or a stop) and the caller must reattach rather than count it
+// as an ordinary failure.
+//
+// Slow turns are told apart from dead sessions by asking the ROOT (which
+// always answers fast) whether the session is still alive: alive means
+// the turn is merely still running, and the call then waits for it to
+// end by polling status — a busy session answers status only once the
+// turn is done.
+func SayTurn(n gen.Node, root, session gen.PID, text string) (SayReply, error) {
+	for {
+		reply, err := n.CallWithTimeout(session, Say{Text: text}, sayTurnTimeoutSeconds)
+		if err == nil {
+			r, ok := reply.(SayReply)
+			if !ok {
+				return SayReply{}, fmt.Errorf("sessionhost: session answered Say with %T, want SayReply", reply)
+			}
+			return r, nil
+		}
+		if !errors.Is(err, gen.ErrTimeout) {
+			return SayReply{}, err
+		}
+		if !sessionAlive(n, root, session) {
+			return SayReply{}, fmt.Errorf("sessionhost: session %s terminated mid-turn", session)
+		}
+		// Alive and busy: wait for the turn to end. Each status probe is
+		// a 5-second-timeout call the busy session answers only once the
+		// turn completes; death is re-checked through the root at every
+		// step.
+		for {
+			if _, serr := SessionStatus(n, session); serr == nil {
+				return SayReply{Err: ErrTurnOutcomeLost}, nil
+			}
+			if !sessionAlive(n, root, session) {
+				return SayReply{}, fmt.Errorf("sessionhost: session %s terminated mid-turn", session)
+			}
+		}
+	}
+}
+
+// sessionAlive reports whether the root still lists pid among its
+// children — the fast, always-answerable liveness probe (the root actor
+// is never busy).
+func sessionAlive(n gen.Node, root, pid gen.PID) bool {
+	pids, err := Sessions(n, root)
 	if err != nil {
-		return SayReply{}, err
+		return false
 	}
-	r, ok := reply.(SayReply)
-	if !ok {
-		return SayReply{}, fmt.Errorf("sessionhost: session answered Say with %T, want SayReply", reply)
+	for _, p := range pids {
+		if p == pid {
+			return true
+		}
 	}
-	return r, nil
+	return false
 }
 
 // Status asks the session for its conversation's current shape.
