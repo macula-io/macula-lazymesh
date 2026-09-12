@@ -699,10 +699,20 @@ become long-running.
       tolerance, latest/ref resolution, fingerprint scoping, Loop.Restore
       keeping the live system prompt, and the end-to-end resume test
       (persist → stop → new session same id → 3 messages restored).
-- [ ] **Phase 5 — SDKs.** Tiny Go client library + Python client for
-      the control protocol; example: two lazymesh processes on one box,
-      parent hands a task to child over the socket (local
-      agent-to-agent, G5).
+- [x] **Phase 5 — SDKs.** Landed 2026-09-12: `sdk/` — a stdlib-only Go
+      client for the control protocol (`Dial`/`Say` (blocks to the settle
+      point, returns a structured Turn: deltas, authoritative text, tool
+      calls/results, errors)/`Query`/`Interrupt`/`Shutdown`), and
+      `sdk/python/lazymesh_client.py` — the same wire in a single-file
+      stdlib-only Python CLI (`session|say|query|interrupt|shutdown`).
+      The G5 dogfood example ships as `examples/handoff`: a parent
+      process starts two headless lazymesh sessions on one box and hands
+      a task back and forth over their unix sockets — the parent is the
+      courier, the sockets are the channel, zero mesh round-trips, and
+      the two sessions never meet on the mesh at all. Proven by tests:
+      Go client full-turn collection + query round-trip + interrupt/
+      shutdown over a real server, and the Python client exercised end to
+      end against a live server by a Go test (skips without python3).
 - [ ] **Phase 6 — Quality features.** Approval/ask mode (G9), context
       compaction (G6), skills/AGENTS.md read (G8), scheduler wakeups
       (G13), web fetch (G12), sandbox hardening (G10).
