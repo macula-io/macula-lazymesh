@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -160,25 +159,61 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	}
 }
 
-// markdownRenderer is ONE glamour renderer for the process lifetime,
-// created lazily: glamour renderers are not cheap to construct, and the
-// TUI's single render loop makes one shared instance safe. Fixed dark
-// style, deliberately NOT WithAutoStyle — auto style queries the terminal
-// for its background color and WAITS for the answer, which never arrives
-// through bubbletea's alt screen: the first markdown render would block
-// the Update loop forever (the "TUI hangs, shortcuts dead" symptom found
-// live 2026-09-12). No word wrap either: the chat viewport soft-wraps
-// its own content, and a fixed renderer must not depend on the pane's
-// current width.
-var markdownRenderer = sync.OnceValue(func() *glamour.TermRenderer {
-	renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"))
+// maculaMarkdownStyle is glamour's own dark.json (v1.0.0), modified in
+// two ways found live 2026-09-12:
+//
+//   - the stock style gives h2-h5 NO color at all (just the literal
+//     "## " prefix), so five heading levels render identically; here
+//     every level carries a distinct color, with the level prefix kept
+//     so a monochrome terminal still shows the level;
+//   - the stock style wraps the whole document in a 2-space margin with
+//     a leading blank line (the "agent:"-then-empty-line-then-indented
+//     text artifact); the document margin is zeroed and the leading
+//     block prefix removed.
+//
+// It lives embedded (not generated) so a glamour upgrade cannot silently
+// change how the chat pane reads; re-diff against the module's
+// styles/dark.json on every version bump.
+const maculaMarkdownStyle = `{"document":{"block_prefix":"","block_suffix":"\n","color":"252","margin":0},"block_quote":{"indent":1,"indent_token":"\u2502 "},"paragraph":{},"list":{"level_indent":2},"heading":{"block_suffix":"\n","color":"39","bold":true},"h1":{"prefix":" ","suffix":" ","color":"208","bold":true},"h2":{"prefix":"## ","color":"214","bold":true},"h3":{"prefix":"### ","color":"228","bold":true},"h4":{"prefix":"#### ","color":"114","bold":true},"h5":{"prefix":"##### ","color":"81","bold":true},"h6":{"prefix":"###### ","color":"141","bold":false},"text":{},"strikethrough":{"crossed_out":true},"emph":{"italic":true},"strong":{"bold":true},"hr":{"color":"240","format":"\n--------\n"},"item":{"block_prefix":"• "},"enumeration":{"block_prefix":". "},"task":{"ticked":"[✓]","unticked":"[ ]"},"link":{"color":"39","underline":true},"link_text":{"color":"35","bold":true},"image":{"color":"212","underline":true},"image_text":{"color":"243"},"code":{"prefix":" ","suffix":" ","color":"203","background_color":"236"},"code_block":{"color":"244","margin":2},"table":{},"definition_list":{},"definition_term":{},"definition_description":{},"html_block":{},"html_span":{}}`
+
+// markdownRenderer returns ONE glamour renderer for the process,
+// built lazily for the pane's current width: glamour pads every line to
+// its renderer width with styled spaces, so the renderer width must
+// equal the pane width — otherwise trailing padding visibly overruns the
+// viewport, and the viewport re-wraps lines that were already wrapped.
+// A width change (terminal resize) rebuilds the renderer; the per-entry
+// md cache is width-keyed for the same reason.
+//
+// Fixed custom style (maculaMarkdownStyle), deliberately NOT WithAutoStyle
+// — auto style queries the terminal for its background color and WAITS
+// for the answer, which never arrives through bubbletea's alt screen:
+// the first markdown render would block the Update loop forever (the
+// "TUI hangs, shortcuts dead" symptom found live 2026-09-12).
+var (
+	markdownRendererWidth int
+	markdownRendererOnce  *glamour.TermRenderer
+)
+
+func markdownRenderer(width int) *glamour.TermRenderer {
+	if width < 20 {
+		width = 20
+	}
+	if markdownRendererOnce != nil && markdownRendererWidth == width {
+		return markdownRendererOnce
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes([]byte(maculaMarkdownStyle)),
+		glamour.WithWordWrap(width),
+	)
 	if err != nil {
 		// The only honest fallback: a renderer that cannot be built must
 		// not take the chat pane down — raw text renders.
 		return nil
 	}
+	markdownRendererOnce = renderer
+	markdownRendererWidth = width
 	return renderer
-})
+}
 
 // markdownBody renders the entry's text through the shared glamour
 // renderer, after flattening any table too wide for the pane. A finished
@@ -190,7 +225,7 @@ func (e *chatEntry) markdownBody(width int) string {
 	if !e.streaming && e.md != "" && e.mdWidth == width {
 		return e.md
 	}
-	renderer := markdownRenderer()
+	renderer := markdownRenderer(width)
 	if renderer == nil {
 		return e.text
 	}
