@@ -13,7 +13,7 @@ import (
 func readAll(t *testing.T, r io.Reader) []byte {
 	t.Helper()
 	var out bytes.Buffer
-	buf := make([]byte, 3) // deliberately small: exercises the internal buffering
+	buf := make([]byte, 3)
 	for {
 		n, err := r.Read(buf)
 		out.Write(buf[:n])
@@ -31,36 +31,91 @@ func translate(t *testing.T, in string) string {
 	return string(readAll(t, New(bytes.NewBufferString(in))))
 }
 
-// TestShiftEnterBecomesNewline pins the one translation that matters:
-// CSI 13;2u (shift+enter under the kitty protocol) arrives as the
-// ctrl+j byte the compose newline binding matches.
+// TestShiftEnterBecomesNewline pins THE contract: CSI 13;2u (shift+enter
+// under kitty's flag-8 reporting) becomes the ctrl+j byte the compose
+// newline binding matches, while plain enter stays a submit (\r).
 func TestShiftEnterBecomesNewline(t *testing.T) {
-	got := translate(t, "before\x1b[13;2uafter")
-	if got != "before\nafter" {
-		t.Fatalf("translation = %q, want %q", got, "before\nafter")
+	if got := translate(t, "before\x1b[13;2uafter"); got != "before\nafter" {
+		t.Fatalf("shift+enter translation = %q, want %q", got, "before\nafter")
+	}
+	if got := translate(t, "\x1b[13;1u"); got != "\r" {
+		t.Fatalf("plain enter translation = %q, want \\r", got)
+	}
+	if got := translate(t, "\x1b[13u"); got != "\r" {
+		t.Fatalf("enter without modifier parameter = %q, want \\r", got)
 	}
 }
 
-// TestAltEnterPassesThrough pins the boundary: alt+enter (mods=3) is not
-// shift+enter and passes through untouched (bubbletea drops it as an
-// unknown CSI, same as today).
-func TestAltEnterPassesThrough(t *testing.T) {
-	in := "\x1b[13;3u"
-	if got := translate(t, in); got != in {
-		t.Fatalf("alt+enter was rewritten: %q", got)
+// TestPlainTextKeysRoundTrip pins flag-8's consequence: EVERY printable
+// key arrives as CSI-u and must translate back to its byte -- this is
+// the whole reason the wrapper exists, and the regression surface.
+func TestPlainTextKeysRoundTrip(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"\x1b[105;1u", "i"},
+		{"\x1b[73;2u", "I"},      // shift+i: codepoint is the shifted char
+		{"\x1b[32;1u", " "},      // space
+		{"\x1b[97;5u", "\x01"},   // ctrl+a
+		{"\x1b[99;5u", "\x03"},   // ctrl+c
+		{"\x1b[32;5u", "\x00"},   // ctrl+space
+		{"\x1b[120;3u", "\x1bx"}, // alt+x
+		{"\x1b[9;1u", "\t"},      // tab
+		{"\x1b[9;2u", "\x1b[Z"},  // shift+tab
+		{"\x1b[127;1u", "\x7f"},  // backspace
+		{"\x1b[27;1u", "\x1b"},   // escape
+		{"\x1b[13;3u", "\x1b\r"}, // alt+enter
+	}
+	for _, c := range cases {
+		if got := translate(t, c.in); got != c.want {
+			t.Fatalf("translate(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
-// TestLegacySequencesPassThrough pins the non-regression contract:
-// everything bubbletea already understands (plain enter, legacy
-// modified arrows, alt+key, plain text) is byte-identical.
+// TestFunctionalKeysRoundTrip pins the navigation keys: arrows, home/
+// end and page keys must survive the flag-8 translation or the editor
+// breaks.
+func TestFunctionalKeysRoundTrip(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"\x1b[57352;1u", "\x1b[A"},    // up
+		{"\x1b[57352;2u", "\x1b[1;2A"}, // shift+up
+		{"\x1b[57353;1u", "\x1b[B"},    // down
+		{"\x1b[57350;1u", "\x1b[D"},    // left
+		{"\x1b[57351;1u", "\x1b[C"},    // right
+		{"\x1b[7;1u", "\x1b[H"},        // home
+		{"\x1b[8;1u", "\x1b[F"},        // end
+		{"\x1b[5;1u", "\x1b[5~"},       // page up
+		{"\x1b[6;1u", "\x1b[6~"},       // page down
+		{"\x1b[2;1u", "\x1b[2~"},       // insert
+		{"\x1b[3;1u", "\x1b[3~"},       // delete
+		{"\x1b[11;1u", "\x1bOP"},       // F1
+		{"\x1b[11;2u", "\x1b[1;2P"},    // shift+F1
+		{"\x1b[15;1u", "\x1b[15~"},     // F5
+		{"\x1b[24;1u", "\x1b[24~"},     // F12
+	}
+	for _, c := range cases {
+		if got := translate(t, c.in); got != c.want {
+			t.Fatalf("translate(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestLegacySequencesPassThrough pins the passthrough contract:
+// sequences bubbletea already understands (bracketed paste markers,
+// mouse reports, legacy arrows) are byte-identical.
 func TestLegacySequencesPassThrough(t *testing.T) {
 	cases := []string{
 		"plain text\r\n",
-		"\x1b[A\x1b[B",       // plain arrows
-		"\x1b[1;2A\x1b[1;5D", // legacy shift/ctrl arrows (bubbletea parses these)
-		"\x1bx",              // alt+x
-		"\x1b",               // lone escape at EOF
+		"\x1b[200~", // bracketed paste start
+		"\x1b[201~", // bracketed paste end
+		"\x1b[A",    // legacy arrow (shouldn't occur under flag 8, but must survive)
+		"\x1bx",     // alt+x in legacy form
+		"\x1b",      // lone escape at EOF
 	}
 	for _, c := range cases {
 		if got := translate(t, c); got != c {
@@ -69,21 +124,8 @@ func TestLegacySequencesPassThrough(t *testing.T) {
 	}
 }
 
-// TestMixedContentTranslatesOnlyShiftEnter pins the selectivity: a
-// chunk holding text, a legacy sequence and a shift+enter rewrites
-// exactly the shift+enter.
-func TestMixedContentTranslatesOnlyShiftEnter(t *testing.T) {
-	in := "text\x1b[A\x1b[13;2umore"
-	if got := translate(t, in); got != "text\x1b[A\nmore" {
-		t.Fatalf("mixed translation = %q", got)
-	}
-}
-
-// TestSequenceSplitAcrossReads pins the state machine: the CSI-u
-// sequence arriving across Read boundaries (split between the
-// surrounding text, not inside the ESC itself -- the pty delivers a
-// terminal write whole, and a lone ESC is the escape key, never a
-// sequence prefix) translates exactly like the whole-chunk case.
+// TestSequenceSplitAcrossReads pins the state machine: a CSI-u sequence
+// split between reads (around surrounding text) still translates.
 func TestSequenceSplitAcrossReads(t *testing.T) {
 	r := New(&chunkReader{data: []byte("ab\x1b[13;2ucd"), size: 6})
 	if got := string(readAll(t, r)); got != "ab\ncd" {
@@ -92,9 +134,8 @@ func TestSequenceSplitAcrossReads(t *testing.T) {
 }
 
 // TestLoneEscapeIsFlushedImmediately pins the modal-TUI contract: a
-// lone ESC passes through as the escape key (bubbletea maps it to
-// KeyEscape the moment it arrives); holding it would deadlock the
-// escape key -- the live bug this test exists for.
+// lone ESC passes through as the escape key immediately, never held
+// (the live "esc dead, stuck in insert mode" bug).
 func TestLoneEscapeIsFlushedImmediately(t *testing.T) {
 	r := New(&chunkReader{data: []byte("ab\x1bx"), size: 1})
 	if got := string(readAll(t, r)); got != "ab\x1bx" {
@@ -102,12 +143,30 @@ func TestLoneEscapeIsFlushedImmediately(t *testing.T) {
 	}
 }
 
-// TestDanglingEscapeAtEOFFlushesVerbatim pins the shutdown path: a lone
-// ESC (or cut-off sequence) at EOF is delivered unchanged, never held.
-func TestDanglingEscapeAtEOFFlushesVerbatim(t *testing.T) {
+// TestDanglingSequenceAtEOFFlushesVerbatim pins the shutdown path.
+func TestDanglingSequenceAtEOFFlushesVerbatim(t *testing.T) {
 	in := "\x1b[13;2"
 	if got := translate(t, in); got != in {
 		t.Fatalf("dangling sequence was not flushed verbatim: %q", got)
+	}
+}
+
+// TestReaderSatisfiesTermFile pins the raw-mode contract: the wrapper
+// must present itself as a terminal file, or bubbletea never enables
+// raw mode.
+func TestReaderSatisfiesTermFile(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "termkeys-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer f.Close()
+	r := New(f)
+	var _ term.File = r
+	if r.Fd() == 0 {
+		t.Fatal("a wrapped file reader must report the file's descriptor")
+	}
+	if _, err := r.Write([]byte("x")); err != nil {
+		t.Fatalf("write passthrough: %v", err)
 	}
 }
 
@@ -129,24 +188,4 @@ func (c *chunkReader) Read(p []byte) (int, error) {
 	copy(p, c.data[:n])
 	c.data = c.data[n:]
 	return n, nil
-}
-
-// TestReaderSatisfiesTermFile pins the raw-mode contract: the wrapper
-// must present itself as a terminal file (ReadWriteCloser + Fd), or
-// bubbletea never enables raw mode and the terminal stays in cooked
-// mode -- the live "i doesn't work, chars echo at the cursor" bug.
-func TestReaderSatisfiesTermFile(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "termkeys-*")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	defer f.Close()
-	r := New(f)
-	var _ term.File = r // compile-time assertion
-	if r.Fd() == 0 {
-		t.Fatal("a wrapped file reader must report the file's descriptor")
-	}
-	if _, err := r.Write([]byte("x")); err != nil {
-		t.Fatalf("write passthrough: %v", err)
-	}
 }
