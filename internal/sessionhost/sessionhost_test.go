@@ -806,3 +806,50 @@ func TestNormalStopDoesNotRestart(t *testing.T) {
 	}
 	t.Fatal("normally stopped session is still listed under the root")
 }
+
+// TestPersistSurvivesContextCompaction pins the 2026-09-12 live crash:
+// a turn that pushes the conversation past the context budget triggers
+// trimHistory mid-Say (old turns evicted, replaced by a summary) — the
+// old position-based persistence delta then indexed out of range and
+// panicked the session on EVERY turn past the budget. The exact-delta
+// path must persist cleanly.
+func TestPersistSurvivesContextCompaction(t *testing.T) {
+	n := testNode(t)
+	store, err := sessionstore.New(t.TempDir(), sessionstore.Fingerprint(t.TempDir()))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	p := &fakeProvider{reply: provider.ChatResponse{
+		Message: provider.Message{Role: provider.RoleAssistant, Content: "ok"},
+	}}
+	root := testRoot(t, n)
+	pid := startSessionWith(t, n, root, SessionArgs{
+		Provider:     p,
+		Tools:        fakeTools{},
+		SystemPrompt: "you are a test agent",
+		Store:        store,
+		SessionID:    "compacting",
+	})
+
+	// Grow the conversation past the trim thresholds so the next Say
+	// compacts mid-turn: a few oversized user turns via direct Say calls
+	// each append big user + assistant messages.
+	for i := 0; i < 5; i++ {
+		reply, err := SayTurn(n, root, pid, "big turn "+bigPadding)
+		if err != nil {
+			t.Fatalf("say %d: %v", i, err)
+		}
+		if reply.Err != nil {
+			t.Fatalf("say %d failed: %v", i, reply.Err)
+		}
+	}
+
+	// The session must still be alive and answer status — the pre-fix
+	// code panicked the actor here.
+	if _, err := SessionStatus(n, pid); err != nil {
+		t.Fatalf("session died from the persistence path: %v", err)
+	}
+}
+
+// bigPadding is a large-but-boring assistant content filler.
+const bigPadding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

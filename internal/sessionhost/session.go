@@ -308,7 +308,6 @@ func (s *session) runSay(text string) error {
 	turns.Store(s.PID(), cancel)
 	defer turns.Delete(s.PID())
 
-	before := s.loop.MessageCount()
 	events := make(chan agent.Event, eventBuffer)
 	drained := make(chan struct{})
 	go func() {
@@ -326,7 +325,11 @@ func (s *session) runSay(text string) error {
 	// lost; the log records completed changes, and the driver's reattach
 	// path retries the prompt against the restored state.
 	if s.store != nil {
-		if added := s.loop.Messages()[before:]; len(added) > 0 {
+		// The exact delta Say recorded, not a position-based diff: a
+		// turn that triggered context compaction evicts OLDER messages,
+		// so any before/after slice math would index out of range (the
+		// live boundsError crash found 2026-09-12).
+		if added := s.loop.TakeAppended(); len(added) > 0 {
 			if err := s.store.Append(s.sessionID, added); err != nil {
 				s.Log().Error("sessionhost: persist turn: %s", err)
 			}

@@ -91,6 +91,13 @@ type Loop struct {
 
 	messages []provider.Message
 	usage    provider.Usage
+	// appended records exactly the messages the current Say call added,
+	// in order — the persistence delta. A position-based diff against a
+	// pre-Say count would break under compaction: trimHistory evicts old
+	// turns (replacing them with a summary), so the slice can be SHORTER
+	// after Say than before, and Messages()[before:] panics on the
+	// out-of-range index (the live actor crash found 2026-09-12).
+	appended []provider.Message
 	// summary is the compacted record of every turn trimHistory has
 	// evicted so far (G6): it lives as a system message right after the
 	// real system prompt, so the model keeps the record while losing the
@@ -113,6 +120,17 @@ func (l *Loop) Usage() provider.Usage {
 // assumed messages-per-cycle count.
 func (l *Loop) MessageCount() int {
 	return len(l.messages)
+}
+
+// TakeAppended returns the messages the most recent Say call added, in
+// order, and clears the buffer -- the exact persistence delta, immune to
+// trimHistory's eviction of OLDER messages (which a position-based diff
+// would miscount). Say records every append: the user message, each
+// assistant reply and each tool result.
+func (l *Loop) TakeAppended() []provider.Message {
+	out := l.appended
+	l.appended = nil
+	return out
 }
 
 // Messages returns a snapshot of the conversation history, copied so a
@@ -227,6 +245,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		Role:    provider.RoleUser,
 		Content: userText,
 	})
+	l.appended = append(l.appended, l.messages[len(l.messages)-1])
 	l.trimHistory(ctx, events)
 
 	tools, err := l.Tools.ListTools(ctx)
@@ -246,6 +265,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 			return err
 		}
 		l.messages = append(l.messages, resp.Message)
+		l.appended = append(l.appended, resp.Message)
 		l.usage.PromptTokens += resp.Usage.PromptTokens
 		l.usage.CompletionTokens += resp.Usage.CompletionTokens
 		l.usage.TotalTokens += resp.Usage.TotalTokens
@@ -277,6 +297,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 				emit(events, Event{Kind: EventToolResult, ToolName: tc.Name, Text: result})
 			}
 			l.messages = append(l.messages, toolMsg)
+			l.appended = append(l.appended, toolMsg)
 			// Trimmed after every tool result, not just once at Say's own
 			// start (2026-09-07 fix): a single Say call can run up to
 			// maxRounds rounds, each appending its own tool results --
