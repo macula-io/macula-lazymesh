@@ -1,6 +1,6 @@
 # lazymesh — Agent Quality Gaps Survey
 
-**Status:** Survey complete — gaps identified, no code changed
+**Status:** All phases implemented -- survey closed out 2026-09-12 (Phases 0-8, including all six Phase-6 work packages)
 **Created:** 2026-09-12
 **Last Updated:** 2026-09-12
 
@@ -792,32 +792,32 @@ become long-running.
 
 ## Success Criteria
 
-- [ ] `lazymesh --headless --unix-socket /tmp/lz.sock` runs the full
+- [x] `lazymesh --headless --unix-socket /tmp/lz.sock` runs the full
       agent loop with no terminal, and a controller can send
       `{"type":"input",...}` and receive `assistant`/`tool_call`/
       `tool_result`/`turn_complete` events as newline-delimited JSON.
-- [ ] `{"type":"interrupt"}` stops an in-flight turn and the loop
+- [x] `{"type":"interrupt"}` stops an in-flight turn and the loop
       returns to listening state.
-- [ ] Two lazymesh processes on one box can hand a task back and forth
+- [x] Two lazymesh processes on one box can hand a task back and forth
       over their sockets with zero mesh round-trips.
-- [ ] The TUI and a socket controller can attach to the same session
+- [x] The TUI and a socket controller can attach to the same session
       simultaneously: TUI renders what the controller drives, and a
       ring pop-up in the TUI is answerable from the socket.
-- [ ] A crash and `--resume <id>` restores the conversation; a
+- [x] A crash and `--resume <id>` restores the conversation; a
       controller sees no duplicate or lost turns.
-- [ ] A conversation that exceeds the context budget is compacted by
+- [x] A conversation that exceeds the context budget is compacted by
       summarization, not silently amputated.
-- [ ] `shell_exec` allowed in an "ask" permission mode prompts the
+- [x] `shell_exec` allowed in an "ask" permission mode prompts the
       operator (TUI popup or socket `approve`) per call.
-- [ ] The mesh `kind` grammar (question/answer/task/result/lane/claim)
+- [x] The mesh `kind` grammar (question/answer/task/result/lane/claim)
       is taught by the prompt, emitted by the model, and threaded with
       `in_reply_to` automatically.
-- [ ] Streaming: assistant text appears in the TUI incrementally, and
+- [x] Streaming: assistant text appears in the TUI incrementally, and
       delta events appear on the socket.
-- [ ] TUI look-and-feel (D3): chatbox prompt entry, markdown-rendered
+- [x] TUI look-and-feel (D3): chatbox prompt entry, markdown-rendered
       assistant replies via glamour, in both terminal and socket-driven
       sessions.
-- [ ] Anthropic is a working provider, not a stub.
+- [x] Anthropic is a working provider, not a stub.
 
 ---
 
