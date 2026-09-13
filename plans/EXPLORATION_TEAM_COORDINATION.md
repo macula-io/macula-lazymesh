@@ -59,11 +59,14 @@ session improves every other agent.
 
 - Effort: ~150-200 lines + tests (two `agent.ToolSource`-adjacent hooks
   plus prompt discipline). No new protocol.
-- Hygiene rule (non-negotiable): payloads are not yet encrypted at the
-  protocol level (post-quantum encryption is being designed — see
-  `macula/plans/EXPLORATION_POST_QUANTUM.md`), so the auto-remember hook
-  must be scoped to outcome summaries, never source excerpts or secrets;
-  mirrors the manual-tool guidance.
+- Hygiene rule (non-negotiable): transport is encrypted (QUIC/TLS)
+  but classical-only today — payloads are not end-to-end encrypted
+  (stations see plaintext). The post-quantum program is planned and
+  Raf-accepted: `macula/plans/PLAN_POST_QUANTUM_SECURITY.md` (two
+  profiles, seven stages; lazymesh's own cutover is Stage 5, owners
+  Mars/Venus). Until then the auto-remember hook must be scoped to
+  outcome summaries, never source excerpts or secrets; mirrors the
+  manual-tool guidance.
 
 ### 2. Team board view
 
