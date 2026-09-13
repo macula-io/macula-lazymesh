@@ -67,17 +67,18 @@ func TestMouseWheelScrollsChat(t *testing.T) {
 }
 
 // TestMouseWheelIgnoredUnderOverlay pins the boundary: while an overlay
-// owns the screen, the wheel must not move the chat hidden beneath it.
-func TestMouseWheelIgnoredUnderOverlay(t *testing.T) {
+// owns the screen, the wheel must not move the chat tab while another
+// tab is showing.
+func TestMouseWheelIgnoredOnOtherTabs(t *testing.T) {
 	m := newTestModel(t)
 	m = fillChat(t, m, 30)
 	m.chatViewport.GotoTop()
-	m.meshExpanded = true
+	m.tab = tabMesh
 
 	updated, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
 	m = updated.(Model)
 	if m.chatViewport.YOffset != 0 {
-		t.Fatal("wheel moved the chat under an open overlay")
+		t.Fatal("wheel moved the chat while another tab was showing")
 	}
 }
 

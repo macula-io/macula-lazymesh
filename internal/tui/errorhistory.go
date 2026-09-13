@@ -55,13 +55,10 @@ func (m *Model) recordError(err error, now time.Time) (isNew bool) {
 
 // operatorIsFree reports whether opening a pop-up right now would take
 // the screen away from something the operator is in the middle of.
-// Composing loses typing; an open overlay is something they asked to
-// look at. Both are worth waiting for.
+// Composing loses typing; another tab is something they asked to look
+// at. Both are worth waiting for.
 func (m Model) operatorIsFree() bool {
-	return m.mode == ModeNormal &&
-		!m.meshExpanded &&
-		!m.meshServicesExpanded &&
-		!m.realmExpanded
+	return m.mode == ModeNormal && m.tab == tabChat
 }
 
 // maybeAutoPopError shows a held error the moment the operator is free to

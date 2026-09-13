@@ -136,20 +136,20 @@ func TestInsertMode_SubmittingEmptyInputDoesNothing(t *testing.T) {
 	}
 }
 
-func TestNormalMode_MTogglesMeshExpanded(t *testing.T) {
+func TestNormalMode_MSwitchesToMeshTab(t *testing.T) {
 	m := newTestModel(t)
-	if m.meshExpanded {
-		t.Fatalf("expected mesh view collapsed by default")
+	if m.tab != tabChat {
+		t.Fatalf("expected chat tab by default, got %v", m.tab)
 	}
 	updated, _ := m.Update(runeKey('m'))
 	m = updated.(Model)
-	if !m.meshExpanded {
-		t.Fatalf("expected 'm' to expand the mesh view")
+	if m.tab != tabMesh {
+		t.Fatalf("expected 'm' to switch to the mesh tab, got %v", m.tab)
 	}
-	updated, _ = m.Update(runeKey('m'))
+	updated, _ = m.Update(runeKey('c'))
 	m = updated.(Model)
-	if m.meshExpanded {
-		t.Fatalf("expected a second 'm' to collapse it again")
+	if m.tab != tabChat {
+		t.Fatalf("expected 'c' to return to the chat tab, got %v", m.tab)
 	}
 }
 
@@ -160,28 +160,23 @@ func TestInsertMode_MDoesNotToggleMeshView_TypesInstead(t *testing.T) {
 
 	updated, _ = m.Update(runeKey('m'))
 	m = updated.(Model)
-	if m.meshExpanded {
-		t.Fatalf("'m' while composing must not toggle the mesh view")
+	if m.tab != tabChat {
+		t.Fatalf("'m' while composing must not switch tabs")
 	}
 	if m.input.Value() != "m" {
 		t.Fatalf("expected 'm' to be typed into the input, got %q", m.input.Value())
 	}
 }
 
-func TestNormalMode_STogglesMeshServicesExpanded(t *testing.T) {
+func TestNormalMode_SSwitchesToServicesTab(t *testing.T) {
 	m := newTestModel(t)
-	if m.meshServicesExpanded {
-		t.Fatalf("expected mesh services view collapsed by default")
+	if m.tab != tabChat {
+		t.Fatalf("expected chat tab by default, got %v", m.tab)
 	}
 	updated, _ := m.Update(runeKey('s'))
 	m = updated.(Model)
-	if !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to expand the mesh services view")
-	}
-	updated, _ = m.Update(runeKey('s'))
-	m = updated.(Model)
-	if m.meshServicesExpanded {
-		t.Fatalf("expected a second 's' to collapse it again")
+	if m.tab != tabServices {
+		t.Fatalf("expected 's' to switch to the services tab, got %v", m.tab)
 	}
 }
 
@@ -192,77 +187,58 @@ func TestInsertMode_SDoesNotToggleMeshServicesView_TypesInstead(t *testing.T) {
 
 	updated, _ = m.Update(runeKey('s'))
 	m = updated.(Model)
-	if m.meshServicesExpanded {
-		t.Fatalf("'s' while composing must not toggle the mesh services view")
+	if m.tab != tabChat {
+		t.Fatalf("'s' while composing must not switch tabs")
 	}
 	if m.input.Value() != "s" {
 		t.Fatalf("expected 's' to be typed into the input, got %q", m.input.Value())
 	}
 }
 
-// `m` and `s` are two different overlays over the same body area
-// (mesh STATE vs. available SERVICES) -- opening one must close the
-// other, never both stacked at once (see renderOverlay's own doc on
-// why: a second panel stacked on top would halve the already-tight
-// chat margin the pin-to-top layout keeps).
-func TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive(t *testing.T) {
+// Tabs replace the old overlays: exactly one view at a time, and each
+// key switches it outright (no toggle-off except `c`).
+func TestNormalMode_TabsSwitchExclusively(t *testing.T) {
 	m := newTestModel(t)
 
 	updated, _ := m.Update(runeKey('m'))
 	m = updated.(Model)
-	if !m.meshExpanded || m.meshServicesExpanded {
-		t.Fatalf("expected only meshExpanded after 'm', got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+	if m.tab != tabMesh {
+		t.Fatalf("expected mesh tab after 'm', got %v", m.tab)
 	}
 
 	updated, _ = m.Update(runeKey('s'))
 	m = updated.(Model)
-	if m.meshExpanded || !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to close the mesh view and open mesh services, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+	if m.tab != tabServices {
+		t.Fatalf("expected 's' to switch to services, got %v", m.tab)
 	}
 
-	updated, _ = m.Update(runeKey('m'))
+	updated, _ = m.Update(runeKey('t'))
 	m = updated.(Model)
-	if !m.meshExpanded || m.meshServicesExpanded {
-		t.Fatalf("expected 'm' to close mesh services and reopen the mesh view, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+	if m.tab != tabTeam {
+		t.Fatalf("expected 't' to switch to teams, got %v", m.tab)
+	}
+
+	updated, _ = m.Update(runeKey('r'))
+	m = updated.(Model)
+	if m.tab != tabRealm {
+		t.Fatalf("expected 'r' to switch to realms, got %v", m.tab)
 	}
 }
 
-func TestNormalMode_RTogglesRealmExpanded(t *testing.T) {
+func TestNormalMode_ISwitchesToChatFromOtherTabs(t *testing.T) {
 	m := newTestModel(t)
-	if m.realmExpanded {
-		t.Fatalf("expected realms view collapsed by default")
+	updated, _ := m.Update(runeKey('t'))
+	m = updated.(Model)
+	if m.tab != tabTeam {
+		t.Fatalf("expected teams tab after 't', got %v", m.tab)
 	}
-	updated, _ := m.Update(runeKey('r'))
+	updated, _ = m.Update(runeKey('i'))
 	m = updated.(Model)
-	if !m.realmExpanded {
-		t.Fatalf("expected 'r' to expand the realms view")
+	if m.tab != tabChat {
+		t.Fatalf("composing from the teams tab must return to chat, got %v", m.tab)
 	}
-	updated, _ = m.Update(runeKey('r'))
-	m = updated.(Model)
-	if m.realmExpanded {
-		t.Fatalf("expected a second 'r' to collapse it again")
-	}
-}
-
-// `r` joins the same mutual-exclusion group as `m`/`s` -- see
-// TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive above
-// for the pairwise version; this checks the third overlay closes both
-// of the other two, and that opening either of the other two closes it.
-func TestNormalMode_RealmsViewIsMutuallyExclusiveWithTheOtherTwoOverlays(t *testing.T) {
-	m := newTestModel(t)
-
-	updated, _ := m.Update(runeKey('m'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('r'))
-	m = updated.(Model)
-	if m.meshExpanded || !m.realmExpanded {
-		t.Fatalf("expected 'r' to close the mesh view, got meshExpanded=%v realmExpanded=%v", m.meshExpanded, m.realmExpanded)
-	}
-
-	updated, _ = m.Update(runeKey('s'))
-	m = updated.(Model)
-	if m.realmExpanded || !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to close the realms view, got realmExpanded=%v meshServicesExpanded=%v", m.realmExpanded, m.meshServicesExpanded)
+	if m.mode != ModeInsert {
+		t.Fatalf("expected insert mode after 'i', got %v", m.mode)
 	}
 }
 
@@ -273,8 +249,8 @@ func TestInsertMode_RDoesNotToggleRealmsView_TypesInstead(t *testing.T) {
 
 	updated, _ = m.Update(runeKey('r'))
 	m = updated.(Model)
-	if m.realmExpanded {
-		t.Fatalf("'r' while composing must not toggle the realms view")
+	if m.tab != tabChat {
+		t.Fatalf("'r' while composing must not switch tabs")
 	}
 	if m.input.Value() != "r" {
 		t.Fatalf("expected 'r' to be typed into the input, got %q", m.input.Value())
@@ -515,8 +491,8 @@ func TestNormalMode_EscDismissesAFinishedRealmJoinBackToTheList(t *testing.T) {
 	if m.realmJoinLatest != nil {
 		t.Fatalf("expected Esc to dismiss the finished join's status, got %+v", m.realmJoinLatest)
 	}
-	if !m.realmExpanded {
-		t.Fatalf("expected Esc to only dismiss the join status, not close the realms panel itself")
+	if m.tab != tabRealm {
+		t.Fatalf("expected Esc to only dismiss the join status, not leave the realms tab itself")
 	}
 }
 
@@ -597,7 +573,7 @@ func TestHandleAgentEvent_AppendsChatEntryAndReArms(t *testing.T) {
 // Issue #2: mode indicator, vim's own "-- MODE --" convention.
 func TestRenderStatusStrip_ShowsModeIndicator(t *testing.T) {
 	m := newTestModel(t)
-	if !strings.Contains(m.renderStatusStrip(), "-- NORMAL --") {
+	if !strings.Contains(m.renderStatusStrip(), "-- CHAT --") {
 		t.Fatalf("expected a NORMAL mode indicator, got %q", m.renderStatusStrip())
 	}
 	updated, _ := m.Update(runeKey('i'))
@@ -888,7 +864,7 @@ func TestView_MeshExpanded_StatusAnchorsToBottomEdge(t *testing.T) {
 	m := newTestModel(t)
 	m.width, m.height = 100, 30
 	m.resizeComponents()
-	m.meshExpanded = true
+	m.tab = tabMesh
 	// A short panel stack (no rooms/rings/agents) is exactly the case
 	// where natural-height stacking left empty space below the status
 	// bar instead of the bar reaching the real bottom row.
@@ -914,7 +890,7 @@ func TestView_MeshExpanded_StatusAnchorsToTopEdge(t *testing.T) {
 	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "top"})
 	m.width, m.height = 100, 30
 	m.resizeComponents()
-	m.meshExpanded = true
+	m.tab = tabMesh
 
 	view := m.View()
 	lines := strings.Split(view, "\n")
@@ -932,73 +908,12 @@ func TestView_MeshExpanded_StatusAnchorsToTopEdge(t *testing.T) {
 // line in both margins. Fixed by splitting into two disjoint halves
 // (older to the top margin, newer to the bottom) instead of taking
 // independent, possibly-overlapping windows into the same slice.
-func TestRenderMeshOverlay_ShortConversationNeverRepeatsALineInBothMargins(t *testing.T) {
-	m := newTestModel(t)
-	m.width, m.height = 90, 24
-	m.resizeComponents()
-	m.meshExpanded = true
-	m.chatEntries = []chatEntry{youChatEntry("only message")}
-	m.syncViewport()
 
-	view := m.View()
-	if got := strings.Count(view, "only message"); got != 1 {
-		t.Fatalf("expected \"only message\" to appear exactly once, got %d times:\n%s", got, view)
-	}
-}
-
-// Raf's ask, 2026-09-08: mesh view used to fully replace the chat pane;
-// now it overlays the panels on top with real conversation still visible
-// in a margin above and below ("transparency"). Found live while
-// verifying this: chatViewport.View() pads a short conversation with
-// blank filler at the bottom (anchored-top rendering, always exactly
-// chatViewport.Height lines) -- slicing THAT for the "newest lines"
-// bottom margin grabbed blank filler instead of real content. Fixed via
-// chatContentLines (the unpadded entries, mirroring syncViewport's own
-// construction) instead of the padded viewport render.
-// Pinned to the top of the body area (2026-09-08, Raf: once the panels'
-// own styling was lightened, the previous centered layout no longer
-// needed the visual balance a top+bottom margin split was providing) --
-// the panels render first, with a single margin of the newest chat lines
-// below them. Older lines (including anything from the covered middle
-// stretch of a long conversation) simply aren't shown; there's no top
-// margin at all anymore.
-func TestRenderMeshOverlay_ShowsNewestChatBelowThePanels(t *testing.T) {
-	m := newTestModel(t)
-	m.width, m.height = 90, 24
-	m.resizeComponents()
-	m.meshExpanded = true
-	for i := 0; i < 20; i++ {
-		m.chatEntries = append(m.chatEntries, youChatEntry(fmt.Sprintf("message number %d", i)))
-	}
-	m.syncViewport()
-
-	view := m.View()
-	if !strings.Contains(view, "message number 19") {
-		t.Fatalf("expected the newest chat line visible below the panels, got:\n%s", view)
-	}
-	if strings.Contains(view, "message number 0") {
-		t.Fatalf("expected the oldest chat line to be covered (no top margin anymore), got:\n%s", view)
-	}
-	if strings.Contains(view, "message number 10") {
-		t.Fatalf("expected a middle message to be covered by the panels, not visible, got:\n%s", view)
-	}
-	// The panels must actually be the first content lines of the body,
-	// not preceded by any chat.
-	lines := strings.Split(view, "\n")
-	if !strings.Contains(lines[0], "╭") {
-		t.Fatalf("expected the panel stack's own top border as the very first body line, got %q", lines[0])
-	}
-}
-
-// A terminal too short for the panels to fit AND leave any visible
-// margin falls back to the pre-overlay full-bleed behavor (the panels
-// alone, anchored to the screen edge) rather than truncating them
-// further -- they have no scroll of their own.
 func TestRenderMeshOverlay_FallsBackToFullBleedWhenNoRoomForMargin(t *testing.T) {
 	m := newTestModel(t)
 	m.width, m.height = 90, 15
 	m.resizeComponents()
-	m.meshExpanded = true
+	m.tab = tabMesh
 	m.chatEntries = []chatEntry{youChatEntry("this must not appear")}
 	m.syncViewport()
 
@@ -1069,7 +984,7 @@ func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 // Direct mesh-service invocation (macula-io/macula-lazymesh's own
 // PLAN_DIRECT_MESH_SERVICE_CALLS.md) needs a real, bounded cursor over the
 // `s` panel's rows -- Up/Down were previously unconditional no-ops whenever
-// meshServicesExpanded was true (see handleKey's own Up/Down cases before
+// tabServices was true (see handleKey's own Up/Down cases before
 // this), so there was nothing to clamp. m.meshServices is nil in
 // newTestModel (Options never sets it), which exercises the curated-catalog
 // fallback path in meshServiceEntries -- the same path a real operator with
@@ -1079,7 +994,7 @@ func TestMeshServicesPanel_CursorMovesWithinBoundsOnly(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.Update(runeKey('s')) // open the panel
 	m = updated.(Model)
-	if !m.meshServicesExpanded {
+	if m.tab != tabServices {
 		t.Fatalf("expected 's' to expand the mesh services panel")
 	}
 	entries, _ := m.meshServiceEntries()
@@ -1128,7 +1043,7 @@ func TestMeshServicesPanel_CursorMovesWithinBoundsOnly(t *testing.T) {
 // swallowed the pre-existing behavior for every OTHER mode.
 func TestUpDown_StillScrollsChatWhenNoPanelExpanded(t *testing.T) {
 	m := newTestModel(t)
-	if m.meshServicesExpanded || m.meshExpanded || m.realmExpanded {
+	if m.tab != tabChat {
 		t.Fatalf("expected no panel expanded in a fresh model")
 	}
 	// Not asserting on chatViewport's internal scroll position directly

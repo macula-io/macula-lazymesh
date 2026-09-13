@@ -47,6 +47,21 @@ type agentEventMsg agent.Event
 // both exist, and this is the actual solution to that, not a workaround.
 type Mode int
 
+// viewTab is the full-screen view shown in normal/insert mode: the chat
+// pane or one of the panels. Each key (c/m/s/r/t) switches the tab; the
+// panels are full-screen now, not overlays over a chat margin (Raf's
+// simpler-UX call, 2026-09-13: the panel IS the view, chat is just the
+// default one).
+type viewTab int
+
+const (
+	tabChat viewTab = iota
+	tabMesh
+	tabServices
+	tabRealm
+	tabTeam
+)
+
 const (
 	ModeNormal Mode = iota
 	ModeInsert
@@ -163,16 +178,13 @@ type Model struct {
 	state   meshState
 	lastErr error
 
-	mode                 Mode
-	meshExpanded         bool
-	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
-	meshServicesCursor   int  // selected row in the `s` panel's table -- clamped in handleKey's Up/Down cases, not here, since this field alone doesn't know the current entry count
-	realmExpanded        bool // `r` -- see renderRealmsOverlay
-	teamExpanded         bool // `t` -- see renderTeamOverlay
-	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
-	muted                bool
-	statusBarPosition    string // "top" or "bottom"
-	agentModel           string // see Options.AgentModel
+	mode               Mode
+	tab                viewTab
+	meshServicesCursor int  // selected row in the `s` panel's table -- clamped in handleKey's Up/Down cases, not here, since this field alone doesn't know the current entry count
+	detailsExpanded    bool // global expand/collapse for tool-call detail in chat
+	muted              bool
+	statusBarPosition  string // "top" or "bottom"
+	agentModel         string // see Options.AgentModel
 
 	// showChatter controls whether routine tool-call activity (mesh
 	// operations) reaches the conversation pane at all. Off by default:
@@ -685,28 +697,28 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, DefaultKeyMap.Normal):
 		// Esc's only meaning in Normal mode: dismiss a finished/errored
 		// join's status (renderRealmJoinProgress) back to the plain
-		// membership list, without leaving the `r` panel itself. A no-op
+		// membership list, without leaving the `r` tab itself. A no-op
 		// everywhere else -- Normal mode has nothing else for Esc to do.
-		if m.realmExpanded && m.realmJoinLatest != nil {
+		if m.tab == tabRealm && m.realmJoinLatest != nil {
 			m.realmJoinLatest = nil
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Insert):
-		// `i` means something different depending on which overlay is
+		// `i` means something different depending on which tab is
 		// showing: compose a message to the agent normally, type a
-		// realm name while the `r` panel is open, or type arguments to
-		// directly invoke the `s` panel's selected procedure -- but only
-		// when there's a membership list/curated row to act on, not
-		// while a previous join's QR/status is still showing (dismiss
-		// that with Esc first, so a stray `i` can never fire a second
-		// join on top of one still in flight), and not while a mesh
-		// service call is already in flight (same reasoning).
-		if m.realmExpanded && m.realmJoinLatest == nil {
+		// realm name on the `r` tab, or type arguments to directly
+		// invoke the `s` tab's selected procedure -- but only when
+		// there's a membership list/curated row to act on, not while a
+		// previous join's QR/status is still showing (dismiss that with
+		// Esc first, so a stray `i` can never fire a second join on top
+		// of one still in flight), and not while a mesh service call is
+		// already in flight (same reasoning).
+		if m.tab == tabRealm && m.realmJoinLatest == nil {
 			m.mode = ModeRealmJoin
 			m.resizeComponents()
 			return m, m.realmJoinInput.Focus()
 		}
-		if m.meshServicesExpanded && m.meshServices != nil && !m.meshServiceCallInFlight {
+		if m.tab == tabServices && m.meshServices != nil && !m.meshServiceCallInFlight {
 			entries, _ := m.meshServiceEntries()
 			if m.meshServicesCursor < len(entries) {
 				m.meshServiceCallProcedure = entries[m.meshServicesCursor].Procedure()
@@ -715,58 +727,41 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.meshServiceCallInput.Focus()
 			}
 		}
+		// Composing happens on the chat tab: pressing `i` from any
+		// other tab switches there first, so the text lands somewhere
+		// visible.
+		m.tab = tabChat
 		m.mode = ModeInsert
 		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
 		return m, m.input.Focus()
-	case key.Matches(msg, DefaultKeyMap.ToggleMesh):
+	case key.Matches(msg, DefaultKeyMap.TabMesh):
 		// Mutually exclusive with the other overlays, not stacked --
 		// more than one showing at once would halve (or worse) the chat
-		// margin pin-to-top already keeps tight, for concerns (mesh
-		// STATE vs. available SERVICES vs. realm MEMBERSHIP vs. TEAM
-		// activity) that are never all what an operator wants to see in
-		// the same glance.
-		m.meshExpanded = !m.meshExpanded
-		if m.meshExpanded {
-			m.meshServicesExpanded = false
-			m.realmExpanded = false
-			m.teamExpanded = false
-		}
+		// one viewTab at a time, never stacked: the panels are
+		// full-screen now, and each key switches the tab outright
+		// (Raf's simpler-UX call, 2026-09-13) -- there is no toggle-off
+		// back to chat except `c` itself.
+		m.tab = tabMesh
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleMeshServices):
-		m.meshServicesExpanded = !m.meshServicesExpanded
-		if m.meshServicesExpanded {
-			m.meshExpanded = false
-			m.realmExpanded = false
-			m.teamExpanded = false
-		} else {
-			// Reopening starts at the top, not wherever the cursor was
-			// left -- same reasoning as realmJoinLatest getting cleared
-			// when the `r` panel closes (see ToggleRealm's own case):
-			// stale position from last time isn't what "open the panel"
-			// should mean.
-			m.meshServicesCursor = 0
-		}
+	case key.Matches(msg, DefaultKeyMap.TabServices):
+		m.tab = tabServices
+		// Re-entering starts at the top, not wherever the cursor was
+		// left: stale position from last time isn't what "open the
+		// panel" should mean.
+		m.meshServicesCursor = 0
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleRealm):
-		m.realmExpanded = !m.realmExpanded
-		if m.realmExpanded {
-			m.meshExpanded = false
-			m.meshServicesExpanded = false
-			m.teamExpanded = false
-		} else {
-			// Leaving the panel entirely also dismisses whatever join
-			// status was showing -- reopening starts from the plain
-			// membership list, not a stale QR/error from last time.
-			m.realmJoinLatest = nil
-		}
+	case key.Matches(msg, DefaultKeyMap.TabRealm):
+		m.tab = tabRealm
+		// Entering the panel dismisses whatever join status was showing
+		// last time -- reopening starts from the plain membership list,
+		// not a stale QR/error.
+		m.realmJoinLatest = nil
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleTeam):
-		m.teamExpanded = !m.teamExpanded
-		if m.teamExpanded {
-			m.meshExpanded = false
-			m.meshServicesExpanded = false
-			m.realmExpanded = false
-		}
+	case key.Matches(msg, DefaultKeyMap.TabTeam):
+		m.tab = tabTeam
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.TabChat):
+		m.tab = tabChat
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleQuiet):
 		m.muted = !m.muted
@@ -800,30 +795,30 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// point of keeping the list at all.
 		return m.openErrorPopup(len(m.errorHistory) - 1), nil
 	case key.Matches(msg, DefaultKeyMap.Up):
-		if m.meshServicesExpanded {
+		if m.tab == tabServices {
 			if m.meshServicesCursor > 0 {
 				m.meshServicesCursor--
 			}
-		} else if !m.meshExpanded && !m.realmExpanded {
+		} else if m.tab == tabChat {
 			m.chatViewport.LineUp(1)
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Down):
-		if m.meshServicesExpanded {
+		if m.tab == tabServices {
 			entries, _ := m.meshServiceEntries()
 			if m.meshServicesCursor < len(entries)-1 {
 				m.meshServicesCursor++
 			}
-		} else if !m.meshExpanded && !m.realmExpanded {
+		} else if m.tab == tabChat {
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
 	}
 
-	// Page keys scroll the chat pane a viewport at a time when no
-	// overlay is up -- the viewport's own key handling, forwarded rather
-	// than re-implemented (same reason the mouse wheel is forwarded).
-	if !m.meshExpanded && !m.realmExpanded && !m.meshServicesExpanded {
+	// Page keys scroll the chat pane a viewport at a time -- the
+	// viewport's own key handling, forwarded rather than re-implemented
+	// (same reason the mouse wheel is forwarded).
+	if m.tab == tabChat {
 		switch msg.String() {
 		case "pgup", "pgdown", "home", "end":
 			var cmd tea.Cmd
@@ -1142,15 +1137,15 @@ func (m Model) View() string {
 	}
 
 	var body string
-	switch {
-	case m.meshExpanded:
-		body = m.renderMeshOverlay()
-	case m.meshServicesExpanded:
-		body = m.renderMeshServicesOverlay()
-	case m.realmExpanded:
-		body = m.renderRealmsOverlay()
-	case m.teamExpanded:
-		body = m.renderTeamOverlay()
+	switch m.tab {
+	case tabMesh:
+		body = m.padToBodyHeight(m.renderExpandedMesh())
+	case tabServices:
+		body = m.padToBodyHeight(panelStyle.Render(m.renderMeshServices()))
+	case tabRealm:
+		body = m.padToBodyHeight(panelStyle.Render(m.renderRealms()))
+	case tabTeam:
+		body = m.padToBodyHeight(panelStyle.Render(m.renderTeam()))
 	default:
 		body = m.chatViewport.View()
 	}
@@ -1177,7 +1172,8 @@ func (m Model) statusLines() []string {
 }
 
 // renderModeIndicator follows vim's own bottom-of-screen convention
-// (`-- INSERT --` etc.).
+// (`-- INSERT --` etc.); in normal mode on a non-chat tab it names the
+// tab, since the tab IS what the screen is showing.
 func (m Model) renderModeIndicator() string {
 	switch m.mode {
 	case ModeInsert:
@@ -1189,7 +1185,18 @@ func (m Model) renderModeIndicator() string {
 	case ModeMeshServiceCall:
 		return statusStripStyle.Render("-- MESH CALL --")
 	default:
-		return dimStyle.Render("-- NORMAL --")
+		switch m.tab {
+		case tabMesh:
+			return statusStripStyle.Render("-- MESH --")
+		case tabServices:
+			return statusStripStyle.Render("-- SERVICES --")
+		case tabRealm:
+			return statusStripStyle.Render("-- REALMS --")
+		case tabTeam:
+			return statusStripStyle.Render("-- TEAMS --")
+		default:
+			return dimStyle.Render("-- CHAT --")
+		}
 	}
 }
 
@@ -1215,21 +1222,21 @@ func (m Model) renderHintLines() []string {
 	case ModeMeshServiceCall:
 		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: call "+m.meshServiceCallProcedure)}
 	default:
-		// `i` and `esc` both mean something different depending on which
-		// overlay is showing -- see handleKey's own Insert and Normal
-		// cases -- so the hint names the actual action, not a fixed label.
+		// `i` means something different depending on which tab is
+		// showing -- see handleKey's own Insert case -- so the hint
+		// names the actual action, not a fixed label.
 		insertHint := "i: compose"
-		if m.realmExpanded {
+		if m.tab == tabRealm {
 			if m.realmJoinLatest != nil {
 				insertHint = "esc: dismiss"
 			} else {
 				insertHint = "i: join a realm"
 			}
 		}
-		if m.meshServicesExpanded && m.meshServices != nil {
+		if m.tab == tabServices && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  t: team view  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
+		return []string{mode + "  " + dimStyle.Render("c: chat  m: mesh  s: services  r: realms  t: teams  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 
@@ -1306,15 +1313,15 @@ func (m Model) renderExpandedMesh() string {
 	return b.String()
 }
 
-// padToBodyHeight fills content with trailing blank lines up to the same
-// body height resizeComponents already targets for the chat viewport
-// (m.height - len(statusLines()) - 2, the "-2" being the input line plus
-// one line of slack) -- anchors a shorter block to the screen edge
-// (issue #12) rather than leaving the status bar wherever the block's own
+// padToBodyHeight fills content with trailing blank lines up to the
+// body height the layout already reserves (status block + the chatbox's
+// measured rendered height + one line of slack, the same reservation
+// resizeComponents uses) -- anchors a shorter tab to the screen edge
+// (issue #12) rather than leaving the status bar wherever the tab's own
 // natural height happened to end. Never truncates -- a block taller than
 // the available body height is left as-is.
 func (m Model) padToBodyHeight(content string) string {
-	target := m.height - len(m.statusLines()) - 2
+	target := m.height - len(m.statusLines()) - m.input.RenderedHeight() - 1
 	if target < 1 {
 		return content
 	}
@@ -1325,87 +1332,14 @@ func (m Model) padToBodyHeight(content string) string {
 	return content + strings.Repeat("\n", target-lines)
 }
 
-// renderOverlay composites ANY panel content over the chat pane rather
-// than replacing it outright: real conversation lines stay visible in a
-// margin below the panel(s) ("transparency", per Raf 2026-09-08) instead
-// of the panel eating the entire body area edge to edge. Terminals can't
-// do true alpha blending, so this is the practical equivalent -- the
-// actual chat text, not a blank or dimmed backdrop (dimming an
-// already-styled multi-segment chat line correctly would need
-// re-emitting its ANSI state, not just wrapping it -- tried live
-// 2026-09-08, a naive Faint() wrap breaks at the line's own first inner
-// reset code, undimming everything after it).
-//
-// Pinned to the top of the body area (Raf, 2026-09-08, once the panels'
-// own styling was lightened enough that this stopped reading as a
-// centered popup): previously centered vertically with a margin split
-// above and below, which needed a "don't repeat the same short
-// conversation's lines in both margins" special case entirely of its
-// own. Pinning to the top removes that whole class of problem -- there's
-// only one margin now, below the panel, showing the newest chat lines
-// (the panel effectively "covers" everything older, the same way a card
-// dropped onto a scrolled page would).
-//
-// Shared by renderMeshOverlay (`m`) and renderMeshServicesOverlay (`s`,
-// 2026-09-08) -- they differ only in what panelContent is, not in how it
-// sits over the chat pane; extracted rather than duplicated once a
-// second overlay needed the identical layout.
-func (m Model) renderOverlay(panelContent string) string {
-	panel := strings.Split(panelContent, "\n")
-	// The body height, with the SAME reservation resizeComponents uses
-	// (status block + the chatbox's measured rendered height + slack) --
-	// the old "-2" assumed a one-line input and let a taller chatbox
-	// push the overlay past the terminal's bottom row.
-	target := m.height - len(m.statusLines()) - m.input.RenderedHeight() - 1
-	if target < 1 || len(panel) >= target {
-		// No room for a visible margin either way -- the panel alone
-		// already fills (or exceeds) the available height. Falls back to
-		// the old full-bleed behavior rather than truncating it further;
-		// it has no scroll of its own.
-		return m.padToBodyHeight(strings.Join(panel, "\n"))
-	}
-
-	chat := m.chatContentLines()
-	margin := target - len(panel)
-
-	lines := make([]string, 0, target)
-	lines = append(lines, panel...)
-	lines = append(lines, chatMarginLines(chat, len(chat)-margin, len(chat))...)
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) renderMeshOverlay() string {
-	return m.renderOverlay(m.renderExpandedMesh())
-}
-
-// renderMeshServicesOverlay is the `s` panel's own overlay, same layout
-// as renderMeshOverlay (`m`) but showing internal/meshservices' curated
-// catalog instead of Rooms/Pending rings/Presence -- a deliberately
-// separate toggle, not a 4th panel merged into that stack: mesh STATE
-// (who's here, what rooms exist) and available SERVICES (what the agent
-// can call on the mesh) are different questions, and the existing
-// stack's own pin-to-top layout already has just enough margin left for
-// the chat pane without a 4th panel competing for it.
-func (m Model) renderMeshServicesOverlay() string {
-	return m.renderOverlay(panelStyle.Render(m.renderMeshServices()))
-}
-
-// renderRealmsOverlay is the `r` panel's own overlay, same shape as `m`/
-// `s` and mutually exclusive with both.
-func (m Model) renderRealmsOverlay() string {
-	return m.renderOverlay(panelStyle.Render(m.renderRealms()))
-}
-
 // chatContentLines is the chat pane's actual content, one entry per
 // rendered line -- deliberately NOT chatViewport.View()'s output, which
 // pads a short conversation with blank filler lines at the bottom
 // (anchored-top rendering, always exactly chatViewport.Height lines
-// regardless of how much real content there is). Using that padded
-// output here made renderMeshOverlay's bottom margin -- meant to be the
-// newest chat lines -- slice into that blank filler instead, found live
-// 2026-09-08 rendering an actual conversation. Mirrors syncViewport's own
-// construction exactly, so it's always consistent with what the normal
-// (non-overlay) chat pane would show.
+// regardless of how much real content there is). The selection overlay
+// maps viewport rows onto real content through this. Mirrors
+// syncViewport's own construction exactly, so it's always consistent
+// with what the chat tab would show.
 func (m Model) chatContentLines() []string {
 	lines := make([]string, 0, len(m.chatEntries))
 	for i := range m.chatEntries {
@@ -1416,33 +1350,6 @@ func (m Model) chatContentLines() []string {
 		return nil
 	}
 	return strings.Split(joined, "\n")
-}
-
-// chatMarginLines returns lines[max(from,0):min(to,len(lines))],
-// blank-padded up to the requested (to-from) count when the chat pane
-// itself doesn't have that many lines yet (a fresh or short
-// conversation). from may be negative (the caller computing a "last N"
-// window on a short slice) -- handled the same as an out-of-range clamp,
-// not a special case.
-func chatMarginLines(lines []string, from, to int) []string {
-	want := to - from
-	if want <= 0 {
-		return nil
-	}
-	if from < 0 {
-		from = 0
-	}
-	if to > len(lines) {
-		to = len(lines)
-	}
-	out := make([]string, 0, want)
-	if from < to {
-		out = append(out, lines[from:to]...)
-	}
-	for len(out) < want {
-		out = append(out, "")
-	}
-	return out
 }
 
 func shortID(id string) string {

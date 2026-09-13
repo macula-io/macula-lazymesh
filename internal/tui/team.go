@@ -6,21 +6,15 @@ import (
 	"strings"
 )
 
-// The `t` panel: the team board. Where the `m` panel answers "what is
-// the mesh state right now" and `s` answers "what can be called", the
-// team board answers "who is working on what" -- the coordination the
-// mesh already carries in its message kinds, extracted and presented as
-// one view: open lanes, open handoffs, recent results, help broadcasts,
-// and the roster. Everything here is derived from the same meshState
-// snapshot the other panels use; no extra fetching, and the derivation
-// helpers are pure functions so the board's logic is testable without a
-// running terminal.
-
-// renderTeamOverlay is the `t` panel's overlay, same shape as `m`/`s`/`r`
-// and mutually exclusive with them.
-func (m Model) renderTeamOverlay() string {
-	return m.renderOverlay(panelStyle.Render(m.renderTeam()))
-}
+// renderTeam renders the `t` tab's content: the team board. Where the
+// `m` tab answers "what is the mesh state right now" and `s` answers
+// "what can be called", the team board answers "who is working on what"
+// -- the coordination the mesh already carries in its message kinds,
+// extracted and presented as one view: open lanes, open handoffs,
+// recent results, help broadcasts, and the roster. Everything here is
+// derived from the same meshState snapshot the other panels use; no
+// extra fetching, and the derivation helpers are pure functions so the
+// board's logic is testable without a running terminal.
 
 func (m Model) renderTeam() string {
 	var b strings.Builder

@@ -100,10 +100,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 // chatOnScreen reports whether the plain chat pane is the surface being
 // shown — the only surface a selection may start on.
 func (m Model) chatOnScreen() bool {
-	if m.meshExpanded || m.realmExpanded || m.meshServicesExpanded {
-		return false
-	}
-	return m.mode == ModeNormal || m.mode == ModeInsert
+	return m.tab == tabChat && (m.mode == ModeNormal || m.mode == ModeInsert)
 }
 
 // finishSelection copies the selected visible rows to the clipboard and

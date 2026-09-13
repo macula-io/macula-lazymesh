@@ -84,12 +84,12 @@ func TestAutoPop_WaitsWhileComposing(t *testing.T) {
 
 // Same reasoning as composing: the operator is reading something they
 // asked for. Hold it rather than overwrite it, and never drop it.
-func TestAutoPop_WaitsWhileAnOverlayIsOpen(t *testing.T) {
+func TestAutoPop_WaitsWhileAnotherTabIsOpen(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.handleKey(keyPress("m")) // mesh overlay
+	updated, _ := m.handleKey(keyPress("m")) // mesh tab
 	m = updated.(Model)
-	if !m.meshExpanded {
-		t.Fatal("expected the mesh overlay open for this test")
+	if m.tab != tabMesh {
+		t.Fatal("expected the mesh tab open for this test")
 	}
 
 	m, _ = m.handleRefresh(refreshFailure(realRefreshError))
@@ -97,10 +97,10 @@ func TestAutoPop_WaitsWhileAnOverlayIsOpen(t *testing.T) {
 		t.Fatal("an error must not cover an overlay the operator opened")
 	}
 
-	updated, _ = m.handleKey(keyPress("m")) // close it
+	updated, _ = m.handleKey(keyPress("c")) // back to the chat tab
 	m = updated.(Model)
 	if m.mode != ModeErrorPopup {
-		t.Fatal("the held error should appear once the overlay is closed")
+		t.Fatal("the held error should appear once the operator is back on the chat tab")
 	}
 }
 

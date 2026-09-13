@@ -551,8 +551,8 @@ func displayHandle(ev realmjoin.Event) string {
 // plain text, same as macula-mcp's own realm.ts qrTerminal renders in
 // its own tool output, so it's safe to drop straight into this bordered
 // panel), then whatever the terminal outcome was once it resolves.
-// Esc (handleKey's own ToggleRealm-closing and Normal-mode-within-the-
-// panel paths) clears m.realmJoinLatest to get back to the plain list.
+// Esc (handleKey's Normal-mode-within-the-tab path) clears
+// m.realmJoinLatest to get back to the plain list.
 func (m Model) renderRealmJoinProgress(ev realmjoin.Event) string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Realms -- joining %s", ev.Realm)) + "\n")
