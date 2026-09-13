@@ -1149,13 +1149,22 @@ func (m Model) View() string {
 	default:
 		body = m.chatViewport.View()
 	}
-	input := m.renderInputLine()
-
+	// The compose box belongs to the chat tab only: on a panel tab the
+	// panel is the whole body (full-screen, Raf 2026-09-13), and `i`
+	// switches back to chat before composing anyway.
 	var screen string
 	if m.statusBarPosition == "top" {
-		screen = strings.Join([]string{status, body, input}, "\n")
+		screen = strings.Join([]string{status, body}, "\n")
 	} else {
-		screen = strings.Join([]string{body, input, status}, "\n")
+		screen = strings.Join([]string{body, status}, "\n")
+	}
+	if m.tab == tabChat {
+		input := m.renderInputLine()
+		if m.statusBarPosition == "top" {
+			screen = status + "\n" + body + "\n" + input
+		} else {
+			screen = body + "\n" + input + "\n" + status
+		}
 	}
 	return m.overlaySelection(screen)
 }
@@ -1314,14 +1323,19 @@ func (m Model) renderExpandedMesh() string {
 }
 
 // padToBodyHeight fills content with trailing blank lines up to the
-// body height the layout already reserves (status block + the chatbox's
-// measured rendered height + one line of slack, the same reservation
-// resizeComponents uses) -- anchors a shorter tab to the screen edge
-// (issue #12) rather than leaving the status bar wherever the tab's own
-// natural height happened to end. Never truncates -- a block taller than
-// the available body height is left as-is.
+// body height the layout reserves: the full screen minus the status
+// block and one line of slack -- and minus the compose box's measured
+// height on the chat tab, the only tab where it renders (resizeComponents
+// reserves the same amount for the chat viewport). Anchors a shorter
+// tab to the screen edge (issue #12) rather than leaving the status bar
+// wherever the tab's own natural height happened to end. Never
+// truncates -- a block taller than the available body height is left
+// as-is.
 func (m Model) padToBodyHeight(content string) string {
-	target := m.height - len(m.statusLines()) - m.input.RenderedHeight() - 1
+	target := m.height - len(m.statusLines()) - 1
+	if m.tab == tabChat {
+		target -= m.input.RenderedHeight()
+	}
 	if target < 1 {
 		return content
 	}

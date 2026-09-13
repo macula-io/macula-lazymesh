@@ -1,6 +1,9 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func msg(id, kind, inReplyTo, from, petname, text string, sentAt int64) roomMessage {
 	return roomMessage{
@@ -98,5 +101,29 @@ func TestAgo_RendersCompact(t *testing.T) {
 		if got := ago(c.seconds); got != c.want {
 			t.Fatalf("ago(%d) = %q, want %q", c.seconds, got, c.want)
 		}
+	}
+}
+
+// TestTeamTabIsFullScreen pins the full-screen contract: no chat content,
+// no compose box on the teams tab -- the panel is the whole body.
+func TestTeamTabIsFullScreen(t *testing.T) {
+	m := newTestModel(t)
+	m.width, m.height = 90, 24
+	m.resizeComponents()
+	for i := 0; i < 5; i++ {
+		m.chatEntries = append(m.chatEntries, youChatEntry("chat line never shown here"))
+	}
+	m.syncViewport()
+	m.tab = tabTeam
+
+	view := m.View()
+	if strings.Contains(view, "chat line never shown here") {
+		t.Fatalf("chat content leaked onto the teams tab:\n%s", view)
+	}
+	if strings.Contains(view, "message the agent") {
+		t.Fatalf("the compose box rendered on the teams tab:\n%s", view)
+	}
+	if !strings.Contains(view, "Team") {
+		t.Fatalf("the team board is missing:\n%s", view)
 	}
 }
