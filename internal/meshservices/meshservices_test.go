@@ -50,7 +50,7 @@ const testRealm = "ABB81B5A614B63551B400B810648C0C8A78EFAD845442630C94B46CC95D2F
 func TestListTools_OnlyIncludesCuratedAndDiscoveredProcedures(t *testing.T) {
 	fake := &fakeMCP{discoveryResponses: []string{
 		fmt.Sprintf(`{"records":[
-			{"procedure_advertisement":{"realm":%q,"procedure":"hecate_agora.get_posts_page"}},
+			{"procedure_advertisement":{"realm":%q,"procedure":"mcl-rag/answer_query"}},
 			{"procedure_advertisement":{"realm":%q,"procedure":"some_random.unrelated_procedure"}}
 		]}`, testRealm, testRealm),
 	}}
@@ -63,14 +63,19 @@ func TestListTools_OnlyIncludesCuratedAndDiscoveredProcedures(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("expected exactly 1 tool (only the curated+discovered one), got %d: %+v", len(tools), tools)
 	}
-	if tools[0].Name != "mesh_service_hecate_agora_get_posts_page" {
+	if tools[0].Name != "mesh_service_mcl_rag_answer_query" {
 		t.Fatalf("unexpected tool name: %s", tools[0].Name)
 	}
 }
 
-func TestListTools_StripsLeadingUnderscoreSlashPrefix(t *testing.T) {
+// An advertisement matches only by the exact Org/Name the provider signed
+// (mcl_om advertises Org/Name, and the realm authorizes the org, D25). The
+// 10.x catalog stripped a leading "_/" so dotted names matched; with Org/Name
+// that would let an org-less "_/..." record stand in for a real org's
+// procedure, so it is refused, not stripped.
+func TestListTools_OrgLessRecordDoesNotStandInForTheOrg(t *testing.T) {
 	fake := &fakeMCP{discoveryResponses: []string{
-		discoveryRecordFor(testRealm, "_/hecate_agora.get_posts_page"),
+		discoveryRecordFor(testRealm, "_/mcl-rag/answer_query"),
 	}}
 	src := New(fake)
 
@@ -78,8 +83,47 @@ func TestListTools_StripsLeadingUnderscoreSlashPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
-	if len(tools) != 1 {
-		t.Fatalf("expected the \"_/\"-prefixed record to still match after stripping, got %d tools", len(tools))
+	if len(tools) != 0 {
+		t.Fatalf("an \"_/\"-prefixed record must not match mcl-rag/answer_query, got %d tools", len(tools))
+	}
+}
+
+// The retired hecate services' dotted names match nothing any more: a record
+// still advertising one is not the mcl successor.
+func TestListTools_RetiredDottedNameMatchesNothing(t *testing.T) {
+	fake := &fakeMCP{discoveryResponses: []string{
+		discoveryRecordFor(testRealm, "hecate-rag.answer_query"),
+	}}
+	src := New(fake)
+
+	tools, err := src.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("hecate-rag.answer_query must not match, got %d tools", len(tools))
+	}
+}
+
+// The macula 12 wire carries text as text, so a result is handed back exactly
+// as the service sent it: a hex-looking string ("6f6b" is "ok") is data, not
+// something to decode.
+func TestCallToolRaw_ResultPassesThroughUnchanged(t *testing.T) {
+	const sent = `{"result":{"status":"6f6b","chunk_id":"09b03dfac1d29ea6"}}`
+	fake := &fakeMCP{
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
+		callToolFunc:       func(string, map[string]any) (string, error) { return sent, nil },
+	}
+	src := New(fake)
+	if _, err := src.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	got, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", `{}`)
+	if err != nil {
+		t.Fatalf("CallToolRaw returned error: %v", err)
+	}
+	if got != sent {
+		t.Fatalf("expected the result unchanged, got %s", got)
 	}
 }
 
@@ -104,7 +148,7 @@ func TestListTools_UndiscoveredCuratedProcedureIsNotListed(t *testing.T) {
 // within the test's own short runtime.
 func TestListTools_DiscoversOnceNeverAgain(t *testing.T) {
 	fake := &fakeMCP{discoveryResponses: []string{
-		discoveryRecordFor(testRealm, "hecate_agora.get_posts_page"),
+		discoveryRecordFor(testRealm, "mcl-rag/answer_query"),
 	}}
 	src := New(fake)
 
@@ -131,7 +175,7 @@ func TestListTools_DiscoversOnceNeverAgain(t *testing.T) {
 // but not be spammed by it repeating on a source that never re-checks.
 func TestListTools_LogsDiscoveryExactlyOnce(t *testing.T) {
 	fake := &fakeMCP{discoveryResponses: []string{
-		discoveryRecordFor(testRealm, "hecate_agora.get_posts_page"),
+		discoveryRecordFor(testRealm, "mcl-rag/answer_query"),
 	}}
 	src := New(fake)
 	var buf bytes.Buffer
@@ -151,13 +195,13 @@ func TestListTools_LogsDiscoveryExactlyOnce(t *testing.T) {
 
 func TestCallToolRaw_RoutesWithCorrectRealmAndProcedure(t *testing.T) {
 	fake := &fakeMCP{
-		discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")},
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
 		callToolFunc: func(name string, args map[string]any) (string, error) {
 			if name != "mesh_call" {
 				t.Fatalf("expected mesh_call, got %s", name)
 			}
-			if args["procedure"] != "hecate_agora.get_posts_page" {
-				t.Fatalf("expected procedure hecate_agora.get_posts_page, got %v", args["procedure"])
+			if args["procedure"] != "mcl-rag/answer_query" {
+				t.Fatalf("expected procedure mcl-rag/answer_query, got %v", args["procedure"])
 			}
 			if args["realm"] != testRealm {
 				t.Fatalf("expected realm %s, got %v", testRealm, args["realm"])
@@ -170,7 +214,7 @@ func TestCallToolRaw_RoutesWithCorrectRealmAndProcedure(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	result, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", `{}`)
+	result, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", `{}`)
 	if err != nil {
 		t.Fatalf("CallToolRaw returned error: %v", err)
 	}
@@ -189,7 +233,7 @@ func TestCallToolRaw_UnknownToolIsAnError(t *testing.T) {
 func TestCallToolRaw_RetriesOnceOnTransientFailure(t *testing.T) {
 	attempts := 0
 	fake := &fakeMCP{
-		discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")},
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
 		callToolFunc: func(name string, args map[string]any) (string, error) {
 			attempts++
 			if attempts == 1 {
@@ -203,7 +247,7 @@ func TestCallToolRaw_RetriesOnceOnTransientFailure(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	result, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}")
+	result, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}")
 	if err != nil {
 		t.Fatalf("expected the retry to succeed, got error: %v", err)
 	}
@@ -218,7 +262,7 @@ func TestCallToolRaw_RetriesOnceOnTransientFailure(t *testing.T) {
 func TestCallToolRaw_TransportFailureRetriesOnceThenGivesUp(t *testing.T) {
 	attempts := 0
 	fake := &fakeMCP{
-		discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")},
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
 		callToolFunc: func(name string, args map[string]any) (string, error) {
 			attempts++
 			return "", fmt.Errorf("connection: read stream: Application error 0x0 (remote): closed")
@@ -229,7 +273,7 @@ func TestCallToolRaw_TransportFailureRetriesOnceThenGivesUp(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	if _, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}"); err == nil {
+	if _, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}"); err == nil {
 		t.Fatalf("expected an error when both the call and its retry fail")
 	}
 	if attempts != 2 {
@@ -245,7 +289,7 @@ func TestCallToolRaw_TransportFailureRetriesOnceThenGivesUp(t *testing.T) {
 func TestCallToolRaw_ApplicationErrorIsNotRetried(t *testing.T) {
 	attempts := 0
 	fake := &fakeMCP{
-		discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")},
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
 		callToolFunc: func(name string, args map[string]any) (string, error) {
 			attempts++
 			return "", fmt.Errorf("mesh_call failed: macula-ts: CALL failed: unknown_error (bolt4 code 15): query_text_or_vector_required (bolt4=unknown_error, retryable=true)")
@@ -256,7 +300,7 @@ func TestCallToolRaw_ApplicationErrorIsNotRetried(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	if _, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}"); err == nil {
+	if _, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}"); err == nil {
 		t.Fatalf("expected an error to propagate")
 	}
 	if attempts != 1 {
@@ -267,7 +311,7 @@ func TestCallToolRaw_ApplicationErrorIsNotRetried(t *testing.T) {
 func TestCallToolRaw_PassesExplicitTimeout(t *testing.T) {
 	var gotTimeout any
 	fake := &fakeMCP{
-		discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")},
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
 		callToolFunc: func(name string, args map[string]any) (string, error) {
 			gotTimeout = args["timeout_ms"]
 			return `{"result":"ok"}`, nil
@@ -277,7 +321,7 @@ func TestCallToolRaw_PassesExplicitTimeout(t *testing.T) {
 	if _, err := src.ListTools(context.Background()); err != nil {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
-	if _, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}"); err != nil {
+	if _, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}"); err != nil {
 		t.Fatalf("CallToolRaw returned error: %v", err)
 	}
 	if gotTimeout != callTimeoutMS {
@@ -291,7 +335,7 @@ func TestCallToolRaw_PassesExplicitTimeout(t *testing.T) {
 func TestListTools_IgnoresRecordsUnderAnyOtherRealm(t *testing.T) {
 	spoofedRealm := "0000000000000000000000000000000000000000000000000000000000000000"
 	fake := &fakeMCP{discoveryResponses: []string{
-		discoveryRecordFor(spoofedRealm, "hecate_agora.get_posts_page"),
+		discoveryRecordFor(spoofedRealm, "mcl-rag/answer_query"),
 	}}
 	src := New(fake)
 
@@ -310,8 +354,8 @@ func TestListTools_IgnoresRecordsUnderAnyOtherRealm(t *testing.T) {
 // be used, regardless of which one appears first or last in the dump.
 func TestListTools_RealRecordWinsOverSpoofedRecordRegardlessOfOrder(t *testing.T) {
 	spoofedRealm := "0000000000000000000000000000000000000000000000000000000000000000"
-	real := fmt.Sprintf(`{"procedure_advertisement":{"realm":%q,"procedure":"hecate_agora.get_posts_page"}}`, testRealm)
-	spoofed := fmt.Sprintf(`{"procedure_advertisement":{"realm":%q,"procedure":"hecate_agora.get_posts_page"}}`, spoofedRealm)
+	real := fmt.Sprintf(`{"procedure_advertisement":{"realm":%q,"procedure":"mcl-rag/answer_query"}}`, testRealm)
+	spoofed := fmt.Sprintf(`{"procedure_advertisement":{"realm":%q,"procedure":"mcl-rag/answer_query"}}`, spoofedRealm)
 
 	// spoofed record LAST -- the exact ordering that broke the old
 	// last-one-wins map-based logic.
@@ -329,7 +373,7 @@ func TestListTools_RealRecordWinsOverSpoofedRecordRegardlessOfOrder(t *testing.T
 	if _, err := src.ListTools(context.Background()); err != nil {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
-	if _, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}"); err != nil {
+	if _, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}"); err != nil {
 		t.Fatalf("CallToolRaw returned error: %v", err)
 	}
 	if calledRealm != testRealm {
@@ -360,7 +404,7 @@ func TestIsTransportError(t *testing.T) {
 	application := []string{
 		"mesh_call failed: macula-ts: CALL failed: unknown_error (bolt4 code 15): query_text_or_vector_required (bolt4=unknown_error, retryable=true)",
 		"missing_entity_id",
-		"decode arguments for mesh_service_hecate_agora_get_posts_page: invalid character",
+		"decode arguments for mesh_service_mcl_rag_answer_query: invalid character",
 	}
 	for _, msg := range application {
 		if isTransportError(fmt.Errorf("%s", msg)) {
@@ -388,7 +432,7 @@ func TestFixedWindowLimiter_AllowsUpToMaxThenRefusesUntilReset(t *testing.T) {
 func TestCallToolRaw_RefusesOverBudget(t *testing.T) {
 	attempts := 0
 	fake := &fakeMCP{
-		discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")},
+		discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")},
 		callToolFunc: func(name string, args map[string]any) (string, error) {
 			attempts++
 			return `{"result":"ok"}`, nil
@@ -400,10 +444,10 @@ func TestCallToolRaw_RefusesOverBudget(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	if _, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}"); err != nil {
+	if _, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}"); err != nil {
 		t.Fatalf("first call should be within budget, got error: %v", err)
 	}
-	if _, err := src.CallToolRaw(context.Background(), "mesh_service_hecate_agora_get_posts_page", "{}"); err == nil {
+	if _, err := src.CallToolRaw(context.Background(), "mesh_service_mcl_rag_answer_query", "{}"); err == nil {
 		t.Fatalf("expected the second call to be refused once the budget is exhausted")
 	}
 	if attempts != 1 {
@@ -436,7 +480,7 @@ func TestSnapshot_BeforeDiscoveryEveryEntryIsUncheckedNotLive(t *testing.T) {
 }
 
 func TestSnapshot_AfterDiscoveryMarksOnlyTheDiscoveredProcedureLive(t *testing.T) {
-	fake := &fakeMCP{discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")}}
+	fake := &fakeMCP{discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")}}
 	src := New(fake)
 	if _, err := src.ListTools(context.Background()); err != nil {
 		t.Fatalf("ListTools: %v", err)
@@ -450,8 +494,8 @@ func TestSnapshot_AfterDiscoveryMarksOnlyTheDiscoveredProcedureLive(t *testing.T
 	for _, e := range entries {
 		if e.Live {
 			liveCount++
-			if e.Procedure() != "hecate_agora.get_posts_page" {
-				t.Fatalf("expected only hecate_agora.get_posts_page marked live, also got %s", e.Procedure())
+			if e.Procedure() != "mcl-rag/answer_query" {
+				t.Fatalf("expected only mcl-rag/answer_query marked live, also got %s", e.Procedure())
 			}
 		}
 	}
@@ -463,7 +507,7 @@ func TestSnapshot_AfterDiscoveryMarksOnlyTheDiscoveredProcedureLive(t *testing.T
 // Snapshot's own read must be independent of ListTools's caching --
 // calling it twice must not re-trigger discovery or change the result.
 func TestSnapshot_CalledTwiceMakesNoAdditionalMeshCalls(t *testing.T) {
-	fake := &fakeMCP{discoveryResponses: []string{discoveryRecordFor(testRealm, "hecate_agora.get_posts_page")}}
+	fake := &fakeMCP{discoveryResponses: []string{discoveryRecordFor(testRealm, "mcl-rag/answer_query")}}
 	src := New(fake)
 	if _, err := src.ListTools(context.Background()); err != nil {
 		t.Fatalf("ListTools: %v", err)

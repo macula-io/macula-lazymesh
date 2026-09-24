@@ -1165,17 +1165,17 @@ func (f *fakeMeshServiceCallSource) CallToolRaw(_ context.Context, name, argumen
 
 func TestStartMeshServiceCall_CallsCallToolRawWithExactArgsAndWrapsTheResult(t *testing.T) {
 	fake := &fakeMeshServiceCallSource{result: `{"ok":true}`}
-	cmd := startMeshServiceCall(fake, "hecate-rag.search_chunks_semantic", `{"query":"test"}`)
+	cmd := startMeshServiceCall(fake, "mcl-rag/search_chunks_semantic", `{"query":"test"}`)
 	msg := cmd()
 
-	if fake.gotName != "hecate-rag.search_chunks_semantic" || fake.gotArgsJSON != `{"query":"test"}` {
+	if fake.gotName != "mcl-rag/search_chunks_semantic" || fake.gotArgsJSON != `{"query":"test"}` {
 		t.Fatalf("expected CallToolRaw called with exactly the typed procedure and arguments, got (%q, %q)", fake.gotName, fake.gotArgsJSON)
 	}
 	result, ok := msg.(meshServiceCallResultMsg)
 	if !ok {
 		t.Fatalf("expected a meshServiceCallResultMsg, got %T", msg)
 	}
-	if result.procedure != "hecate-rag.search_chunks_semantic" || result.result != `{"ok":true}` || result.err != nil {
+	if result.procedure != "mcl-rag/search_chunks_semantic" || result.result != `{"ok":true}` || result.err != nil {
 		t.Fatalf("expected the result msg to carry the procedure and CallToolRaw's own return, got %+v", result)
 	}
 }
@@ -1197,7 +1197,7 @@ func TestHandleMeshServiceCallResult_SuccessAndErrorRenderDifferentEntryKinds(t 
 	m := newTestModel(t)
 	m.meshServiceCallInFlight = true
 
-	updated, cmd := m.Update(meshServiceCallResultMsg{procedure: "hecate-rag.get_source_by_id", result: "the result"})
+	updated, cmd := m.Update(meshServiceCallResultMsg{procedure: "mcl-rag/get_source_by_id", result: "the result"})
 	m = updated.(Model)
 	if cmd != nil {
 		t.Fatalf("expected no further command after a result")
@@ -1212,7 +1212,7 @@ func TestHandleMeshServiceCallResult_SuccessAndErrorRenderDifferentEntryKinds(t 
 		t.Fatalf("expected the tool field marked [direct], got %q", m.chatEntries[0].tool)
 	}
 
-	updated, _ = m.Update(meshServiceCallResultMsg{procedure: "hecate-rag.get_source_by_id", err: fmt.Errorf("boom")})
+	updated, _ = m.Update(meshServiceCallResultMsg{procedure: "mcl-rag/get_source_by_id", err: fmt.Errorf("boom")})
 	m = updated.(Model)
 	if len(m.chatEntries) != 2 || m.chatEntries[1].kind != chatError {
 		t.Fatalf("expected a second, chatError entry for the failure, got %+v", m.chatEntries)
@@ -1243,7 +1243,7 @@ func TestModeMeshServiceCall_SubmitWithNoProcedureCapturedDoesNothing(t *testing
 func TestModeMeshServiceCall_EscCancelsAndClearsTheDraft(t *testing.T) {
 	m := newTestModel(t)
 	m.mode = ModeMeshServiceCall
-	m.meshServiceCallProcedure = "hecate-rag.search_chunks_semantic"
+	m.meshServiceCallProcedure = "mcl-rag/search_chunks_semantic"
 	m.meshServiceCallInput.SetValue(`{"query":"x"}`)
 
 	updated, cmd := m.Update(typeKey(tea.KeyEsc))

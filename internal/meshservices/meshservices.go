@@ -35,7 +35,7 @@ import (
 // this itself: "Coverage depends on that station's own view of the DHT,"
 // and DHT records are not signature- or membership-verified. Concretely:
 // anyone, no realm membership required, can publish a
-// procedure_advertisement for e.g. hecate-rag.search_chunks_semantic
+// procedure_advertisement for e.g. mcl-rag/search_chunks_semantic
 // under the public all-zero realm and serve it themselves; whenever a
 // 60s discovery refresh happened to sort that record after the real one,
 // every lazymesh instance on the mesh would send real corpus queries to
@@ -192,18 +192,17 @@ func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 
 	// Only records under pinnedRealm are ever considered at all -- a
 	// record under any other realm is invisible to this package, not
-	// merely deprioritized. Some records' decoded procedure field carries
-	// a leading "_/" path segment before the domain.method name (an
-	// artifact of how the advertisement's URI is split, not something
-	// mesh_call's own procedure parameter accepts); stripped so lookups
-	// match Curated's plain "domain.method" form.
+	// merely deprioritized. Within it, a record matches only by the exact
+	// Org/Name its provider advertised. The 10.x catalog stripped a leading
+	// "_/" (an org-less advertisement) so dotted names matched; kept with
+	// Org/Name, that would let an org-less "_/mcl-rag/..." record stand in
+	// for mcl-rag's own, so it is not done.
 	discovered := make(map[string]bool, len(parsed.Records))
 	for _, r := range parsed.Records {
 		if !strings.EqualFold(r.ProcedureAdvertisement.Realm, pinnedRealm) {
 			continue
 		}
-		proc := strings.TrimPrefix(r.ProcedureAdvertisement.Procedure, "_/")
-		discovered[proc] = true
+		discovered[r.ProcedureAdvertisement.Procedure] = true
 	}
 
 	var tools []mcpclient.Tool
@@ -277,7 +276,9 @@ func (s *Source) CallToolRaw(ctx context.Context, name string, argumentsJSON str
 	if err != nil {
 		return "", fmt.Errorf("mesh_call %s: %w", procedure, err)
 	}
-	return decodeHexASCII(result), nil
+	// Handed back exactly as the service sent it: the macula 12 wire
+	// carries text as text, so nothing here decodes hex.
+	return result, nil
 }
 
 // transportErrorSubstrings are the failure modes mesh_call's own tool

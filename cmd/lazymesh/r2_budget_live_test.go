@@ -27,14 +27,14 @@ import (
 // t.Logf output for the exact number each run, and
 // TestLiveR2ToolSelectionMeshServicesEnabledStillFitsRegressionCeiling
 // for the opted-in (mesh_services_enabled: true) case, which still
-// carries the full 16-tool catalog and needs its own, separate, higher
+// carries the full mesh_service_* catalog and needs its own, separate, higher
 // ceiling. Generous headroom above the measured number, not a tight
 // bound: this is a regression guard, not a precision target.
 const maxAcceptableFixedPrefixTokens = 1500
 
 // maxAcceptableFixedPrefixTokensMeshServicesEnabled is the same regression
 // ceiling for the opted-in case (mesh_services_enabled: true), which still
-// carries the full 16-tool mesh_service_* catalog on top of the 7 default
+// carries the full mesh_service_* catalog (16 tools then, 12 since agora left) on top of the 7 default
 // macula-mcp tools -- R2's own pre-close-out measurement was ~1,864 tokens
 // for that combination (down from ~7,931 before R2's other trims).
 const maxAcceptableFixedPrefixTokensMeshServicesEnabled = 3000
@@ -90,7 +90,7 @@ func TestLiveR2FixedPrefixStaysUnderRegressionCeiling(t *testing.T) {
 
 // TestLiveR2ToolSelectionMeshServicesEnabledStillFitsRegressionCeiling is
 // the opted-in counterpart (2026-09-07, R2's close-out): an operator who
-// sets mesh_services_enabled: true still carries the full 16-tool
+// sets mesh_services_enabled: true still carries the full
 // mesh_service_* catalog, so it needs its own, separate, higher ceiling
 // (maxAcceptableFixedPrefixTokensMeshServicesEnabled) rather than being
 // silently exempt from a regression guard just because the default case

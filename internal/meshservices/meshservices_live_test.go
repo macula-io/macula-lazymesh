@@ -35,11 +35,10 @@ func TestLiveSource_DiscoversAndCallsARealCuratedProcedure(t *testing.T) {
 		t.Fatalf("expected at least one curated procedure to be currently discovered on the live mesh")
 	}
 
-	// hecate_agora.get_posts_page is documented (and previously
-	// live-verified by hand) to work with an empty args object -- the
-	// least likely of the curated set to fail on argument shape alone,
-	// so a failure here is more likely about discovery/routing than args.
-	const wantTool = "mesh_service_hecate_agora_get_posts_page"
+	// mcl-rag/list_sources_page takes no required args, so with an empty
+	// args object it is the least likely of the curated set to fail on
+	// argument shape alone: a failure here is about discovery or routing.
+	const wantTool = "mesh_service_mcl_rag_list_sources_page"
 	found := false
 	for _, tool := range tools {
 		if tool.Name == wantTool {
@@ -48,7 +47,7 @@ func TestLiveSource_DiscoversAndCallsARealCuratedProcedure(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Skipf("hecate_agora.get_posts_page not currently discovered (mesh state can vary) -- got %d other curated tools instead", len(tools))
+		t.Skipf("mcl-rag/list_sources_page not currently discovered (mesh state can vary) -- got %d other curated tools instead", len(tools))
 	}
 
 	result, err := src.CallToolRaw(ctx, wantTool, `{}`)

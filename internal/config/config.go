@@ -168,9 +168,9 @@ type Config struct {
 	// style change they didn't ask for; one who wants it sets this true
 	// in their own config.yaml.
 	ExpressiveStyle bool `yaml:"expressive_style,omitempty"`
-	// MeshServicesEnabled gates internal/meshservices' 16 curated
-	// mesh_service_* tools (hecate-rag/hecate_agora/hecate_graph corpus
-	// search) entirely -- off by default, per Fable's own R2 review
+	// MeshServicesEnabled gates internal/meshservices' 12 curated
+	// mesh_service_* tools (mcl-rag corpus search, mcl-graph resolution
+	// and narration) entirely -- off by default, per Fable's own R2 review
 	// (2026-09-07): it explicitly rejected trimming this catalog further
 	// or exposing it per-turn, and instead accepted gating it session-
 	// static, at startup, because a room-chat-only agent will usually
@@ -182,7 +182,7 @@ type Config struct {
 	// cost deliberately. Same conservative posture as LocalTools and
 	// ExpressiveStyle: a capability nobody asked for is never silently
 	// on. See internal/meshservices/catalog.go's own doc comment for what
-	// the 16 procedures are and why each one was curated as read-safe.
+	// the 12 procedures are and why each one was curated as read-safe.
 	MeshServicesEnabled bool `yaml:"mesh_services_enabled,omitempty"`
 }
 

@@ -12,8 +12,8 @@ import (
 const NVIDIADefaultBaseURL = "https://integrate.api.nvidia.com/v1"
 
 // NVIDIADefaultModel is the same model id this workspace's other
-// NVIDIA-backed services already default to (hecate-spartan, the
-// hecate-graph narrator, ...) -- not picked independently for lazymesh.
+// NVIDIA-backed services already defaulted to (the graph narrator among
+// them) -- not picked independently for lazymesh.
 // NVIDIA model ids are namespaced (org/model); a bare id 404s, and a
 // retired one 410s, so this is verified against a live, already-working
 // caller rather than guessed.

@@ -182,10 +182,10 @@ no in-flight LLM call gets interrupted for it.
 Beyond the conversational mesh primitives, the agent can also call real
 mesh RPC procedures discovered live via `mesh_find_records_by_type` —
 `internal/meshservices`'s `Curated` list (see `catalog.go`) currently
-covers read-only search/knowledge-graph/forum capabilities from a live
-mesh survey: `hecate-rag` (semantic search, source/chunk lookups),
-`hecate_agora` (forum post search/paging), `hecate_graph` (entity/link
-resolution and narration). Only individually named, curated, currently-
+covers the read-only procedures of `mcl-rag` (semantic search, source and
+chunk lookups, reranking) and `mcl-graph` (entity and link resolution and
+narration), matched by the exact `Org/Name` each service advertises under
+the pinned `io.macula` realm. Only individually named, curated, currently-
 discovered procedures ever become tools — never a generic "call any mesh
 procedure" tool, which would reopen the same risk the tool allowlist
 exists to close. Discovery resolves once per process lifetime (not on a

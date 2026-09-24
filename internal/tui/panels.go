@@ -409,8 +409,8 @@ func (m Model) renderMeshServices() string {
 	// procedure a row is about more than the full text of its
 	// description; a truncated description is still useful, a truncated
 	// procedure name can hide which of several similarly-prefixed
-	// procedures (e.g. hecate-rag.search_chunks_semantic vs.
-	// hecate-rag.get_source_by_id) a row actually is.
+	// procedures (e.g. mcl-rag/search_chunks_semantic vs.
+	// mcl-rag/get_source_by_id) a row actually is.
 	widths := columnWidths(inner, []int{-1, 11, 40})
 	t := table.New(
 		table.WithColumns([]table.Column{
