@@ -11,11 +11,8 @@ import "strings"
 // conversation can be steered by arbitrary mesh peers.
 //
 // First sourced from a live mesh survey, 2026-09-06 (a teammate's
-// investigation, io.macula realm ABB81B5A...FCD1), of the hecate services;
-// since 2026-09-24 it names their macula 12 successors, mcl-rag and
-// mcl-graph, which serve the same procedures under Org/Name. hecate-agora's
-// four forum views were dropped then: agora was retired with no mcl
-// successor, and a view of a service that exists nowhere can only fail.
+// investigation, io.macula realm ABB81B5A...FCD1). It names mcl-rag and
+// mcl-graph, which serve these procedures under Org/Name.
 // Deliberately excluded, org by org:
 //   - mcl-rag's ingest_document/add_knowledge/upload_knowledge/
 //     prune_chunks/schedule_reembed/retire_document/embed_document/

@@ -23,9 +23,7 @@ func TestCuratedProcedure_Procedure(t *testing.T) {
 	}
 }
 
-// The whole catalog, named: the read-only procedures of the mcl services that
-// succeeded hecate-rag and hecate-graph. hecate-agora was retired with no mcl
-// successor, so its views are gone rather than pointed at nothing.
+// The whole catalog, named: the read-only procedures of mcl-rag and mcl-graph.
 func TestCurated_IsExactlyTheReadOnlyMclProcedures(t *testing.T) {
 	want := []string{
 		"mcl-graph/narrate_entity",
