@@ -203,6 +203,10 @@ func realSpawnSession(ctx context.Context, opts SpawnOptions) (mcpSession, error
 	if err != nil {
 		return nil, fmt.Errorf("connect to macula-mcp (%s): %w", strings.Join(command, " "), err)
 	}
+	if err := checkServerVersion(session.InitializeResult()); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
 	return session, nil
 }
 

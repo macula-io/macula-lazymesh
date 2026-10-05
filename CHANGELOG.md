@@ -5,6 +5,15 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An old macula-mcp is refused at startup, by name.** On Node older than
+  `@macula-io/mcp`'s engines floor (>= 24.18.1), npx resolved 0.16.0 without a
+  word and lazymesh ran a macula-mcp that cannot reach the fleet (#17). The
+  version macula-mcp reports in its MCP handshake must now be 0.38.0 or later
+  (handshake v5, the fleet's wire), on every spawn and respawn; otherwise
+  lazymesh stops, naming the version it got and pointing at `node --version`.
+
 ### Changed
 
 - **The mesh service tools call the mcl-\* services**, the macula 12
