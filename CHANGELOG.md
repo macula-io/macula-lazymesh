@@ -5,6 +5,8 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-05
+
 ### Fixed
 
 - **An old macula-mcp is refused at startup, by name.** On Node older than
