@@ -49,10 +49,9 @@ contact policy, config, workspace) alone by default — add `--purge`/
 
 ## Status
 
-**Phases 1, 2, and 3 implemented.** See
-[`plans/PLAN_LAZYMESH_MVP.md`](plans/PLAN_LAZYMESH_MVP.md) for the full
-scope — why this exists, what it deliberately excludes, the architecture,
-and the phased plan.
+Released as v0.1.0. Planned work is tracked in
+[issues labelled `plan`](https://github.com/macula-io/macula-lazymesh/issues?q=is%3Aissue+is%3Aopen+label%3Aplan);
+ideas not yet approved carry `proposal`.
 
 ## What this is, in one line
 

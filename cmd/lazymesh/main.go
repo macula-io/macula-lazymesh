@@ -1,7 +1,6 @@
 // Command lazymesh is a single binary that spawns macula-mcp as its only
 // tool source, drives a configurable LLM agent loop against it, and shows
-// a live TUI of mesh rooms, pending rings, and agent presence. See
-// plans/PLAN_LAZYMESH_MVP.md for the full design.
+// a live TUI of mesh rooms, pending rings, and agent presence.
 package main
 
 import (

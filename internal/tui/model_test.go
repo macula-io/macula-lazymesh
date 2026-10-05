@@ -1066,8 +1066,7 @@ func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 	}
 }
 
-// Direct mesh-service invocation (macula-io/macula-lazymesh's own
-// PLAN_DIRECT_MESH_SERVICE_CALLS.md) needs a real, bounded cursor over the
+// Direct mesh-service invocation needs a real, bounded cursor over the
 // `s` panel's rows -- Up/Down were previously unconditional no-ops whenever
 // meshServicesExpanded was true (see handleKey's own Up/Down cases before
 // this), so there was nothing to clamp. m.meshServices is nil in

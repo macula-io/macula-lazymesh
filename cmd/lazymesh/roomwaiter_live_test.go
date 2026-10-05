@@ -4,8 +4,8 @@
 // against the real mesh, the actual claim this design exists to fix --
 // that a long mesh_say/mesh_wait_room wait blocks human input from being
 // seen at all under the old design, and that moving the wait into
-// loop-owned goroutines fixes it. See plans/SPIKE_LAZYMESH_ROOM_WAITERS.md
-// (the spike report, macula-io/macula-lazymesh#14) for the original
+// loop-owned goroutines fixes it. See the spike report,
+// macula-io/macula-lazymesh#14, for the original
 // write-up these numbers came from.
 package main
 

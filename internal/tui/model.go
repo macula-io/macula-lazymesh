@@ -59,13 +59,12 @@ const (
 	// compose input) must never share state.
 	ModeRealmJoin
 	// ModeMeshServiceCall: typing raw JSON arguments to invoke the `s`
-	// panel's currently-selected curated procedure directly -- see
-	// plans/PLAN_DIRECT_MESH_SERVICE_CALLS.md for why this exists (a
-	// non-AI door into the same meshservices.Source the agent's own tool
+	// panel's currently-selected curated procedure directly. Why it exists:
+	// a non-AI door into the same meshservices.Source the agent's own tool
 	// chain calls through, so an operator who already knows which
 	// procedure they want never has to pay mesh_services_enabled's
 	// fixed-prefix token cost just to have the AI decide to call it on
-	// their behalf). Same reasoning as ModeRealmJoin for being its own
+	// their behalf. Same reasoning as ModeRealmJoin for being its own
 	// mode with its own draft input, not a repurposed ModeInsert.
 	ModeMeshServiceCall
 	// ModeErrorPopup: reading the last error in full, wrapped and

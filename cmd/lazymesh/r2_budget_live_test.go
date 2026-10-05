@@ -83,7 +83,7 @@ func TestLiveR2FixedPrefixStaysUnderRegressionCeiling(t *testing.T) {
 	}
 
 	if fixedPrefixTokens > maxAcceptableFixedPrefixTokens {
-		t.Errorf("fixed prefix grew to ~%d tokens, over the %d-token regression ceiling -- see R2's own writeup (plans/PLAN_LAZYMESH_MVP.md) before adding more default-allowlisted tools or reverting a trim",
+		t.Errorf("fixed prefix grew to ~%d tokens, over the %d-token regression ceiling -- see R2's writeup in git history (git log -- plans/PLAN_LAZYMESH_MVP.md) before adding more default-allowlisted tools or reverting a trim",
 			fixedPrefixTokens, maxAcceptableFixedPrefixTokens)
 	}
 }

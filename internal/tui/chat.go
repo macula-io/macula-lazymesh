@@ -91,7 +91,7 @@ func youChatEntry(text string) chatEntry {
 }
 
 // directMeshServiceCallEntry converts a meshServiceCallResultMsg (a human,
-// not the AI, invoked this -- see plans/PLAN_DIRECT_MESH_SERVICE_CALLS.md)
+// not the AI, invoked this)
 // into a chat line. "[direct]" in the tool field, not a separate
 // chatEntryKind: reuses chatToolCall/chatError's own existing render
 // cases and truncateForChat convention exactly, distinguished only by that

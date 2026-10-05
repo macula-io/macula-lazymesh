@@ -1,7 +1,6 @@
 // Package sessionhost hosts lazymesh agent sessions as supervised Ergo
-// processes — the actor-core walking skeleton behind
-// plans/PLAN_LAZYMESH_AGENT_QUALITY_GAPS.md decision D4 (Ergo, conditions
-// from RESEARCH_ERGO_FOR_LAZYMESH.md's GO-WITH-CONDITIONS verdict).
+// processes — the actor-core walking skeleton (Ergo was adopted with
+// conditions; remaining agent-quality gaps: macula-io/macula-lazymesh#19).
 //
 // What this increment proves, and nothing more:
 //
