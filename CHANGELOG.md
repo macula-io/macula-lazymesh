@@ -5,6 +5,15 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ## [Unreleased]
 
+### Security
+
+- **The control socket serves only controllers of the same user.** Each
+  connection is checked against the kernel's record of who connected
+  (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS); a peer of another uid,
+  root included, is closed before the handshake. Windows has no peer
+  credentials on unix sockets, so `--socket` and `--headless` now refuse to
+  start there instead of running unchecked (#19).
+
 ## [0.1.0] - 2026-10-05
 
 ### Fixed

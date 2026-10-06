@@ -9,9 +9,13 @@
 //
 // Security posture: the socket file is created with mode 0600 in a
 // user-owned directory, so only this user's processes can connect — the
-// isolation TCP cannot provide. SO_PEERCRED peer-uid verification is the
-// next hardening step, recorded in the gaps plan rather than left as a
-// comment here.
+// isolation TCP cannot provide. Every accepted connection is then checked
+// against the kernel's record of who connected (SO_PEERCRED on Linux,
+// LOCAL_PEERCRED on macOS): a peer whose uid is not this process's uid is
+// closed before it receives the handshake, so a loosened file mode or a
+// socket path in a shared directory does not open the control plane. On a
+// platform with no peer credentials (Windows) Start refuses to create the
+// socket. Controllers run as the same user as the session, never via sudo.
 //
 // Wire protocol (one JSON object per line, both ways):
 //
@@ -41,6 +45,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -69,6 +74,10 @@ type Server struct {
 	// schedule arms a deferred prompt; nil means not wired.
 	schedule func(at time.Time, prompt string) error
 	session  sessionInfo
+
+	// ownUID is the effective uid a connecting peer must have.
+	ownUID int
+	log    *log.Logger
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -128,12 +137,26 @@ type connection struct {
 // events, never the session's cadence.
 const outBuffer = 64
 
+// errPeerCredUnsupported is what peerUID returns on a platform whose
+// unix sockets carry no peer credentials.
+var errPeerCredUnsupported = errors.New("frontend: peer credentials are not available on this platform")
+
 // Start creates the socket, starts the accept loop, and returns. The
 // parent directory must exist and be writable by this user; the socket
-// file is created 0600 and removed by Close.
+// file is created 0600 and removed by Close. Only peers running as this
+// process's uid are served.
 func Start(opts Options) (*Server, error) {
+	return startFor(opts, os.Geteuid())
+}
+
+// startFor is Start with the uid a peer must have made explicit, so a
+// test can stand in for a peer of another user.
+func startFor(opts Options, ownUID int) (*Server, error) {
 	if opts.Path == "" {
 		return nil, fmt.Errorf("frontend: socket path is required")
+	}
+	if peerCredsSupported == 0 {
+		return nil, fmt.Errorf("frontend: control socket refused on this platform: no peer credentials, so another local user could drive this session: %w", errPeerCredUnsupported)
 	}
 	ln, err := net.Listen("unix", opts.Path)
 	if err != nil {
@@ -154,6 +177,8 @@ func Start(opts Options) (*Server, error) {
 		approve:   opts.Approve,
 		schedule:  opts.Schedule,
 		session:   sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
+		ownUID:    ownUID,
+		log:       opts.Log,
 		ln:        ln,
 		conns:     make(map[net.Conn]*connection),
 		shutCh:    make(chan struct{}),
@@ -164,6 +189,20 @@ func Start(opts Options) (*Server, error) {
 		opts.Log.Printf("frontend: control socket on %s (mode 0600)", opts.Path)
 	}
 	return s, nil
+}
+
+// admit reports whether a freshly accepted connection may be served: its
+// peer must run as this process's uid. A peer whose credentials cannot be
+// read is refused, never assumed to be ours.
+func (s *Server) admit(conn net.Conn) error {
+	uid, err := peerUID(conn)
+	if err != nil {
+		return err
+	}
+	if uid != s.ownUID {
+		return fmt.Errorf("frontend: refused a controller running as uid %d (this session runs as uid %d)", uid, s.ownUID)
+	}
+	return nil
 }
 
 // Shutdown is closed exactly once, when a controller sends a shutdown
@@ -198,6 +237,13 @@ func (s *Server) accept() {
 		conn, err := s.ln.Accept()
 		if err != nil {
 			return // listener closed
+		}
+		if err := s.admit(conn); err != nil {
+			if s.log != nil {
+				s.log.Printf("%v", err)
+			}
+			conn.Close()
+			continue
 		}
 		c := &connection{out: make(chan []byte, outBuffer), conn: conn}
 		s.mu.Lock()

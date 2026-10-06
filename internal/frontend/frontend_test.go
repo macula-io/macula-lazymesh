@@ -313,3 +313,73 @@ func TestScheduleControlMessage(t *testing.T) {
 		t.Fatalf("expected an error reply for a malformed time, got %v", line)
 	}
 }
+
+// TestPeerUIDIsTheConnectingProcess pins the credential read itself: a
+// controller dialled from this test process reports this process's uid.
+func TestPeerUIDIsTheConnectingProcess(t *testing.T) {
+	if peerCredsSupported == 0 {
+		t.Skip("this platform reports no peer credentials")
+	}
+	path := filepath.Join(t.TempDir(), "cred.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	client, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	server := <-accepted
+	defer server.Close()
+
+	uid, err := peerUID(server)
+	if err != nil {
+		t.Fatalf("peerUID: %v", err)
+	}
+	if uid != os.Geteuid() {
+		t.Fatalf("peer uid = %d, want %d", uid, os.Geteuid())
+	}
+}
+
+// TestControllerOfAnotherUserIsRefused proves the peer-uid check: when
+// the session runs as a uid other than the controller's, the controller
+// is closed before it learns the session, and nothing it sends reaches
+// the driver.
+func TestControllerOfAnotherUserIsRefused(t *testing.T) {
+	if peerCredsSupported == 0 {
+		t.Skip("this platform reports no peer credentials")
+	}
+	input := make(chan string, 8)
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	s, err := startFor(Options{
+		Path:      path,
+		Input:     input,
+		Events:    make(chan agent.Event, 8),
+		SessionID: "test-session",
+		Model:     "testmodel/1",
+	}, os.Geteuid()+1)
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c := dial(t, path)
+	c.conn.Write([]byte(`{"type":"input","text":"from another user"}` + "\n"))
+	if raw, err := c.r.ReadBytes('\n'); err == nil {
+		t.Fatalf("a refused controller received %q", raw)
+	}
+	select {
+	case got := <-input:
+		t.Fatalf("a refused controller's input reached the driver: %q", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
