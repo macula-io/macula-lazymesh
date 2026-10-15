@@ -5,6 +5,8 @@ package frontend
 import (
 	"fmt"
 	"net"
+	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -35,4 +37,13 @@ func peerUID(conn net.Conn) (int, error) {
 		return 0, fmt.Errorf("frontend: SO_PEERCRED: %w", credErr)
 	}
 	return int(cred.Uid), nil
+}
+
+// ownerUID returns the uid that owns the file fi describes.
+func ownerUID(fi os.FileInfo) int {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return -1
+	}
+	return int(st.Uid)
 }

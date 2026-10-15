@@ -19,7 +19,9 @@ goreleaser from a `v*` tag; this file records what each one changes.
 - **The control socket serves only controllers of the same user.** Each
   connection is checked against the kernel's record of who connected
   (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS); a peer of another uid,
-  root included, is closed before the handshake. Windows has no peer
+  root's own processes included, is closed before the handshake. The default
+  socket directory must be private to this user (owned by it, no group or
+  other access), so another user cannot swap the socket a controller dials. Windows has no peer
   credentials on unix sockets, so `--socket` and `--headless` now refuse to
   start there instead of running unchecked (#19).
 - **Agents started from different configs no longer share one contact

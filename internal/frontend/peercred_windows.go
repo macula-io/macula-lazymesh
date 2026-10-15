@@ -1,6 +1,9 @@
 package frontend
 
-import "net"
+import (
+	"net"
+	"os"
+)
 
 // peerCredsSupported: this platform reports no peer credentials on unix sockets.
 const peerCredsSupported = 0
@@ -11,4 +14,10 @@ const peerCredsSupported = 0
 // not build, rather than run the control plane unchecked.
 func peerUID(net.Conn) (int, error) {
 	return 0, errPeerCredUnsupported
+}
+
+// ownerUID has no uid to report on Windows, so no directory counts as
+// private and DefaultSocketPath returns "".
+func ownerUID(os.FileInfo) int {
+	return -1
 }

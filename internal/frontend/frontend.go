@@ -12,8 +12,11 @@
 // isolation TCP cannot provide. Every accepted connection is then checked
 // against the kernel's record of who connected (SO_PEERCRED on Linux,
 // LOCAL_PEERCRED on macOS): a peer whose uid is not this process's uid is
-// closed before it receives the handshake, so a loosened file mode or a
-// socket path in a shared directory does not open the control plane. On a
+// closed before it receives the handshake, so a loosened file mode does
+// not open the session. That protects the session, not the controller:
+// in a directory another user can write to, they could replace the socket
+// and receive what a controller sends, so DefaultSocketPath only uses a
+// private directory. On a
 // platform with no peer credentials (Windows) Start refuses to create the
 // socket. Controllers run as the same user as the session, never via sudo.
 //
@@ -462,12 +465,23 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 // DefaultSocketPath resolves the control socket's conventional location:
 // $XDG_RUNTIME_DIR first (the user's private runtime dir), then a
 // per-user directory under /tmp. The file itself is 0600 either way.
+//
+// The directory must be private: a real directory (not a symlink) owned
+// by this user with no group or other permissions. Another user who
+// created /tmp/lazymesh-<uid> first, or any directory they can write to,
+// could replace the socket after Start; the peer-uid check keeps them out
+// of the session, but a controller dialling the path would then talk to
+// them. "" means no private directory was found.
 func DefaultSocketPath(sessionID string) string {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	if dir == "" {
 		dir = filepath.Join(os.TempDir(), fmt.Sprintf("lazymesh-%d", os.Getuid()))
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 != 0 || ownerUID(fi) != os.Getuid() {
 		return ""
 	}
 	return filepath.Join(dir, sessionID+".sock")

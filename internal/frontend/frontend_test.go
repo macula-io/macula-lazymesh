@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -389,12 +392,38 @@ func TestControllerOfAnotherUserIsRefused(t *testing.T) {
 
 	c := dial(t, path)
 	c.conn.Write([]byte(`{"type":"input","text":"from another user"}` + "\n"))
-	if raw, err := c.r.ReadBytes('\n'); err == nil {
-		t.Fatalf("a refused controller received %q", raw)
+	// Closed with the controller's line unread: EOF, or a reset when the
+	// kernel still held that line.
+	if raw, err := c.r.ReadBytes('\n'); err != io.EOF && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("a refused controller should see the connection closed, got %q, %v", raw, err)
 	}
 	select {
 	case got := <-input:
 		t.Fatalf("a refused controller's input reached the driver: %q", got)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestDefaultSocketPathRefusesASharedDirectory: the default socket goes
+// only into a directory this user owns and nobody else can enter. One
+// another user can write to lets them replace the socket after Start and
+// receive everything a controller sends (Fable, #19).
+func TestDefaultSocketPathRefusesASharedDirectory(t *testing.T) {
+	private := t.TempDir()
+	if err := os.Chmod(private, 0o700); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", private)
+	if got, want := DefaultSocketPath("s1"), filepath.Join(private, "s1.sock"); got != want {
+		t.Fatalf("private dir: path = %q, want %q", got, want)
+	}
+
+	shared := t.TempDir()
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", shared)
+	if got := DefaultSocketPath("s1"); got != "" {
+		t.Fatalf("shared dir: path = %q, want refusal", got)
 	}
 }
