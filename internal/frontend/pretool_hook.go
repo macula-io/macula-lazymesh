@@ -15,9 +15,10 @@ import (
 // answering must not hang a turn forever.
 const hookTimeout = 2 * time.Minute
 
-// errHookLost is what every call gets after the hook's controller went
-// away without unhooking, until a controller registers the hook again.
-var errHookLost = errors.New("the pre_tool hook's controller disconnected without unhook; tool calls are refused until a controller registers the hook again")
+// errHookLost is what every call gets while the hook is required but held
+// by nobody: its controller went away without unhooking, or (with
+// pre_tool_hook_required) none has hooked since start.
+var errHookLost = errors.New("the pre_tool hook is held by no controller (its controller disconnected without unhook, or none has hooked since start); tool calls are refused until a controller registers the hook")
 
 // PreToolHook is the control socket's pre-tool gate (G8). A controller
 // registers it with {"type":"hook","event":"pre_tool"}; from then on every
@@ -46,9 +47,14 @@ type hookAnswer struct {
 	err    error
 }
 
-// NewPreToolHook returns a hook nobody has registered: calls pass.
-func NewPreToolHook() *PreToolHook {
-	return &PreToolHook{pending: make(map[string]chan hookAnswer)}
+// NewPreToolHook returns a hook nobody has registered. Not required,
+// calls pass until a controller hooks; required, the hook starts
+// as if its controller had dropped, so every call is refused until the
+// first controller hooks. Required closes the window between start (or a
+// restart) and the policy process connecting, in which a headless agent
+// would otherwise run its first turns ungated.
+func NewPreToolHook(required bool) *PreToolHook {
+	return &PreToolHook{pending: make(map[string]chan hookAnswer), lost: required}
 }
 
 // Decide is the session's agent.Gate.

@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -188,7 +189,7 @@ func TestClientSayCollectsPendingRings(t *testing.T) {
 // pre_tool decides each call from inside Say, and its decision reaches
 // the session's gate.
 func TestClientHookPreToolAnswersDuringATurn(t *testing.T) {
-	hook := frontend.NewPreToolHook()
+	hook := frontend.NewPreToolHook(false)
 	path := filepath.Join(t.TempDir(), "ctrl.sock")
 	events := make(chan agent.Event, 8)
 	s, err := frontend.Start(frontend.Options{
@@ -236,5 +237,51 @@ func TestClientHookPreToolAnswersDuringATurn(t *testing.T) {
 	}
 	if err := c.Unhook(ctx); err != nil {
 		t.Fatalf("unhook: %v", err)
+	}
+}
+
+// TestClientServeHookAnswersOutsideSay: a policy process that never calls
+// Say still decides every call, as a headless agent's mesh-triggered
+// turns need (Fable on G8).
+func TestClientServeHookAnswersOutsideSay(t *testing.T) {
+	hook := frontend.NewPreToolHook(true)
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	s, err := frontend.Start(frontend.Options{
+		Path: path, Input: make(chan string, 8), Events: make(chan agent.Event, 8),
+		SessionID: "sdk-test", Model: "deepseek/test", PreToolHook: hook,
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c, err := Dial(context.Background(), path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.HookPreTool(ctx, func(tool, args string) (bool, string) { return tool == "mesh_say", "only mesh_say" }); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	serveCtx, stop := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- c.ServeHook(serveCtx) }()
+
+	if allow, _, err := hook.Decide(context.Background(), "mesh_say", "{}"); !allow || err != nil {
+		t.Fatalf("mesh_say: allow=%v err=%v", allow, err)
+	}
+	if allow, reason, _ := hook.Decide(context.Background(), "mesh_join_room", "{}"); allow || reason != "only mesh_say" {
+		t.Fatalf("mesh_join_room: allow=%v reason=%q", allow, reason)
+	}
+	stop()
+	select {
+	case err := <-served:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("ServeHook ended with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeHook did not stop on ctx cancel")
 	}
 }

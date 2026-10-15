@@ -17,7 +17,18 @@ goreleaser from a `v*` tag; this file records what each one changes.
   session makes (`pre_tool` → `hook_answer`, with a reason on denial),
   ahead of the ask list. It fails closed on timeout, interrupt, or the
   controller disconnecting without `unhook`. One controller holds it at a
-  time. Go SDK: `Client.HookPreTool` and `Client.Unhook` (#19).
+  time. `pre_tool_hook_required: true` refuses every tool call from start
+  until the first controller hooks. Go SDK: `Client.HookPreTool`,
+  `Client.ServeHook` (answers every turn's requests, not only `Say`'s) and
+  `Client.Unhook` (#19).
+
+### Fixed
+
+- A controller disconnecting while events streamed could crash lazymesh
+  (send on a closed channel): it now leaves the broadcast set before its
+  queue closes.
+- Go SDK: `Say` now holds the client's read lock as documented, so it no
+  longer races `Query` or the hook calls; `Close` can end a blocked read.
 - README: "Driving lazymesh from another program".
 
 ### Security

@@ -271,3 +271,17 @@ func TestRingPolicyAutoAcceptsKnown(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_PreToolHookRequiredIsOffUnlessSet(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := Load(filepath.Join(dir, "missing.yaml"))
+	if err != nil || cfg.PreToolHookRequired {
+		t.Fatalf("default pre_tool_hook_required = %v (err %v)", cfg.PreToolHookRequired, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("pre_tool_hook_required: true\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if cfg, err = Load(filepath.Join(dir, "config.yaml")); err != nil || !cfg.PreToolHookRequired {
+		t.Fatalf("pre_tool_hook_required = %v (err %v)", cfg.PreToolHookRequired, err)
+	}
+}

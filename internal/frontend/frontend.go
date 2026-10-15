@@ -315,8 +315,12 @@ func (s *Server) serve(conn net.Conn, c *connection, handshake []byte) {
 			break
 		}
 	}
-	// A hook this controller held fails closed, and stops sending to
-	// c.out, before c.out is closed.
+	// Nothing may send to c.out once it is closed: leave the broadcast
+	// set first (broadcast sends under s.mu), and fail closed a hook this
+	// controller held, which stops the hook sending to it.
+	s.mu.Lock()
+	delete(s.conns, conn)
+	s.mu.Unlock()
 	if s.hook != nil {
 		s.hook.drop(c)
 	}
@@ -324,9 +328,6 @@ func (s *Server) serve(conn net.Conn, c *connection, handshake []byte) {
 	// which ends any scan still in flight.
 	close(c.out)
 	<-writerDone
-	s.mu.Lock()
-	delete(s.conns, conn)
-	s.mu.Unlock()
 }
 
 // handleLine routes one inbound control message. Returns false when the

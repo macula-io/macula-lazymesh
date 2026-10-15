@@ -187,6 +187,13 @@ type Config struct {
 	// on. See internal/meshservices/catalog.go's own doc comment for what
 	// the 12 procedures are and why each one was curated as read-safe.
 	MeshServicesEnabled bool `yaml:"mesh_services_enabled,omitempty"`
+	// PreToolHookRequired makes the control socket's pre_tool hook gate
+	// from the first tool call: until a controller hooks it, and again
+	// whenever its controller drops, every tool call is refused. Set it
+	// when a policy process must decide every call, so a headless agent
+	// cannot act ungated in the moments after start or a restart. It
+	// needs the control socket (--headless or --unix-socket).
+	PreToolHookRequired bool `yaml:"pre_tool_hook_required,omitempty"`
 }
 
 // RingPolicyContactPolicyFileValue translates p into the value written

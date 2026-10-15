@@ -292,8 +292,11 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	controlSocket := socketPath != "" || headless
 	var preToolHook *frontend.PreToolHook
 	var preTool agent.Gate
+	if cfg.PreToolHookRequired && !controlSocket {
+		return fmt.Errorf("pre_tool_hook_required is set but there is no control socket to hook: start with --headless or --unix-socket")
+	}
 	if controlSocket {
-		preToolHook = frontend.NewPreToolHook()
+		preToolHook = frontend.NewPreToolHook(cfg.PreToolHookRequired)
 		preTool = preToolHook.Decide
 	}
 

@@ -13,7 +13,7 @@ import (
 // startHookedServer starts a Server wired to a fresh PreToolHook.
 func startHookedServer(t *testing.T) (*PreToolHook, string) {
 	t.Helper()
-	hook := NewPreToolHook()
+	hook := NewPreToolHook(false)
 	path := filepath.Join(t.TempDir(), "ctrl.sock")
 	s, err := Start(Options{
 		Path:        path,
@@ -174,5 +174,31 @@ func TestPreToolHookOnlyItsOwnerDecides(t *testing.T) {
 	owner.send(t, `{"type":"hook_answer","id":"`+req["id"].(string)+`","allow":0,"reason":"owner says no"}`)
 	if d := waitDecision(t, pending); d.allow || d.reason != "owner says no" {
 		t.Fatalf("owner's answer decided %+v", d)
+	}
+}
+
+// TestPreToolHookRequiredRefusesUntilTheFirstHook: a required hook gates
+// from the first call: nothing runs before a controller hooks (Fable:
+// a headless agent's first turns must not run ungated).
+func TestPreToolHookRequiredRefusesUntilTheFirstHook(t *testing.T) {
+	hook := NewPreToolHook(true)
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	s, err := Start(Options{Path: path, Input: make(chan string, 8), Events: make(chan agent.Event, 8), SessionID: "s", Model: "m", PreToolHook: hook})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if allow, _, err := hook.Decide(context.Background(), "mesh_say", "{}"); allow || err == nil {
+		t.Fatalf("before any hook: allow=%v err=%v", allow, err)
+	}
+	c := dial(t, path)
+	c.line(t)
+	register(t, c)
+	pending := decideAsync(hook, "mesh_say", "{}")
+	req := c.line(t)
+	c.send(t, `{"type":"hook_answer","id":"`+req["id"].(string)+`","allow":1}`)
+	if d := waitDecision(t, pending); !d.allow {
+		t.Fatalf("after hooking: %+v", d)
 	}
 }

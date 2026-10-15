@@ -321,8 +321,14 @@ full wire protocol is documented at the top of
   `reason` is what the model sees. It runs before any approval prompt, so a
   refused call never reaches a human. It fails closed: an unanswered call is
   refused after two minutes, and if the controller disconnects without
-  `unhook`, every tool call is refused until a controller hooks again. The
-  Go SDK's `HookPreTool` answers these from inside `Say`.
+  `unhook`, every tool call is refused until a controller hooks again. Set
+  `pre_tool_hook_required: true` in the config to refuse every tool call
+  from start until the first controller hooks, so the agent never acts
+  ungated while your policy process (re)connects. In the Go SDK, a policy
+  process calls `HookPreTool` and then `ServeHook` on its own client: a
+  headless agent's turns mostly start from the mesh, not from `Say`. A
+  request the controller doesn't read in time (including when it falls 64
+  lines behind the event stream) is refused.
 - **Each config has its own contact policy.** `contact_policy_file`
   defaults to `contact_policy.json` beside the config file. Agents started
   from different configs keep their own ring policy, and agents from one

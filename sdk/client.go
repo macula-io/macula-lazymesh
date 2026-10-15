@@ -62,12 +62,15 @@ type Turn struct {
 
 // Client is one connection to one lazymesh session's control socket.
 type Client struct {
-	conn   net.Conn
-	r      *bufio.Reader
-	write  sync.Mutex
-	read   sync.Mutex // one Say/Query at a time owns the inbound stream
-	info   SessionInfo
-	closed bool
+	conn  net.Conn
+	r     *bufio.Reader
+	write sync.Mutex
+	read  sync.Mutex // one Say/Query at a time owns the inbound stream
+	info  SessionInfo
+	// closeMu guards closed. Close does not take read, so it can end a
+	// read that is blocked holding it.
+	closeMu sync.Mutex
+	closed  bool
 	// preTool decides pre_tool requests while this client holds the
 	// session's pre-tool hook; set by HookPreTool, read by collectTurn.
 	preTool PreToolFunc
@@ -107,10 +110,11 @@ func (c *Client) Session() SessionInfo {
 	return c.info
 }
 
-// Close closes the connection. Idempotent.
+// Close closes the connection, which also ends a Say, Query or
+// ServeHook blocked reading it. Idempotent.
 func (c *Client) Close() error {
-	c.read.Lock()
-	defer c.read.Unlock()
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
 	if c.closed {
 		return nil
 	}
@@ -123,6 +127,8 @@ func (c *Client) Close() error {
 // duration: callers must serialize Say and Query, which the client
 // enforces with its read lock.
 func (c *Client) Say(ctx context.Context, text string) (*Turn, error) {
+	c.read.Lock()
+	defer c.read.Unlock()
 	if err := c.send(map[string]any{"type": "input", "session_id": c.info.SessionID, "text": text}); err != nil {
 		return nil, err
 	}
@@ -142,10 +148,15 @@ func (c *Client) Query(ctx context.Context, what string) (json.RawMessage, error
 }
 
 // HookPreTool makes this client the session's pre-tool hook: from now on
-// every tool call waits for fn, which Say runs as each request arrives
-// during a turn. The hook fails closed: if this client disconnects
-// without Unhook, the session refuses every tool call until a controller
-// hooks it again. Only one controller can hold the hook.
+// every tool call waits for fn. Requests are answered only while this
+// client is reading: inside Say, for turns it started, or inside
+// ServeHook, for every turn. A headless agent's turns mostly start from
+// the mesh (rooms, rings, wakeups), not from Say, so a policy process
+// should hold the hook on its own client and run ServeHook; a request
+// nobody reads is refused after two minutes. The hook fails closed: if
+// this client disconnects without Unhook, the session refuses every tool
+// call until a controller hooks it again, so hook again after any
+// reconnect. Only one controller can hold the hook.
 func (c *Client) HookPreTool(ctx context.Context, fn PreToolFunc) error {
 	c.read.Lock()
 	defer c.read.Unlock()
@@ -157,6 +168,41 @@ func (c *Client) HookPreTool(ctx context.Context, fn PreToolFunc) error {
 	}
 	c.preTool = fn
 	return nil
+}
+
+// ServeHook answers pre_tool requests with the function HookPreTool set
+// until ctx ends or the connection fails, ignoring every other line. It
+// owns the inbound stream while it runs, so a client serving the hook
+// does not also Say or Query.
+func (c *Client) ServeHook(ctx context.Context) error {
+	c.read.Lock()
+	defer c.read.Unlock()
+	stop := context.AfterFunc(ctx, func() { c.conn.SetReadDeadline(time.Now()) })
+	defer func() {
+		stop()
+		c.conn.SetReadDeadline(time.Time{})
+	}()
+	for {
+		line, err := c.readLine()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("sdk: serve hook: %w", err)
+		}
+		var ev struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Tool string `json:"tool"`
+			Args string `json:"args"`
+		}
+		if err := json.Unmarshal(line, &ev); err != nil || ev.Type != "pre_tool" {
+			continue
+		}
+		if err := c.answerPreTool(ev.ID, ev.Tool, ev.Args); err != nil {
+			return err
+		}
+	}
 }
 
 // Unhook releases the pre-tool hook: tool calls run ungated again.
