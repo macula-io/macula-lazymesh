@@ -123,10 +123,19 @@ func TestLoad_OverridesMaculaMCPVersion(t *testing.T) {
 	}
 }
 
-func TestDefault_ContactPolicyFileIsIsolatedFromMaculaMCPDefault(t *testing.T) {
-	got := Default().ContactPolicyFile
-	if got == "" {
-		t.Fatalf("expected a non-empty default contact_policy_file")
+// Load with no --config resolves the contact policy file to the path every
+// earlier release used, so an operator's trust list never moves, and it
+// stays apart from macula-mcp's own shared default.
+func TestLoad_DefaultConfigKeepsTheContactPolicyPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.ContactPolicyFile
+	if want := filepath.Join(home, ".config", "lazymesh", "contact_policy.json"); got != want {
+		t.Fatalf("contact_policy_file = %q, want %q", got, want)
 	}
 	if strings.Contains(got, "macula-mcp") {
 		t.Fatalf("expected a lazymesh-specific path, not macula-mcp's own shared default: %q", got)
@@ -160,6 +169,20 @@ func TestLoad_ContactPolicyFileDefaultsBesideItsConfig(t *testing.T) {
 
 // An operator who names a contact_policy_file keeps it, wherever the
 // config lives: sharing one deliberately is their call.
+// A relative --config still yields an absolute policy path: lazymesh, the
+// TUI and the macula-mcp child must all read the same file whatever
+// directory each later resolves it from.
+func TestLoad_RelativeConfigGivesAnAbsoluteContactPolicyFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg, err := Load("config.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !filepath.IsAbs(cfg.ContactPolicyFile) {
+		t.Fatalf("contact_policy_file = %q, want an absolute path", cfg.ContactPolicyFile)
+	}
+}
+
 func TestLoad_ExplicitContactPolicyFileWins(t *testing.T) {
 	dir := t.TempDir()
 	shared := filepath.Join(t.TempDir(), "shared.json")

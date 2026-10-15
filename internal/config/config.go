@@ -270,6 +270,11 @@ func Load(path string) (Config, error) {
 	// The contact policy file defaults beside the config it belongs to:
 	// each instance writes its ring policy into it at start, so two
 	// configs sharing one file would overwrite each other's policy.
+	// Absolute, so lazymesh, the TUI and the macula-mcp child resolve the
+	// same file from any working directory.
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	cfg.ContactPolicyFile = filepath.Join(filepath.Dir(path), "contact_policy.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
