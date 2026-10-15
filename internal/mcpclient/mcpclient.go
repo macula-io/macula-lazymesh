@@ -95,15 +95,12 @@ type SpawnOptions struct {
 	// Goose) reads and writes that identical file. Pointing this at a
 	// lazymesh-specific path keeps its own contact policy and allowlist
 	// (mesh_trust_agent) isolated from every other session sharing the
-	// machine. Unlike IdentityFile above, config.Default() DOES set a
-	// default for this (one fixed path shared by every lazymesh instance
-	// on the machine) -- and unlike identity, that's not a protocol-level
-	// problem: contact policy has no equivalent of "two connections
-	// sharing one node ID get kicked by the station", it's just data, so
-	// two concurrent instances sharing one allowlist doesn't collide
-	// anything. Whether sharing it across instances (rather than also
-	// scoping it per-instance) is the right call long-term hasn't been
-	// revisited since -- flagging, not fixing here.
+	// machine. Unlike IdentityFile above, config.Load DOES set a default
+	// for this: contact_policy.json beside the config file. Instances
+	// started from one config share it (same ring policy, one allowlist);
+	// instances started from different configs do not, because each
+	// writes its own contact_policy into the file at start and would
+	// otherwise overwrite the other's (#19 G19).
 	ContactPolicyFile string
 }
 

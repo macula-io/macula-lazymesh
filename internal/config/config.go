@@ -137,7 +137,10 @@ type Config struct {
 	// policy and trust allowlist (mesh_trust_agent) are isolated from
 	// every other macula-mcp instance on the same machine, which
 	// otherwise all share ~/.config/macula-mcp/contact_policy.json by
-	// default regardless of identity.
+	// default regardless of identity. Load defaults it to
+	// contact_policy.json beside the config file, so agents started from
+	// different configs (different ring policies) never share one: each
+	// writes its own contact_policy into the file at start.
 	ContactPolicyFile string `yaml:"contact_policy_file,omitempty"`
 	// RingPolicy is lazymesh's own phone-metaphor standing answer to an
 	// incoming ring: "always-ask" (default, every ring pops up), "auto-
@@ -264,6 +267,10 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Default()
+	// The contact policy file defaults beside the config it belongs to:
+	// each instance writes its ring policy into it at start, so two
+	// configs sharing one file would overwrite each other's policy.
+	cfg.ContactPolicyFile = filepath.Join(filepath.Dir(path), "contact_policy.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

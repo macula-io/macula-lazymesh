@@ -13,6 +13,13 @@ goreleaser from a `v*` tag; this file records what each one changes.
   root included, is closed before the handshake. Windows has no peer
   credentials on unix sockets, so `--socket` and `--headless` now refuse to
   start there instead of running unchecked (#19).
+- **Agents started from different configs no longer share one contact
+  policy file.** `contact_policy_file` now defaults to `contact_policy.json`
+  beside the config file it was loaded from. Each agent writes its ring
+  policy into that file at start, so with one shared file an agent set to
+  `accept-everyone` opened a `do-not-disturb` agent to every caller. The
+  default config keeps its old path, so an existing trust list stays put; an
+  explicit `contact_policy_file` is honoured as before (#19).
 
 ## [0.1.0] - 2026-10-05
 

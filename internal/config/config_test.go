@@ -133,6 +133,48 @@ func TestDefault_ContactPolicyFileIsIsolatedFromMaculaMCPDefault(t *testing.T) {
 	}
 }
 
+// Two agents started from two config files are two operators' worth of
+// ring policy: each writes its own contact_policy into the file at start,
+// so they must not share one, or an accept-everyone agent opens a
+// do-not-disturb one to every caller (#19 G19).
+func TestLoad_ContactPolicyFileDefaultsBesideItsConfig(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(dirB, "config.yaml"), []byte("ring_policy: accept-everyone\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	a, err := Load(filepath.Join(dirA, "config.yaml")) // missing file: defaults
+	if err != nil {
+		t.Fatalf("Load A: %v", err)
+	}
+	b, err := Load(filepath.Join(dirB, "config.yaml"))
+	if err != nil {
+		t.Fatalf("Load B: %v", err)
+	}
+	if want := filepath.Join(dirA, "contact_policy.json"); a.ContactPolicyFile != want {
+		t.Fatalf("A contact_policy_file = %q, want %q", a.ContactPolicyFile, want)
+	}
+	if want := filepath.Join(dirB, "contact_policy.json"); b.ContactPolicyFile != want {
+		t.Fatalf("B contact_policy_file = %q, want %q", b.ContactPolicyFile, want)
+	}
+}
+
+// An operator who names a contact_policy_file keeps it, wherever the
+// config lives: sharing one deliberately is their call.
+func TestLoad_ExplicitContactPolicyFileWins(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(t.TempDir(), "shared.json")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("contact_policy_file: "+shared+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ContactPolicyFile != shared {
+		t.Fatalf("contact_policy_file = %q, want %q", cfg.ContactPolicyFile, shared)
+	}
+}
+
 // Found live 2026-09-07: Default() used to set IdentityFile to a single
 // fixed path (~/.config/lazymesh/identity) with no per-instance scoping.
 // Every lazymesh instance on a machine passed that same path through as
