@@ -792,3 +792,19 @@ func TestLogCycleUsage_ReportsRoundsAndToolSchemaCost(t *testing.T) {
 		t.Fatalf("usage line = %q", line)
 	}
 }
+
+// TestFirstPrompt_IdleStartWaitsForTheFirstEvent: a session started with
+// --idle-start runs no startup turn; its first turn is whatever arrives
+// first (here a controller's input), so a parent driving it as a worker
+// gets its own first turn back from Say (G15).
+func TestFirstPrompt_IdleStartWaitsForTheFirstEvent(t *testing.T) {
+	input := make(chan string, 1)
+	input <- "your subtask"
+	got, ok := firstPrompt(context.Background(), true, input, nil, nil, nil)
+	if !ok || got != "your subtask" {
+		t.Fatalf("idle start: first prompt = %q, %v", got, ok)
+	}
+	if got, ok := firstPrompt(context.Background(), false, make(chan string), nil, nil, nil); !ok || got != agentInitialPrompt {
+		t.Fatalf("default start: first prompt = %q, %v", got, ok)
+	}
+}

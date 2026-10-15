@@ -329,6 +329,12 @@ full wire protocol is documented at the top of
   headless agent's turns mostly start from the mesh, not from `Say`. A
   request the controller doesn't read in time (including when it falls 64
   lines behind the event stream) is refused.
+- **Subagents are sessions a parent drives.** `--idle-start` runs no
+  startup turn, so a parent's first `Say` gets its own task's turn back.
+  `examples/fanout` starts one worker per subtask, gates each with the
+  pre-tool hook so workers run only the tools the parent allows, and
+  collects the answers in parallel; `examples/handoff` passes one task
+  between two sessions.
 - **Prometheus metrics, if you ask for them.** Set
   `metrics_listen: 127.0.0.1:9464` (any address) and lazymesh serves
   `/metrics`: turns, tool calls (also per tool), errors, backoffs,

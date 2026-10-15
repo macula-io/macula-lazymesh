@@ -64,6 +64,7 @@ func main() {
 	sessionID := flag.String("session-id", "", "session id reported to controllers (default: lazymesh-<pid>)")
 	resumeRef := flag.String("resume", "", "resume a previous session: a session id, or \"latest\"/\"last\" for the newest one")
 	continueLatest := flag.Bool("continue", false, "resume the newest session (same as --resume latest)")
+	idleStart := flag.Bool("idle-start", false, "run no startup turn: wait for the first input, room or ring (for a session a parent drives as a worker)")
 	flag.Parse()
 
 	if *showVersion {
@@ -71,13 +72,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *room, *goalText, *headless, *socketPath, *sessionID, *resumeRef, *continueLatest); err != nil {
+	if err := run(*configPath, *room, *goalText, *headless, *socketPath, *sessionID, *resumeRef, *continueLatest, *idleStart); err != nil {
 		fmt.Fprintln(os.Stderr, "lazymesh:", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, room, goalText string, headless bool, socketPath, sessionID, resumeRef string, continueLatest bool) error {
+func run(configPath, room, goalText string, headless bool, socketPath, sessionID, resumeRef string, continueLatest, idleStart bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -396,7 +397,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 				panic(r)
 			}
 		}()
-		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals())
+		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals(), idleStart)
 	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
@@ -901,10 +902,13 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // failure falls into the ordinary backoff accounting. Room/ring waiting
 // stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
 // this function supplies the cadence, driven by real events.
-func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string, wakeups <-chan string) {
+func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string, wakeups <-chan string, idleStart bool) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
-	prompt := agentInitialPrompt
+	prompt, ok := firstPrompt(ctx, idleStart, userInputCh, waiterMgr, ringMgr, wakeups)
+	if !ok {
+		return
+	}
 
 	for {
 		if ctx.Err() != nil {
@@ -1381,6 +1385,18 @@ const (
 	initialBackoff = 5 * time.Second
 	maxBackoff     = 2 * time.Minute
 )
+
+// firstPrompt is what runAgent's first turn runs: the startup nudge, or
+// with --idle-start nothing until the first input, room, ring or wakeup
+// arrives. A worker a parent drives over the socket starts idle, so the
+// parent's first Say gets that turn back rather than the startup turn's.
+// ok is false only when ctx ends first.
+func firstPrompt(ctx context.Context, idleStart bool, userInputCh <-chan string, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, wakeups <-chan string) (string, bool) {
+	if !idleStart {
+		return agentInitialPrompt, true
+	}
+	return nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
+}
 
 // agentInitialPrompt is runAgent's one-time startup nudge, hoisted to
 // package level (rather than a local const inside runAgent) so its

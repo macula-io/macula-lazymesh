@@ -40,7 +40,18 @@ goreleaser from a `v*` tag; this file records what each one changes.
   per-tool events, errors, backoffs, approvals) and the session's token,
   round and tool-schema totals. No client library; off unless configured
   (#19).
+- **Subagent orchestration example (G15).** `examples/fanout` runs one
+  headless worker per subtask in parallel, each gated by the pre-tool hook
+  to the tools its parent allows. New flag `--idle-start`: no startup
+  turn, the first turn is the first input, room, ring or wakeup (#19).
 - README: "Driving lazymesh from another program".
+
+### Fixed (examples)
+
+- `examples/handoff` could print the startup turn's text instead of the
+  handed task's: each session ran its startup turn first, and `Say`
+  returned at that turn's settle point. It now starts sessions with
+  `--idle-start`.
 
 ### Security
 

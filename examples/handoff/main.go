@@ -109,6 +109,7 @@ func main() {
 func spawn(binary, config, socket, sessionID string) *session {
 	cmd := exec.Command(binary,
 		"--headless",
+		"--idle-start", // no startup turn: Say gets the handed task's turn back
 		"--config", config,
 		"--unix-socket", socket,
 		"--session-id", sessionID,
