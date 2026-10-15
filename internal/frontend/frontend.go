@@ -29,6 +29,9 @@
 //	  {"type":"schedule","at":"<RFC3339>","prompt":"..."} (wakes the agent with prompt at that time; ack: {"type":"scheduled","at":...})
 //	  {"type":"query","what":"status|rooms|inbox|agents|realms"}
 //	  {"type":"shutdown"}
+//	  {"type":"hook","event":"pre_tool"}   (gate every tool call; ack {"type":"hooked","event":"pre_tool"})
+//	  {"type":"unhook","event":"pre_tool"} (release it; ack {"type":"unhooked","event":"pre_tool"})
+//	  {"type":"hook_answer","id":"<hook-id>","allow":1,"reason":"..."}   (1 allow, 0 deny)
 //	lazymesh -> controller:
 //	  {"type":"session","session_id":"<id>","model":"<provider/model>"}  (on connect)
 //	  {"type":"assistant","text":"..."}
@@ -40,6 +43,8 @@
 //	  {"type":"approval_request","id":"<approval-id>","tool":"<name>","args":"<preview>"}
 //	  {"type":"ring_pending","ring_id":"<id>","from":"<petname>","purpose":"..."}
 //	                             (a ring still awaiting an answer, sent as it arrives)
+//	  {"type":"pre_tool","id":"<hook-id>","tool":"<name>","args":"<full JSON>"}
+//	                             (to the hook's controller only; the call waits for hook_answer)
 //	  {"type":"turn_complete"}   (the settle point: a controller sends one
 //	                              input and waits for this)
 //	  {"type":"query_result","what":"...","data":...}
@@ -78,6 +83,7 @@ type Server struct {
 	approve func(id string, allow bool)
 	// schedule arms a deferred prompt; nil means not wired.
 	schedule func(at time.Time, prompt string) error
+	hook     *PreToolHook
 	session  sessionInfo
 
 	// ownUID is the effective uid a connecting peer must have.
@@ -121,6 +127,9 @@ type Options struct {
 	// Schedule arms a deferred prompt (G13) when a controller sends a
 	// schedule control message; nil means not wired.
 	Schedule func(at time.Time, prompt string) error
+	// PreToolHook, when set, lets a controller gate every tool call (G8,
+	// see PreToolHook); nil means hook control messages are refused.
+	PreToolHook *PreToolHook
 	// SessionID identifies this lazymesh session to controllers (the
 	// --session-id flag, or a generated default).
 	SessionID string
@@ -181,6 +190,7 @@ func startFor(opts Options, ownUID int) (*Server, error) {
 		interrupt: opts.Interrupt,
 		approve:   opts.Approve,
 		schedule:  opts.Schedule,
+		hook:      opts.PreToolHook,
 		session:   sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
 		ownUID:    ownUID,
 		log:       opts.Log,
@@ -305,6 +315,11 @@ func (s *Server) serve(conn net.Conn, c *connection, handshake []byte) {
 			break
 		}
 	}
+	// A hook this controller held fails closed, and stops sending to
+	// c.out, before c.out is closed.
+	if s.hook != nil {
+		s.hook.drop(c)
+	}
 	// The writer drains whatever is queued, then closes the connection,
 	// which ends any scan still in flight.
 	close(c.out)
@@ -337,6 +352,8 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 		Allow     int    `json:"allow"`
 		At        string `json:"at"`
 		Prompt    string `json:"prompt"`
+		Event     string `json:"event"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		reply(map[string]any{"type": "error", "error": "malformed control message"})
@@ -373,6 +390,36 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 			return true
 		}
 		s.approve(msg.ID, msg.Allow == 1)
+		return true
+	case "hook", "unhook":
+		if s.hook == nil {
+			reply(map[string]any{"type": "error", "error": "hooks are not wired"})
+			return true
+		}
+		if msg.Event != "pre_tool" {
+			reply(map[string]any{"type": "error", "error": "unknown hook event " + msg.Event + " (only pre_tool)"})
+			return true
+		}
+		change, ack := s.hook.register, "hooked"
+		if msg.Type == "unhook" {
+			change, ack = s.hook.unhook, "unhooked"
+		}
+		if err := change(c); err != nil {
+			reply(map[string]any{"type": "error", "error": err.Error()})
+			return true
+		}
+		reply(map[string]any{"type": ack, "event": msg.Event})
+		return true
+	case "hook_answer":
+		if s.hook == nil {
+			reply(map[string]any{"type": "error", "error": "hooks are not wired"})
+			return true
+		}
+		if msg.ID == "" {
+			reply(map[string]any{"type": "error", "error": "hook_answer requires the request id"})
+			return true
+		}
+		s.hook.answer(c, msg.ID, msg.Allow == 1, msg.Reason)
 		return true
 	case "schedule":
 		if s.schedule == nil {
@@ -479,6 +526,10 @@ func DefaultSocketPath(sessionID string) string {
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ""
+	}
+	if peerCredsSupported == 0 {
+		// Start refuses the socket on this platform, with the reason.
+		return filepath.Join(dir, sessionID+".sock")
 	}
 	fi, err := os.Lstat(dir)
 	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 != 0 || ownerUID(fi) != os.Getuid() {

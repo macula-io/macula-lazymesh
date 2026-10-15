@@ -183,3 +183,58 @@ func TestClientSayCollectsPendingRings(t *testing.T) {
 		t.Fatalf("pending rings = %+v, want [%+v]", turn.PendingRings, want)
 	}
 }
+
+// TestClientHookPreToolAnswersDuringATurn: a controller that hooks
+// pre_tool decides each call from inside Say, and its decision reaches
+// the session's gate.
+func TestClientHookPreToolAnswersDuringATurn(t *testing.T) {
+	hook := frontend.NewPreToolHook()
+	path := filepath.Join(t.TempDir(), "ctrl.sock")
+	events := make(chan agent.Event, 8)
+	s, err := frontend.Start(frontend.Options{
+		Path: path, Input: make(chan string, 8), Events: events,
+		SessionID: "sdk-test", Model: "deepseek/test", PreToolHook: hook,
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c, err := Dial(context.Background(), path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var asked []string
+	if err := c.HookPreTool(ctx, func(tool, args string) (bool, string) {
+		asked = append(asked, tool+" "+args)
+		return false, "not from this controller"
+	}); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	decided := make(chan string, 1)
+	go func() {
+		allow, reason, err := hook.Decide(context.Background(), "mesh_say", `{"text":"x"}`)
+		if err != nil || allow {
+			decided <- "unexpected"
+		} else {
+			decided <- reason
+		}
+		events <- agent.Event{Kind: agent.EventListening}
+	}()
+	if _, err := c.Say(ctx, "go"); err != nil {
+		t.Fatalf("say: %v", err)
+	}
+	if got := <-decided; got != "not from this controller" {
+		t.Fatalf("gate decided %q", got)
+	}
+	if len(asked) != 1 || asked[0] != `mesh_say {"text":"x"}` {
+		t.Fatalf("handler saw %v", asked)
+	}
+	if err := c.Unhook(ctx); err != nil {
+		t.Fatalf("unhook: %v", err)
+	}
+}

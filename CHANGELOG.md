@@ -12,6 +12,12 @@ goreleaser from a `v*` tag; this file records what each one changes.
   "from","purpose"}` the moment it arrives, not when the agent next idles.
   The Go SDK's `Turn.PendingRings` and the Python client's `pending_rings`
   collect the ones that arrive during a turn (#19).
+- **Pre-tool hook on the control socket (G8).** A controller sends
+  `{"type":"hook","event":"pre_tool"}` and then decides every tool call the
+  session makes (`pre_tool` → `hook_answer`, with a reason on denial),
+  ahead of the ask list. It fails closed on timeout, interrupt, or the
+  controller disconnecting without `unhook`. One controller holds it at a
+  time. Go SDK: `Client.HookPreTool` and `Client.Unhook` (#19).
 - README: "Driving lazymesh from another program".
 
 ### Security

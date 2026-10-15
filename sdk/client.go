@@ -68,7 +68,14 @@ type Client struct {
 	read   sync.Mutex // one Say/Query at a time owns the inbound stream
 	info   SessionInfo
 	closed bool
+	// preTool decides pre_tool requests while this client holds the
+	// session's pre-tool hook; set by HookPreTool, read by collectTurn.
+	preTool PreToolFunc
 }
+
+// PreToolFunc decides one tool call the session wants to make: allow it,
+// or refuse it with a reason the model sees.
+type PreToolFunc func(tool, argsJSON string) (allow bool, reason string)
 
 // Dial connects to the control socket at path and reads the handshake.
 // ctx bounds the connect and handshake.
@@ -134,6 +141,81 @@ func (c *Client) Query(ctx context.Context, what string) (json.RawMessage, error
 	return c.awaitQueryResult(ctx, what)
 }
 
+// HookPreTool makes this client the session's pre-tool hook: from now on
+// every tool call waits for fn, which Say runs as each request arrives
+// during a turn. The hook fails closed: if this client disconnects
+// without Unhook, the session refuses every tool call until a controller
+// hooks it again. Only one controller can hold the hook.
+func (c *Client) HookPreTool(ctx context.Context, fn PreToolFunc) error {
+	c.read.Lock()
+	defer c.read.Unlock()
+	if err := c.send(map[string]any{"type": "hook", "event": "pre_tool"}); err != nil {
+		return err
+	}
+	if err := c.awaitAck(ctx, "hooked"); err != nil {
+		return err
+	}
+	c.preTool = fn
+	return nil
+}
+
+// Unhook releases the pre-tool hook: tool calls run ungated again.
+func (c *Client) Unhook(ctx context.Context) error {
+	c.read.Lock()
+	defer c.read.Unlock()
+	if err := c.send(map[string]any{"type": "unhook", "event": "pre_tool"}); err != nil {
+		return err
+	}
+	if err := c.awaitAck(ctx, "unhooked"); err != nil {
+		return err
+	}
+	c.preTool = nil
+	return nil
+}
+
+// awaitAck reads lines until the ack of the given type, or an error
+// reply. The caller holds the read lock.
+func (c *Client) awaitAck(ctx context.Context, ack string) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		c.conn.SetReadDeadline(deadline)
+		defer c.conn.SetReadDeadline(time.Time{})
+	}
+	for {
+		line, err := c.readLine()
+		if err != nil {
+			return fmt.Errorf("sdk: read %s ack: %w", ack, err)
+		}
+		var ev struct {
+			Type  string `json:"type"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &ev); err != nil {
+			return fmt.Errorf("sdk: decode %s ack %q: %w", ack, line, err)
+		}
+		switch ev.Type {
+		case ack:
+			return nil
+		case "error":
+			return fmt.Errorf("sdk: %s refused: %s", ack, ev.Error)
+		}
+	}
+}
+
+// answerPreTool decides one pre_tool request with the hook's function.
+// A request without one (the hook was never taken by this client) is
+// refused, so a call never runs undecided.
+func (c *Client) answerPreTool(id, tool, args string) error {
+	allow, reason := false, "this controller has no pre-tool handler"
+	if c.preTool != nil {
+		allow, reason = c.preTool(tool, args)
+	}
+	allowWire := 0
+	if allow {
+		allowWire = 1
+	}
+	return c.send(map[string]any{"type": "hook_answer", "id": id, "allow": allowWire, "reason": reason})
+}
+
 // Interrupt cancels the in-flight turn. The interrupted Say's Turn comes
 // back with the loop's error and the settle point, as usual.
 func (c *Client) Interrupt() error {
@@ -179,6 +261,7 @@ func (c *Client) collectTurn(ctx context.Context) (*Turn, error) {
 			Args    string `json:"args"`
 			Result  string `json:"result"`
 			Error   string `json:"error"`
+			ID      string `json:"id"`
 			RingID  string `json:"ring_id"`
 			From    string `json:"from"`
 			Purpose string `json:"purpose"`
@@ -197,6 +280,10 @@ func (c *Client) collectTurn(ctx context.Context) (*Turn, error) {
 			turn.ToolResults = append(turn.ToolResults, ToolResult{Tool: ev.Tool, Result: ev.Result})
 		case "error":
 			turn.Errors = append(turn.Errors, ev.Error)
+		case "pre_tool":
+			if err := c.answerPreTool(ev.ID, ev.Tool, ev.Args); err != nil {
+				return turn, err
+			}
 		case "ring_pending":
 			turn.PendingRings = append(turn.PendingRings, PendingRing{RingID: ev.RingID, From: ev.From, Purpose: ev.Purpose})
 		case "backoff":

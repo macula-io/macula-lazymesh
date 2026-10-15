@@ -314,6 +314,15 @@ full wire protocol is documented at the top of
 - **Rings reach the controller.** A ring still awaiting an answer is sent
   as `ring_pending` (ring id, caller, purpose) the moment it arrives;
   `Say` in both SDKs collects them as `pending_rings`.
+- **A controller can gate every tool call.** After
+  `{"type":"hook","event":"pre_tool"}` the session sends each tool call to
+  that controller alone as `pre_tool` (tool and full arguments) and runs it
+  only when the controller answers `hook_answer` with `allow: 1`; a denial's
+  `reason` is what the model sees. It runs before any approval prompt, so a
+  refused call never reaches a human. It fails closed: an unanswered call is
+  refused after two minutes, and if the controller disconnects without
+  `unhook`, every tool call is refused until a controller hooks again. The
+  Go SDK's `HookPreTool` answers these from inside `Say`.
 - **Each config has its own contact policy.** `contact_policy_file`
   defaults to `contact_policy.json` beside the config file. Agents started
   from different configs keep their own ring policy, and agents from one

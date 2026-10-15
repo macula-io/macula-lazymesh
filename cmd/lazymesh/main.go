@@ -285,6 +285,18 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		}
 	}
 
+	// The pre-tool hook (G8) exists whenever the control socket does:
+	// the session gates its tools through it, the socket lets one
+	// controller register it. Built here because the session starts
+	// before the socket.
+	controlSocket := socketPath != "" || headless
+	var preToolHook *frontend.PreToolHook
+	var preTool agent.Gate
+	if controlSocket {
+		preToolHook = frontend.NewPreToolHook()
+		preTool = preToolHook.Decide
+	}
+
 	sessPid, err := sessionhost.StartSession(node, rootPid, sessionhost.SessionArgs{
 		Provider:     p,
 		Tools:        tools,
@@ -292,6 +304,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		Store:        sessionStore,
 		SessionID:    resolvedSessionID,
 		AskTools:     cfg.ToolAsklist,
+		PreTool:      preTool,
 	})
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -333,25 +346,26 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// exactly like the compose line; queries read live session and mesh
 	// state; shutdown ends the headless run.
 	var ctrl *frontend.Server
-	if socketPath != "" || headless {
+	if controlSocket {
 		path := socketPath
 		if path == "" {
 			path = frontend.DefaultSocketPath(resolvedSessionID)
 			if path == "" {
-				return fmt.Errorf("resolve control socket path for session %s", resolvedSessionID)
+				return fmt.Errorf("no private directory for the control socket of session %s: $XDG_RUNTIME_DIR, or else %s, must be a directory you own with mode 0700; or pass --unix-socket <path>", resolvedSessionID, filepath.Join(os.TempDir(), fmt.Sprintf("lazymesh-%d", os.Getuid())))
 			}
 		}
 		ctrl, err = frontend.Start(frontend.Options{
-			Path:      path,
-			Input:     userInputCh,
-			Events:    frontendEvents,
-			Query:     buildQueryHandler(node, sessPid, client, runtimeCounters),
-			Interrupt: func() { sessionhost.Interrupt(sessPid) },
-			Approve:   func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
-			Schedule:  schedulerMgr.Schedule,
-			SessionID: resolvedSessionID,
-			Model:     providerLabel(cfg) + "/" + cfg.Model,
-			Log:       logStack.StdFor("frontend"),
+			Path:        path,
+			Input:       userInputCh,
+			Events:      frontendEvents,
+			Query:       buildQueryHandler(node, sessPid, client, runtimeCounters),
+			Interrupt:   func() { sessionhost.Interrupt(sessPid) },
+			Approve:     func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
+			Schedule:    schedulerMgr.Schedule,
+			PreToolHook: preToolHook,
+			SessionID:   resolvedSessionID,
+			Model:       providerLabel(cfg) + "/" + cfg.Model,
+			Log:         logStack.StdFor("frontend"),
 		})
 		if err != nil {
 			return fmt.Errorf("start control plane: %w", err)

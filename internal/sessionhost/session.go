@@ -38,6 +38,10 @@ type SessionArgs struct {
 	// subscriber (TUI popup, control socket), and the answer comes back
 	// through AnswerApproval. Empty means nothing asks.
 	AskTools []string
+	// PreTool, when set, decides every tool call before anything else
+	// (G8: the control socket's pre_tool hook). It wraps outside the ask
+	// list, so a call it refuses never asks the operator.
+	PreTool agent.Gate
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -206,6 +210,9 @@ func (s *session) Init(args ...any) error {
 	tools := sessArgs.Tools
 	if len(sessArgs.AskTools) > 0 {
 		tools = agent.NewAskSource(sessArgs.Tools, sessArgs.AskTools, s.consent)
+	}
+	if sessArgs.PreTool != nil {
+		tools = agent.NewHookSource(tools, sessArgs.PreTool)
 	}
 	s.loop = agent.NewLoop(sessArgs.Provider, tools, sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})

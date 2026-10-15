@@ -853,3 +853,59 @@ func TestPersistSurvivesContextCompaction(t *testing.T) {
 
 // bigPadding is a large-but-boring assistant content filler.
 const bigPadding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// TestPreToolHookRunsBeforeTheApprovalPrompt pins the G8 layering: the
+// pre-tool hook sits outside the ask list, so a call the hook refuses
+// never asks the human, and the turn still completes.
+func TestPreToolHookRunsBeforeTheApprovalPrompt(t *testing.T) {
+	n := testNode(t)
+	root := testRoot(t, n)
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "risky", Arguments: "{}"}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "refused, moving on"}},
+	}}
+	gated := make(chan string, 4)
+	pid := startSessionWith(t, n, root, SessionArgs{
+		Provider:     p,
+		Tools:        fakeTools{},
+		SystemPrompt: "you are a test agent",
+		AskTools:     []string{"risky"},
+		PreTool: func(ctx context.Context, tool, argumentsJSON string) (bool, string, error) {
+			gated <- tool
+			return false, "policy says no", nil
+		},
+	})
+
+	events := make(chan Event, 16)
+	downs := make(chan gen.MessageDownPID, 8)
+	cPid, err := n.Spawn(collectorFactory, gen.ProcessOptions{}, events, downs)
+	if err != nil {
+		t.Fatalf("spawn collector: %v", err)
+	}
+	if _, err := n.Call(cPid, subscribeTo{Target: pid}); err != nil {
+		t.Fatalf("subscribe collector: %v", err)
+	}
+
+	reply, err := SayTurn(n, root, pid, "run the risky thing")
+	if err != nil || reply.Err != nil {
+		t.Fatalf("say turn: %v / %v", err, reply.Err)
+	}
+	select {
+	case tool := <-gated:
+		if tool != "risky" {
+			t.Fatalf("hook saw %q", tool)
+		}
+	default:
+		t.Fatal("the pre-tool hook was never consulted")
+	}
+	for {
+		select {
+		case ev := <-events:
+			if ev.Event.Kind == agent.EventApprovalRequested {
+				t.Fatal("a call the hook refused still asked for approval")
+			}
+		default:
+			return
+		}
+	}
+}
