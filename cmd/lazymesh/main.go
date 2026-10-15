@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -316,6 +317,13 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	runtimeCounters := counters.New()
 	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, frontendEvents, agentLog, waiterMgr, runtimeCounters); err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
+	}
+	if cfg.MetricsListen != "" {
+		addr, err := counters.ServeMetrics(ctx, cfg.MetricsListen, metricsReader(node, sessPid, runtimeCounters), logStack.StdFor("metrics"))
+		if err != nil {
+			return err
+		}
+		agentLog.Printf("[metrics] serving Prometheus metrics on http://%s/metrics", addr)
 	}
 
 	// The interrupt bus (Phase 3): the TUI's `x` key and the control
@@ -1115,6 +1123,29 @@ func emitTui(tuiEvents, frontendEvents chan<- agent.Event, ev agent.Event) {
 	select {
 	case frontendEvents <- ev:
 	default:
+	}
+}
+
+// metricsReader reads the counters and the session's token and round
+// totals for one scrape. The session actor answers status only between
+// turns, so a scrape during a long turn can time out reaching it; it then
+// reports the last totals it read, which are behind but never wrong in
+// direction (they only grow).
+func metricsReader(n gen.Node, sessPid gen.PID, runtimeCounters *counters.Registry) func() (counters.Snapshot, counters.Totals) {
+	var mu sync.Mutex
+	var last counters.Totals
+	return func() (counters.Snapshot, counters.Totals) {
+		mu.Lock()
+		defer mu.Unlock()
+		if st, err := sessionhost.SessionStatus(n, sessPid); err == nil {
+			last = counters.Totals{
+				PromptTokens:     st.Usage.PromptTokens,
+				CompletionTokens: st.Usage.CompletionTokens,
+				Rounds:           st.Rounds,
+				ToolSchemaBytes:  st.ToolSchemaBytes,
+			}
+		}
+		return runtimeCounters.Snapshot(), last
 	}
 }
 

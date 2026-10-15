@@ -35,6 +35,11 @@ goreleaser from a `v*` tag; this file records what each one changes.
   tokens of tool schemas they resent, and that as a share of the cycle's
   prompt tokens. The status query carries the totals (`Rounds`,
   `ToolSchemaBytes`) (#19).
+- **Prometheus metrics.** `metrics_listen: <addr>` serves `/metrics` in the
+  Prometheus text format: the runtime counters (turns, tool calls and
+  per-tool events, errors, backoffs, approvals) and the session's token,
+  round and tool-schema totals. No client library; off unless configured
+  (#19).
 - README: "Driving lazymesh from another program".
 
 ### Security

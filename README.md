@@ -329,6 +329,12 @@ full wire protocol is documented at the top of
   headless agent's turns mostly start from the mesh, not from `Say`. A
   request the controller doesn't read in time (including when it falls 64
   lines behind the event stream) is refused.
+- **Prometheus metrics, if you ask for them.** Set
+  `metrics_listen: 127.0.0.1:9464` (any address) and lazymesh serves
+  `/metrics`: turns, tool calls (also per tool), errors, backoffs,
+  approvals, prompt and completion tokens, completion rounds and tool-schema
+  bytes. Off by default; the endpoint has no authentication, so bind it
+  where only your scraper reaches it.
 - **Each config has its own contact policy.** `contact_policy_file`
   defaults to `contact_policy.json` beside the config file. Agents started
   from different configs keep their own ring policy, and agents from one

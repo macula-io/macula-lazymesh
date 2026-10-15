@@ -285,3 +285,19 @@ func TestLoad_PreToolHookRequiredIsOffUnlessSet(t *testing.T) {
 		t.Fatalf("pre_tool_hook_required = %v (err %v)", cfg.PreToolHookRequired, err)
 	}
 }
+
+// Metrics listen nowhere unless the operator names an address.
+func TestLoad_MetricsListenIsOffUnlessSet(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := Load(filepath.Join(dir, "missing.yaml"))
+	if err != nil || cfg.MetricsListen != "" {
+		t.Fatalf("default metrics_listen = %q (err %v), want empty", cfg.MetricsListen, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("metrics_listen: 127.0.0.1:9464\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err = Load(filepath.Join(dir, "config.yaml"))
+	if err != nil || cfg.MetricsListen != "127.0.0.1:9464" {
+		t.Fatalf("metrics_listen = %q (err %v)", cfg.MetricsListen, err)
+	}
+}

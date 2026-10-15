@@ -194,6 +194,13 @@ type Config struct {
 	// cannot act ungated in the moments after start or a restart. It
 	// needs the control socket (--headless or --unix-socket).
 	PreToolHookRequired bool `yaml:"pre_tool_hook_required,omitempty"`
+
+	// MetricsListen, if set, serves Prometheus metrics (the runtime
+	// counters plus token and round totals) at http://<addr>/metrics,
+	// e.g. "127.0.0.1:9464". Empty, the default, listens on nothing. The
+	// endpoint has no authentication: bind it where only your scraper
+	// can reach it.
+	MetricsListen string `yaml:"metrics_listen,omitempty"`
 }
 
 // RingPolicyContactPolicyFileValue translates p into the value written
