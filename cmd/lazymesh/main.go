@@ -59,7 +59,7 @@ func main() {
 	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs)")
 	goalText := flag.String("goal", "", "additional objective for the agent, beyond ordinary mesh participation (optional)")
 	headless := flag.Bool("headless", false, "run without the TUI (a unix control socket or a signal ends the session)")
-	socketPath := flag.String("unix-socket", "", "serve the control plane on this unix socket (default: $XDG_RUNTIME_DIR/lazymesh/<session-id>.sock)")
+	socketPath := flag.String("unix-socket", "", "serve the control plane on this unix socket (default: $XDG_RUNTIME_DIR/<session-id>.sock)")
 	sessionID := flag.String("session-id", "", "session id reported to controllers (default: lazymesh-<pid>)")
 	resumeRef := flag.String("resume", "", "resume a previous session: a session id, or \"latest\"/\"last\" for the newest one")
 	continueLatest := flag.Bool("continue", false, "resume the newest session (same as --resume latest)")
@@ -233,6 +233,12 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// "ringwaiter is quietly healthy" and "ringwaiter's poll has been
 	// failing since startup" were indistinguishable from the log alone.
 	ringMgr.SetLogger(logStack.StdFor("ring"))
+	ringMgr.OnSurfaced(func(r ringwaiter.Ring) {
+		select {
+		case frontendEvents <- agent.Event{Kind: agent.EventRingPending, ID: r.RingID, From: r.FromPetname, Text: r.Purpose}:
+		default:
+		}
+	})
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
 

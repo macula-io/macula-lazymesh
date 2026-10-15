@@ -192,6 +192,21 @@ func TestDeltaWireShape(t *testing.T) {
 	}
 }
 
+// TestRingPendingWireShape: a surfaced ring reaches the controller as
+// ring_pending with the id it would answer, the caller and the purpose.
+func TestRingPendingWireShape(t *testing.T) {
+	events := make(chan agent.Event, 8)
+	_, path := startTestServer(t, make(chan string, 8), events, nil)
+	c := dial(t, path)
+	c.line(t) // handshake
+
+	events <- agent.Event{Kind: agent.EventRingPending, ID: "ring-7", From: "Nova", Text: "come help"}
+	line := c.line(t)
+	if line["type"] != "ring_pending" || line["ring_id"] != "ring-7" || line["from"] != "Nova" || line["purpose"] != "come help" {
+		t.Fatalf("ring_pending line = %v", line)
+	}
+}
+
 // TestInterruptControlMessageCallsInterrupt proves the interrupt control
 // message reaches the caller's interrupt function — the socket's half of
 // the Phase 3 chain (the sessionhost test covers the other half).

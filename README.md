@@ -296,6 +296,29 @@ Only do this if you actually want an agent whose conversation can be
 steered by any mesh peer to also have local execution — it's a real,
 conscious trade-off, not a default anyone gets by accident.
 
+## Driving lazymesh from another program
+
+`lazymesh --headless` runs without the TUI and serves a control socket
+(`--unix-socket <path>`; by default `<session-id>.sock` in
+`$XDG_RUNTIME_DIR`). Another program sends it input and reads what the
+agent does, one JSON object per line each way. `sdk/` holds a Go client
+and a stdlib-only Python client (`sdk/python/lazymesh_client.py`); the
+full wire protocol is documented at the top of
+`internal/frontend/frontend.go`.
+
+- **Only your own user can drive it.** The socket is created `0600`, and
+  each connection is checked against the kernel's record of who connected:
+  a process of another user, root included, is closed before it gets the
+  handshake. Windows has no such record for unix sockets, so there
+  `--headless` and `--unix-socket` refuse to start.
+- **Rings reach the controller.** A ring still awaiting an answer is sent
+  as `ring_pending` (ring id, caller, purpose) the moment it arrives;
+  `Say` in both SDKs collects them as `pending_rings`.
+- **Each config has its own contact policy.** `contact_policy_file`
+  defaults to `contact_policy.json` beside the config file. Agents started
+  from different configs keep their own ring policy, and agents from one
+  config share one trust list.
+
 ## License
 
 Licensed under either of

@@ -35,6 +35,8 @@
 //	  {"type":"backoff"}
 //	  {"type":"max_failures"}
 //	  {"type":"approval_request","id":"<approval-id>","tool":"<name>","args":"<preview>"}
+//	  {"type":"ring_pending","ring_id":"<id>","from":"<petname>","purpose":"..."}
+//	                             (a ring still awaiting an answer, sent as it arrives)
 //	  {"type":"turn_complete"}   (the settle point: a controller sends one
 //	                              input and waits for this)
 //	  {"type":"query_result","what":"...","data":...}
@@ -446,6 +448,8 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 		line, err = json.Marshal(map[string]any{"type": "approval_request", "id": ev.ID, "tool": ev.ToolName, "args": ev.Text})
 	case agent.EventListening:
 		line, err = json.Marshal(map[string]any{"type": "turn_complete"})
+	case agent.EventRingPending:
+		line, err = json.Marshal(map[string]any{"type": "ring_pending", "ring_id": ev.ID, "from": ev.From, "purpose": ev.Text})
 	default:
 		return nil, fmt.Errorf("frontend: unknown event kind %v", ev.Kind)
 	}

@@ -156,3 +156,30 @@ func TestClientInterruptAndShutdown(t *testing.T) {
 		t.Fatal("shutdown channel never closed")
 	}
 }
+
+// TestClientSayCollectsPendingRings: a ring surfaced during a turn lands
+// in the Turn, so a controller driving with Say still sees who rang.
+func TestClientSayCollectsPendingRings(t *testing.T) {
+	path, _, events := startServerForSDK(t)
+	c, err := Dial(context.Background(), path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	go func() {
+		events <- agent.Event{Kind: agent.EventRingPending, ID: "ring-7", From: "Nova", Text: "come help"}
+		events <- agent.Event{Kind: agent.EventAssistantMessage, Text: "ok"}
+		events <- agent.Event{Kind: agent.EventListening}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	turn, err := c.Say(ctx, "hi")
+	if err != nil {
+		t.Fatalf("say: %v", err)
+	}
+	want := PendingRing{RingID: "ring-7", From: "Nova", Purpose: "come help"}
+	if len(turn.PendingRings) != 1 || turn.PendingRings[0] != want {
+		t.Fatalf("pending rings = %+v, want [%+v]", turn.PendingRings, want)
+	}
+}

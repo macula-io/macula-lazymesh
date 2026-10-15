@@ -13,7 +13,8 @@ Usage:
     lazymesh_client.py <socket> shutdown
 
 `say` prints one JSON object: the session info plus the turn (deltas,
-text, tool_calls, tool_results, errors, backed_off, max_failures).
+text, tool_calls, tool_results, errors, pending_rings, backed_off,
+max_failures).
 `query` prints {"type": "query_result", "what": ..., "data": ...}.
 Exit code 1 on any wire or protocol error.
 """
@@ -55,6 +56,7 @@ def say_cmd(sock, reader, info, text):
         "tool_calls": [],
         "tool_results": [],
         "errors": [],
+        "pending_rings": [],
         "backed_off": False,
         "max_failures": False,
     }
@@ -71,6 +73,8 @@ def say_cmd(sock, reader, info, text):
             turn["tool_results"].append({"tool": event.get("tool", ""), "result": event.get("result", "")})
         elif kind == "error":
             turn["errors"].append(event.get("error", ""))
+        elif kind == "ring_pending":
+            turn["pending_rings"].append({"ring_id": event.get("ring_id", ""), "from": event.get("from", ""), "purpose": event.get("purpose", "")})
         elif kind == "backoff":
             turn["backed_off"] = True
         elif kind == "max_failures":

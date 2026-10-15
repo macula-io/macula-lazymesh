@@ -37,6 +37,14 @@ type ToolResult struct {
 	Result string `json:"result"`
 }
 
+// PendingRing is a ring another agent placed to this session that is
+// still awaiting an answer: RingID is what an answer must carry.
+type PendingRing struct {
+	RingID  string `json:"ring_id"`
+	From    string `json:"from"`
+	Purpose string `json:"purpose"`
+}
+
 // Turn is one completed agent turn: the streamed deltas, the completed
 // assistant text (authoritative), every tool activity, and any errors.
 type Turn struct {
@@ -45,8 +53,11 @@ type Turn struct {
 	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
 	ToolResults []ToolResult `json:"tool_results,omitempty"`
 	Errors      []string     `json:"errors,omitempty"`
-	BackedOff   bool         `json:"backed_off,omitempty"`
-	MaxFailures bool         `json:"max_failures,omitempty"`
+	// PendingRings are rings surfaced while the turn ran, each still
+	// awaiting an answer.
+	PendingRings []PendingRing `json:"pending_rings,omitempty"`
+	BackedOff    bool          `json:"backed_off,omitempty"`
+	MaxFailures  bool          `json:"max_failures,omitempty"`
 }
 
 // Client is one connection to one lazymesh session's control socket.
@@ -162,12 +173,15 @@ func (c *Client) collectTurn(ctx context.Context) (*Turn, error) {
 			return turn, fmt.Errorf("sdk: read event stream: %w", err)
 		}
 		var ev struct {
-			Type   string `json:"type"`
-			Text   string `json:"text"`
-			Tool   string `json:"tool"`
-			Args   string `json:"args"`
-			Result string `json:"result"`
-			Error  string `json:"error"`
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Tool    string `json:"tool"`
+			Args    string `json:"args"`
+			Result  string `json:"result"`
+			Error   string `json:"error"`
+			RingID  string `json:"ring_id"`
+			From    string `json:"from"`
+			Purpose string `json:"purpose"`
 		}
 		if err := json.Unmarshal(line, &ev); err != nil {
 			return turn, fmt.Errorf("sdk: decode event %q: %w", line, err)
@@ -183,6 +197,8 @@ func (c *Client) collectTurn(ctx context.Context) (*Turn, error) {
 			turn.ToolResults = append(turn.ToolResults, ToolResult{Tool: ev.Tool, Result: ev.Result})
 		case "error":
 			turn.Errors = append(turn.Errors, ev.Error)
+		case "ring_pending":
+			turn.PendingRings = append(turn.PendingRings, PendingRing{RingID: ev.RingID, From: ev.From, Purpose: ev.Purpose})
 		case "backoff":
 			turn.BackedOff = true
 		case "max_failures":

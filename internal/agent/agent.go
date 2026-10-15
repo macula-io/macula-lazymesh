@@ -68,6 +68,12 @@ const (
 	// not cosmetic polish: without it, a correctly-idle agent and a frozen
 	// one look identical again, the exact regression #13 warned about.
 	EventListening
+	// EventRingPending is emitted by cmd/lazymesh when ringwaiter
+	// surfaces a ring still awaiting an answer, at arrival rather than
+	// when the loop next idles, so a headless controller sees who is
+	// ringing (#19): ID is the ring id an answer must carry, From the
+	// caller's petname, Text the ring's purpose.
+	EventRingPending
 )
 
 // Event is one step the loop took, emitted as it happens so a caller (the
@@ -78,7 +84,8 @@ type Event struct {
 	Kind     EventKind
 	Text     string // assistant content, or a tool's result text
 	ToolName string // set for EventToolCall / EventToolResult
-	ID       string // set for EventApprovalRequested (the approval id)
+	ID       string // set for EventApprovalRequested (the approval id) and EventRingPending (the ring id)
+	From     string // set for EventRingPending (the caller's petname)
 	Err      error  // set for EventError
 }
 

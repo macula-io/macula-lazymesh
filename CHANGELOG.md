@@ -5,6 +5,15 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Rings reach a headless controller.** A ring still awaiting an answer is
+  sent on the control socket as `{"type":"ring_pending","ring_id",
+  "from","purpose"}` the moment it arrives, not when the agent next idles.
+  The Go SDK's `Turn.PendingRings` and the Python client's `pending_rings`
+  collect the ones that arrive during a turn (#19).
+- README: "Driving lazymesh from another program".
+
 ### Security
 
 - **The control socket serves only controllers of the same user.** Each

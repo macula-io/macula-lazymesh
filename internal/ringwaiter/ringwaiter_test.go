@@ -446,3 +446,32 @@ func TestManager_NoLoggerSetStaysSilentOnFailure(t *testing.T) {
 	m.Start(ctx)
 	time.Sleep(20 * time.Millisecond) // at least one failed attempt -- must not panic on a nil logger
 }
+
+// A headless controller learns of a ring when it is surfaced, not when
+// the agent loop next goes idle: the OnSurfaced hook fires once per
+// ring, at arrival (#19 ring_pending).
+func TestManager_OnSurfacedFiresOncePerRing(t *testing.T) {
+	f := &fakeCaller{respondWaitRing: func(ctx context.Context) (string, error) {
+		return `{"timed_out":0,"ring":{"ring_id":"r1","purpose":"p","peer_petname":"Nova","answer":null}}`, nil
+	}}
+	m := New(f, "")
+	surfaced := make(chan Ring, 8)
+	m.OnSurfaced(func(r Ring) { surfaced <- r })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+
+	select {
+	case r := <-surfaced:
+		if r != (Ring{RingID: "r1", Purpose: "p", FromPetname: "Nova"}) {
+			t.Fatalf("surfaced %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("OnSurfaced never fired for a pending ring")
+	}
+	select {
+	case r := <-surfaced:
+		t.Fatalf("OnSurfaced fired twice for one ring: %+v", r)
+	case <-time.After(200 * time.Millisecond):
+	}
+}

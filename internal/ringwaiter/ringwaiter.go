@@ -96,6 +96,7 @@ type Manager struct {
 	surfaced map[string]bool
 	cancel   context.CancelFunc
 	logger   *log.Logger
+	surface  func(Ring)
 
 	arrivals chan Ring
 }
@@ -140,6 +141,17 @@ func (m *Manager) log(format string, args ...any) {
 	if logger != nil {
 		logger.Printf(format, args...)
 	}
+}
+
+// OnSurfaced registers fn to be called once for each ring as it is
+// surfaced, from the watching goroutine, once the ring is queued on
+// Arrivals (a ring dropped on a full queue is reported when it is
+// surfaced again). It lets a frontend report a ring the moment it arrives,
+// while Arrivals waits for the agent loop to go idle. fn must not block.
+func (m *Manager) OnSurfaced(fn func(Ring)) {
+	m.mu.Lock()
+	m.surface = fn
+	m.mu.Unlock()
 }
 
 // Arrivals is the channel to select on alongside roomwaiter's own and
@@ -259,10 +271,14 @@ func (m *Manager) enqueue(r Ring) {
 		return
 	}
 	m.surfaced[r.RingID] = true
+	surface := m.surface
 	m.mu.Unlock()
 
 	select {
 	case m.arrivals <- r:
+		if surface != nil {
+			surface(r)
+		}
 	default:
 		// Buffer full -- drop and un-surface, same reasoning as
 		// roomwaiter.Manager.enqueue's own drop branch: leaving surfaced
