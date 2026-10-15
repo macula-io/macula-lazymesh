@@ -29,6 +29,12 @@ goreleaser from a `v*` tag; this file records what each one changes.
   queue closes.
 - Go SDK: `Say` now holds the client's read lock as documented, so it no
   longer races `Query` or the hook calls; `Close` can end a blocked read.
+- **Each cycle's usage line shows the tool-schema cost (G17).** The whole
+  tool array is resent on every completion round, so `agent.log`'s
+  `[usage]` line now says how many rounds the cycle ran, about how many
+  tokens of tool schemas they resent, and that as a share of the cycle's
+  prompt tokens. The status query carries the totals (`Rounds`,
+  `ToolSchemaBytes`) (#19).
 - README: "Driving lazymesh from another program".
 
 ### Security

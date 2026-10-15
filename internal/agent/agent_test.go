@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -242,5 +243,31 @@ func TestLoop_Say_ExceedsMaxRoundsReturnsError(t *testing.T) {
 	err := loop.Say(context.Background(), "loop forever", events)
 	if err == nil {
 		t.Fatalf("expected an error when the model never stops calling tools")
+	}
+}
+
+// TestLoop_Say_CountsRoundsAndResentToolSchemaBytes: every completion
+// round resends the full tool-schema array, so a two-round turn pays for
+// it twice (G17).
+func TestLoop_Say_CountsRoundsAndResentToolSchemaBytes(t *testing.T) {
+	tools := &fakeToolSource{
+		tools:    []mcpclient.Tool{{Name: "mesh_say", Description: "say something"}},
+		callText: "ok",
+	}
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "mesh_say", Arguments: "{}"}}}},
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "done"}},
+	}}
+	loop := NewLoop(p, tools, "")
+	if err := loop.Say(context.Background(), "go", make(chan Event, 8)); err != nil {
+		t.Fatalf("Say: %v", err)
+	}
+	specs, err := json.Marshal(ToolSpecsFrom(tools.tools))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rounds, schemaBytes := loop.Rounds()
+	if rounds != 2 || schemaBytes != 2*len(specs) {
+		t.Fatalf("rounds=%d schemaBytes=%d, want 2 and %d", rounds, schemaBytes, 2*len(specs))
 	}
 }

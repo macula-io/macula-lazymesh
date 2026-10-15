@@ -81,6 +81,10 @@ type StatusRequest struct{}
 type Status struct {
 	MessageCount int
 	Usage        provider.Usage
+	// Rounds and ToolSchemaBytes are the loop's completion rounds so far
+	// and the tool-schema bytes they sent (G17).
+	Rounds          int
+	ToolSchemaBytes int
 }
 
 // eventBuffer bounds how many events one Say turn captures before it
@@ -265,7 +269,8 @@ func (s *session) HandleCall(from gen.PID, ref gen.Ref, request any) (any, error
 	case Say:
 		return SayReply{Err: s.runSay(req.Text)}, nil
 	case StatusRequest:
-		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage()}, nil
+		rounds, schemaBytes := s.loop.Rounds()
+		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage(), Rounds: rounds, ToolSchemaBytes: schemaBytes}, nil
 	case Subscribe:
 		s.subscribers[from] = struct{}{}
 		return len(s.subscribers), nil

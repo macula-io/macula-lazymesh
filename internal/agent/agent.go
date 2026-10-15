@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -98,6 +99,13 @@ type Loop struct {
 
 	messages []provider.Message
 	usage    provider.Usage
+	// rounds and toolSchemaBytes count every completion round and the
+	// tool-schema bytes each one resent (G17): the OpenAI-compatible wire
+	// carries the whole tool array on every request, so a turn's schema
+	// cost is its round count times the array, not a fixed prefix paid
+	// once.
+	rounds          int
+	toolSchemaBytes int
 	// appended records exactly the messages the current Say call added,
 	// in order — the persistence delta. A position-based diff against a
 	// pre-Say count would break under compaction: trimHistory evicts old
@@ -117,6 +125,12 @@ type Loop struct {
 // otherwise -- see provider.Usage's own doc comment).
 func (l *Loop) Usage() provider.Usage {
 	return l.usage
+}
+
+// Rounds returns how many completion rounds this Loop has run and how
+// many bytes of tool schemas those rounds sent in total.
+func (l *Loop) Rounds() (rounds, toolSchemaBytes int) {
+	return l.rounds, l.toolSchemaBytes
 }
 
 // MessageCount returns how many messages are currently in this Loop's own
@@ -260,12 +274,18 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		return fmt.Errorf("list tools: %w", err)
 	}
 	toolSpecs := ToolSpecsFrom(tools)
+	schemaJSON, err := json.Marshal(toolSpecs)
+	if err != nil {
+		return fmt.Errorf("measure tool schemas: %w", err)
+	}
 
 	// A tool-calling conversation can run several rounds: assistant asks
 	// for tools, gets results, asks for more. Bounded so a misbehaving
 	// model/tool pair can't loop forever unattended.
 	const maxRounds = 25
 	for round := 0; round < maxRounds; round++ {
+		l.rounds++
+		l.toolSchemaBytes += len(schemaJSON)
 		resp, err := l.completionRound(ctx, toolSpecs, events)
 		if err != nil {
 			emit(events, Event{Kind: EventError, Err: fmt.Errorf("chat completion: %w", err)})

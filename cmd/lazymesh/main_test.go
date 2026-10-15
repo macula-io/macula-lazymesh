@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 )
 
 func TestNextBackoff_DoublesUntilCap(t *testing.T) {
@@ -773,5 +776,19 @@ func TestAgentInitialPrompt_ReadsLimitedInboxAndActs(t *testing.T) {
 	}
 	if !strings.Contains(agentInitialPrompt, "do not narrate") {
 		t.Fatalf("initial prompt does not forbid narration: %s", agentInitialPrompt)
+	}
+}
+
+// TestLogCycleUsage_ReportsRoundsAndToolSchemaCost: each cycle's usage
+// line says how many completion rounds ran and roughly how many tokens of
+// tool schemas they resent (G17).
+func TestLogCycleUsage_ReportsRoundsAndToolSchemaCost(t *testing.T) {
+	var buf bytes.Buffer
+	before := sessionhost.Status{Rounds: 3, ToolSchemaBytes: 4000}
+	after := sessionhost.Status{Rounds: 5, ToolSchemaBytes: 8000, Usage: provider.Usage{PromptTokens: 2000, TotalTokens: 2100}}
+	logCycleUsage(log.New(&buf, "", 0), before, after)
+	line := buf.String()
+	if !strings.Contains(line, "2 rounds") || !strings.Contains(line, "~1000 tokens of tool schemas") || !strings.Contains(line, "50% of prompt") {
+		t.Fatalf("usage line = %q", line)
 	}
 }

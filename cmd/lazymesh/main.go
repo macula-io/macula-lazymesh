@@ -961,7 +961,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			if err != nil {
 				usageAfter = sessionhost.Status{}
 			}
-			logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
+			logCycleUsage(agentLog, usageBefore, usageAfter)
 			var ok bool
 			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups)
 			if !ok {
@@ -988,7 +988,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// rare, but the loop below handles it like any death.
 			usageAfter = sessionhost.Status{}
 		}
-		logCycleUsage(agentLog, usageBefore.Usage, usageAfter.Usage)
+		logCycleUsage(agentLog, usageBefore, usageAfter)
 		// The session itself emitted the turn's EventListening (it must
 		// ride the same delivery path as the turn's deltas — see
 		// session.runSay); this driver emits it only on the failure
@@ -1128,15 +1128,29 @@ func emitTui(tuiEvents, frontendEvents chan<- agent.Event, ev agent.Event) {
 // rather than omitted, so their being zero is visible as a fact about
 // that backend, not silently missing output a reader might mistake for a
 // bug.
-func logCycleUsage(agentLog *log.Logger, before, after provider.Usage) {
+//
+// It also says how many completion rounds the cycle ran and roughly how
+// many tokens of tool schemas they resent, with that as a share of the
+// cycle's prompt tokens (G17): the whole tool array travels on every
+// round, so this is the part of the bill that grows with rounds.
+func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
+	prompt := after.Usage.PromptTokens - before.Usage.PromptTokens
+	schemaTokens := estimateTokens(after.ToolSchemaBytes - before.ToolSchemaBytes)
+	share := 0
+	if prompt > 0 {
+		share = schemaTokens * 100 / prompt
+	}
 	agentLog.Printf(
-		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d) -- running total: %d tokens",
-		after.PromptTokens-before.PromptTokens,
-		after.CompletionTokens-before.CompletionTokens,
-		after.TotalTokens-before.TotalTokens,
-		after.PromptCacheHitTokens-before.PromptCacheHitTokens,
-		after.PromptCacheMissTokens-before.PromptCacheMissTokens,
-		after.TotalTokens,
+		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens",
+		prompt,
+		after.Usage.CompletionTokens-before.Usage.CompletionTokens,
+		after.Usage.TotalTokens-before.Usage.TotalTokens,
+		after.Usage.PromptCacheHitTokens-before.Usage.PromptCacheHitTokens,
+		after.Usage.PromptCacheMissTokens-before.Usage.PromptCacheMissTokens,
+		after.Rounds-before.Rounds,
+		schemaTokens,
+		share,
+		after.Usage.TotalTokens,
 	)
 }
 
