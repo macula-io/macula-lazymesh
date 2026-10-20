@@ -26,9 +26,19 @@ func TestCheckServerVersionRefusesTheSilentFallback(t *testing.T) {
 }
 
 func TestCheckServerVersionAcceptsTheFloorAndAbove(t *testing.T) {
-	for _, v := range []string{MinMaculaMCPVersion, "0.39.0", "0.38.1", "1.0.0", "0.40.0-rc.1"} {
+	for _, v := range []string{MinMaculaMCPVersion, "0.48.1", "0.49.0", "1.0.0", "0.49.0-rc.1"} {
 		if err := checkServerVersion(initResult(v)); err != nil {
 			t.Errorf("%s refused: %v", v, err)
+		}
+	}
+}
+
+// The floor is a wire-1.0 floor: every macula-mcp that was fine on the
+// pre-1.0 fleet is now refused, including the 0.38.0 the floor used to name.
+func TestCheckServerVersionRefusesAFlooredOutRelease(t *testing.T) {
+	for _, v := range []string{"0.38.0", "0.39.0", "0.40.0-rc.1", "0.47.9"} {
+		if err := checkServerVersion(initResult(v)); err == nil {
+			t.Errorf("%q accepted", v)
 		}
 	}
 }

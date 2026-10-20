@@ -8,10 +8,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MinMaculaMCPVersion is the oldest macula-mcp that reaches the fleet: 0.38.0
-// is the first on @macula-io/ts 0.26.0 (macula-go v0.20.0), which dials
-// handshake v5, the wire every fleet station speaks.
-const MinMaculaMCPVersion = "0.38.0"
+// MinMaculaMCPVersion is the oldest macula-mcp that reaches the fleet: 0.48.0
+// is the first built on @macula-io/ts 0.31.0, which speaks wire 1.0 (macula 15)
+// and nothing older, the wire every fleet station has spoken since the flag day
+// of 2026-10-19 (macula-fleet#27). A pre-1.0 macula-mcp is refused by the
+// station at the handshake, so it is refused here first, by name.
+const MinMaculaMCPVersion = "0.48.0"
 
 // checkServerVersion refuses a macula-mcp older than MinMaculaMCPVersion, by
 // the version it reports in its MCP handshake. npx resolves an old release

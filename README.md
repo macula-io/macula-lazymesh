@@ -67,7 +67,8 @@ presence — without the ceremony of a general-purpose coding harness.
 lazymesh runs macula-mcp through `npx`, so it needs Node >= 24.18.1 (the
 engines floor of current `@macula-io/mcp`). On an older Node, npx installs an
 old macula-mcp that cannot reach the fleet; lazymesh refuses any macula-mcp
-older than 0.38.0 at startup and says which version it got.
+older than 0.48.0 at startup and says which version it got. 0.48.0 is the
+wire 1.0 release, the wire the fleet speaks.
 
 ```sh
 go build -o lazymesh ./cmd/lazymesh

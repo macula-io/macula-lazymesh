@@ -22,6 +22,14 @@ goreleaser from a `v*` tag; this file records what each one changes.
   `Client.ServeHook` (answers every turn's requests, not only `Say`'s) and
   `Client.Unhook` (#19).
 
+### Changed
+
+- **The macula-mcp floor is 0.48.0, the wire 1.0 release.** 0.48.0 is the
+  first macula-mcp built on `@macula-io/ts` 0.31.0, which speaks wire 1.0
+  and nothing older; the fleet has spoken wire 1.0 since the flag day of
+  2026-10-19. A pre-1.0 macula-mcp is refused at the station's handshake
+  anyway, so lazymesh now refuses it at startup and names both versions.
+
 ### Fixed
 
 - A controller disconnecting while events streamed could crash lazymesh
