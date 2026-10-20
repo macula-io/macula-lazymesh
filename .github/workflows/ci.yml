@@ -35,6 +35,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go build ./...
+      # .goreleaser.yml ships windows/amd64 and windows/arm64, and a unix-only
+      # syscall in shared code compiles here and not there: this is the check
+      # that would have caught cmd.SysProcAttr{Setpgid: true} in realmjoin.
+      - name: cross-compile for windows
+        run: GOOS=windows GOARCH=amd64 go build ./...
 
   test:
     name: go test

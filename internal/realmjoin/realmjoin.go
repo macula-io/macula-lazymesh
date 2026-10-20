@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 )
 
 // Event mirrors macula-mcp's own bin/realm.ts SessionEvent shape --
@@ -107,16 +106,9 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 	// again. exec.CommandContext kills only the direct child, so when a
 	// grandchild is the one holding stdout the scan never sees EOF and the
 	// channel below never closes -- a cancellation then looks like a hang that
-	// outlives Join. Give the child its own process group and kill the group.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		// ESRCH: everything in the group is already gone, which is the outcome
-		// this is after rather than a failure to report.
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return err
-		}
-		return nil
-	}
+	// outlives Join. ownProcessGroup makes the cancellation kill the tree; it
+	// is per-platform (procgroup_unix.go, procgroup_windows.go).
+	ownProcessGroup(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("realmjoin: stdout pipe: %w", err)
@@ -127,15 +119,22 @@ func Join(ctx context.Context, version, identityFile, realmName string) (<-chan 
 	}
 	// Belt to that brace: whatever still holds the pipe (a child that left its
 	// own group), closing our read end when ctx is done is what makes the
-	// promise above true -- the channel is closed either way.
+	// promise above true -- the channel is closed either way. done ends this
+	// goroutine on the ordinary path too, so a Join whose ctx is never
+	// cancelled does not leave one waiting forever.
+	done := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		_ = stdout.Close()
+		select {
+		case <-ctx.Done():
+			_ = stdout.Close()
+		case <-done:
+		}
 	}()
 
 	events := make(chan Event, 4)
 	go func() {
 		defer close(events)
+		defer close(done)
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // qr_png_base64 lines are large -- default 64KiB scanner buffer truncates them
 		sawEvent := false
