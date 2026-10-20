@@ -295,6 +295,48 @@ func TestJoin_NonZeroNon127ExitGetsNoVersionHint(t *testing.T) {
 	}
 }
 
+// The real command is a wrapper: npx starts the CLI, and the CLI can start
+// more again. Killing only the direct child leaves its own children alive and
+// holding the other end of stdout, so the scan never reaches EOF and a
+// cancellation looks like a hang that outlives the Join call. The script says
+// when it has forked, so the cancellation is deterministic rather than racing
+// the exec.
+func TestJoin_ContextCancellationKillsTheProcessesTheChildStarted(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "forked")
+	script := fakeScript(t, nil, 0)
+	body := "#!/bin/sh\nsleep 30 &\n: > " + marker + "\nwait\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("overwrite fake script: %v", err)
+	}
+	withFakeCommand(t, script)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events, err := Join(ctx, "0.27.0", "/tmp/identity.seed", "io.macula")
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	waitForFile(t, marker)
+	cancel()
+	got := drain(t, events, 5*time.Second)
+	if len(got) != 0 {
+		t.Fatalf("expected no events (a cancellation is not a reported failure), got %+v", got)
+	}
+}
+
+// waitForFile blocks until path exists, so a test can act on what the
+// subprocess has already done instead of sleeping and hoping.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("the fake command never reported that it had forked (%s)", path)
+}
+
 func TestJoin_ContextCancellationClosesTheChannelWithoutASpawnErrorEvent(t *testing.T) {
 	// A script that sleeps well past when the test cancels ctx --
 	// proves cancellation actually kills the subprocess rather than the
