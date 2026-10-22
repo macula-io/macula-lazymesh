@@ -347,6 +347,12 @@ full wire protocol is documented at the top of
   from different configs keep their own ring policy, and agents from one
   config share one trust list.
 
+## Architecture
+
+What lazymesh talks to and what it is made of, as a C4 model: [architecture/README.md](architecture/README.md).
+
+![macula-lazymesh system context](assets/c4-context.svg)
+
 ## License
 
 Licensed under either of

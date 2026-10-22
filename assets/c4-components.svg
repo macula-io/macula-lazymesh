@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 954" role="img" aria-label="macula-lazymesh components">
+<title>macula-lazymesh components</title>
+<style>
+.t-name { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+.t-desc { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12.5px; }
+.t-rel { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; paint-order: stroke; stroke-width: 4px; stroke-linejoin: round; }
+.t-code { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 13px; font-weight: 600; }
+.t-type { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+.t-bound { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
+.t-leg { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12px; }
+.edge { fill: none; stroke-width: 1.25; }
+.edge-later { fill: none; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bg { fill: #FFFFFF; }
+.b-sys { fill: #F5E9CC; stroke: #A56F0A; stroke-width: 2; }
+.b-per { fill: #E3EBF2; stroke: #3B5B7A; stroke-width: 1.25; }
+.b-mac { fill: #E6E4EE; stroke: #5E5A78; stroke-width: 1.25; }
+.b-ext { fill: #ECEFED; stroke: #8A9791; stroke-width: 1.25; }
+.b-cmp { fill: #FFFFFF; stroke: #8A9791; stroke-width: 1.25; }
+.b-later { fill: none; stroke: #8A9791; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bound { fill: none; stroke: #B3BDB8; stroke-width: 1; }
+.head { fill: #3B5B7A; }
+.t-name, .t-code { fill: #16201D; }
+.t-type, .t-bound, .t-leg { fill: #66736E; }
+.t-desc { fill: #34413C; }
+.t-rel { fill: #66736E; stroke: #FFFFFF; }
+.edge, .edge-later { stroke: #8A9791; }
+.arrowhead { fill: #8A9791; }
+@media (prefers-color-scheme: dark) {
+.bg { fill: #171F1C; }
+.b-sys { fill: #3A2E13; stroke: #E3AA3C; }
+.b-per { fill: #1D2A36; stroke: #8EB4D8; }
+.b-mac { fill: #26243A; stroke: #A9A4C8; }
+.b-ext { fill: #1C2421; stroke: #7D8B85; }
+.b-cmp { fill: #171F1C; stroke: #7D8B85; }
+.b-later { stroke: #7D8B85; }
+.bound { stroke: #4A5752; }
+.head { fill: #8EB4D8; }
+.t-name, .t-code { fill: #E6ECE9; }
+.t-type, .t-bound, .t-leg { fill: #93A09A; }
+.t-desc { fill: #C3CDC8; }
+.t-rel { fill: #93A09A; stroke: #171F1C; }
+.edge, .edge-later { stroke: #7D8B85; }
+.arrowhead { fill: #7D8B85; }
+}
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="1000" height="954"/>
+<rect class="bound" x="16" y="40" width="968" height="728" rx="12"/>
+<text class="t-bound" x="32" y="62">lazymesh process [Go 1.27, cmd/lazymesh, internal/]</text>
+<rect class="b-sys" x="32" y="70" width="936" height="80" rx="10"/>
+<text class="t-code" x="48" y="98">cmd/lazymesh</text>
+<text class="t-type" x="48" y="116">[main.go, eventbridge.go]</text>
+<text class="t-desc" x="48" y="140">Loads config, builds the provider and tool sources, spawns macula-mcp, starts the session; the event bridge fans events to the TUI and the socket.</text>
+<rect class="b-cmp" x="32" y="174" width="300" height="112" rx="10"/>
+<text class="t-code" x="48" y="202">sessionhost</text>
+<text class="t-type" x="48" y="220">[Ergo node, simple_one_for_one]</text>
+<text class="t-desc" x="48" y="244">A supervised session actor per</text>
+<text class="t-desc" x="48" y="260">conversation, restarted on a crash</text>
+<text class="t-desc" x="48" y="276">with the same args</text>
+<rect class="b-cmp" x="350" y="174" width="300" height="112" rx="10"/>
+<text class="t-code" x="366" y="202">agent</text>
+<text class="t-type" x="366" y="220">[tool-calling loop]</text>
+<text class="t-desc" x="366" y="244">Converses, calls tools, feeds results</text>
+<text class="t-desc" x="366" y="260">back; tool allowlist (deny by</text>
+<text class="t-desc" x="366" y="276">default), approvals, terse mode</text>
+<rect class="b-cmp" x="668" y="174" width="300" height="112" rx="10"/>
+<text class="t-code" x="684" y="202">provider</text>
+<text class="t-type" x="684" y="220">[LLM backends]</text>
+<text class="t-desc" x="684" y="244">deepseek, nvidia, groq on the</text>
+<text class="t-desc" x="684" y="260">OpenAI-compatible shape; anthropic</text>
+<text class="t-desc" x="684" y="276">on the Messages API; streamed</text>
+<rect class="bound" x="32" y="310" width="936" height="162" rx="12"/>
+<text class="t-bound" x="48" y="332">Tool sources</text>
+<rect class="b-cmp" x="48" y="342" width="288" height="116" rx="10"/>
+<text class="t-code" x="64" y="370">mcpclient</text>
+<text class="t-type" x="64" y="388">[the sole mesh tool source]</text>
+<text class="t-desc" x="64" y="412">Spawns macula-mcp, one MCP</text>
+<text class="t-desc" x="64" y="428">session for the agent and the</text>
+<text class="t-desc" x="64" y="444">TUI panels; call log</text>
+<rect class="b-cmp" x="356" y="342" width="288" height="116" rx="10"/>
+<text class="t-code" x="372" y="370">meshservices, webfetch</text>
+<text class="t-type" x="372" y="388">[off by default; always]</text>
+<text class="t-desc" x="372" y="412">Curated mcl-rag and mcl-graph</text>
+<text class="t-desc" x="372" y="428">procedures, found in the DHT;</text>
+<text class="t-desc" x="372" y="444">web_fetch with an SSRF guard</text>
+<rect class="b-cmp" x="664" y="342" width="288" height="116" rx="10"/>
+<text class="t-code" x="680" y="370">localtools</text>
+<text class="t-type" x="680" y="388">[opt-in, allowlist-gated]</text>
+<text class="t-desc" x="680" y="412">shell_exec, read_file, write_file</text>
+<text class="t-desc" x="680" y="428">in local_tools.working_dir</text>
+<rect class="b-cmp" x="32" y="508" width="300" height="112" rx="10"/>
+<text class="t-code" x="48" y="536">roomwaiter, ringwaiter</text>
+<text class="t-type" x="48" y="554">[loop-owned waits]</text>
+<text class="t-desc" x="48" y="578">Block in mesh_wait_room and</text>
+<text class="t-desc" x="48" y="594">mesh_wait_ring, feed arrivals in</text>
+<text class="t-desc" x="48" y="610">as prompts; scheduler: timed ones</text>
+<rect class="b-cmp" x="350" y="508" width="300" height="112" rx="10"/>
+<text class="t-code" x="366" y="536">tui</text>
+<text class="t-type" x="366" y="554">[bubbletea, lipgloss; termkeys]</text>
+<text class="t-desc" x="366" y="578">Status strip, rooms/rings/presence</text>
+<text class="t-desc" x="366" y="594">panels, chat pane, ring and</text>
+<text class="t-desc" x="366" y="610">approval popups, realms view</text>
+<rect class="b-cmp" x="668" y="508" width="300" height="112" rx="10"/>
+<text class="t-code" x="684" y="536">frontend</text>
+<text class="t-type" x="684" y="554">[unix-socket control plane]</text>
+<text class="t-desc" x="684" y="578">NDJSON both ways, 0600 socket,</text>
+<text class="t-desc" x="684" y="594">peer uid checked; the pre-tool</text>
+<text class="t-desc" x="684" y="610">hook, failing closed</text>
+<rect class="b-cmp" x="32" y="644" width="300" height="104" rx="10"/>
+<text class="t-code" x="48" y="672">sessionstore</text>
+<text class="t-type" x="48" y="690">[JSONL append logs]</text>
+<text class="t-desc" x="48" y="714">One conversation per file,</text>
+<text class="t-desc" x="48" y="730">O_APPEND; --resume loads one</text>
+<rect class="b-cmp" x="350" y="644" width="300" height="104" rx="10"/>
+<text class="t-code" x="366" y="672">realmjoin, updatecheck</text>
+<text class="t-type" x="366" y="690">[subprocess; HTTPS]</text>
+<text class="t-desc" x="366" y="714">Execs macula-mcp-realm join, never</text>
+<text class="t-desc" x="366" y="730">a tool; reads npm's latest mcp</text>
+<rect class="b-cmp" x="668" y="644" width="300" height="104" rx="10"/>
+<text class="t-code" x="684" y="672">config, contactpolicy</text>
+<text class="t-type" x="684" y="690">[and logging, counters]</text>
+<text class="t-desc" x="684" y="714">config.yaml; the ring policy file;</text>
+<text class="t-desc" x="684" y="730">agent.log; counters, optional /metrics</text>
+<path class="edge" d="M182 150V174" marker-end="url(#a)"/>
+<text class="t-rel" x="190" y="166">starts the session</text>
+<path class="edge" d="M332 230H350" marker-end="url(#a)"/>
+<path class="edge" d="M650 230H668" marker-end="url(#a)"/>
+<path class="edge" d="M500 286V310" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="302">tool calls</text>
+<path class="edge" d="M182 508V458" marker-end="url(#a)"/>
+<text class="t-rel" x="190" y="494">wait calls</text>
+<path class="edge" d="M48 420H24V842H32" marker-end="url(#a)"/>
+<text class="t-rel" x="11" y="640" text-anchor="middle" transform="rotate(-90 11 640)">MCP over stdio</text>
+<path class="edge" d="M420 748V794" marker-end="url(#a)"/>
+<text class="t-rel" x="428" y="780">execs</text>
+<path class="edge" d="M968 842H976V564H968" marker-end="url(#a)"/>
+<text class="t-rel" x="991" y="700" text-anchor="middle" transform="rotate(90 991 700)">unix socket</text>
+<rect class="b-mac" x="32" y="794" width="456" height="96" rx="10"/>
+<text class="t-name" x="48" y="822">macula-mcp subprocess</text>
+<text class="t-type" x="48" y="840">[npx -y -p @macula-io/mcp, &gt;= 0.48.0]</text>
+<text class="t-desc" x="48" y="864">The mesh: rooms, rings, presence, calls, DHT;</text>
+<text class="t-desc" x="48" y="880">macula-mcp-realm for joins, a separate process</text>
+<rect class="b-cmp" x="512" y="794" width="456" height="96" rx="10"/>
+<text class="t-name" x="528" y="822">sdk/ clients</text>
+<text class="t-type" x="528" y="840">[Go client.go, Python lazymesh_client.py]</text>
+<text class="t-desc" x="528" y="864">A controller's side of the socket: Say, events,</text>
+<text class="t-desc" x="528" y="880">pending rings, HookPreTool and ServeHook</text>
+<rect class="b-sys" x="24" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="54" y="930">In scope</text>
+<rect class="b-per" x="110.8" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="140.8" y="930">Person</text>
+<rect class="b-mac" x="184.39999999999998" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="214.39999999999998" y="930">Macula infrastructure</text>
+<rect class="b-ext" x="357.0" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="387.0" y="930">External system</text>
+<rect class="b-cmp" x="490.0" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="520.0" y="930">Container or component</text>
+<rect class="b-later" x="669.2" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="699.2" y="930">Planned, not built</text>
+<rect class="bound" x="822.0" y="918" width="22" height="14" rx="3"/>
+<text class="t-leg" x="852.0" y="930">Boundary</text>
+</svg>
