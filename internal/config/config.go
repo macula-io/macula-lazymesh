@@ -14,14 +14,13 @@ import (
 // Config is lazymesh's on-disk configuration shape.
 type Config struct {
 	// Provider selects the LLM backend. "deepseek" (also what empty
-	// resolves to), "nvidia", and "groq" are working implementations;
-	// "anthropic" exists as an interface-shape stub (see
-	// internal/provider/anthropic.go) and returns an error if selected --
+	// resolves to), "nvidia", "groq" and "anthropic" are working
+	// implementations. "anthropic" (internal/provider/anthropic.go) has its
+	// own request/response mapping, completions and streaming, because
 	// Anthropic's Messages API has a genuinely different shape from the
-	// other three's shared OpenAI-compatible one, so it needs real work,
-	// not just a config value. Default stays deepseek regardless of what
-	// else is available: it was chosen specifically for being cheap
-	// enough to run an agent against continuously.
+	// other three's shared OpenAI-compatible one. Default stays deepseek
+	// regardless of what else is available: it was chosen specifically
+	// for being cheap enough to run an agent against continuously.
 	//
 	// nvidia is available but this workspace's own fleet dropped it as
 	// its default elsewhere (2026-09-07): its "free" tier turned out to

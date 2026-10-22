@@ -97,9 +97,10 @@ or `provider: groq` (plus that provider's own `api_key_file`, e.g.
 NVIDIA's free tier turned out to be a trial-credit pool that exhausts
 under sustained production load, not a genuine free tier — worth
 knowing before pointing a long-running agent at it. `provider: anthropic`
-is a config-shape stub only (not yet implemented — Anthropic's Messages
-API needs its own request/response mapping, unlike the other three's
-shared OpenAI-compatible shape).
+(plus its own `api_key_file`) drives Anthropic's Messages API, with
+completions and streaming: its own request/response mapping, since that
+API does not share the other three's OpenAI-compatible shape — see
+`internal/provider/anthropic.go`'s own doc comments for defaults.
 
 Agent activity renders live in the TUI's chat pane (collapsed one-line
 tool calls, expandable — see below) AND logs the full detail to
