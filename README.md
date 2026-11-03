@@ -333,6 +333,10 @@ What changes in this profile:
 - The roster lives only in your config file. Nothing the model does changes
   it, and it is separate from the ring pop-up's "Answer + Trust" list.
 
+Start it in the room your crew works in: `lazymesh --room <room_topic>`.
+In this profile lazymesh joins that room itself, since the model has no
+way to join one.
+
 `roster:` without `profile: coding` changes nothing the model sees: it only
 logs, in agent.log, which messages a coding agent would have dropped, so
 you can check the filter against your own rooms first.

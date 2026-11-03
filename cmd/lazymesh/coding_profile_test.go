@@ -382,3 +382,33 @@ func TestBuildRosterGate_FollowsTheProfile(t *testing.T) {
 		t.Error("a malformed roster id was accepted")
 	}
 }
+
+type joinRecorder struct {
+	joined []map[string]any
+	result string
+}
+
+func (j *joinRecorder) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	if name != "mesh_join_room" {
+		return "", fmt.Errorf("unexpected %s", name)
+	}
+	j.joined = append(j.joined, args)
+	return j.result, nil
+}
+
+// TestJoinOperatorRoom: in the coding profile the model has no join tool,
+// so the room the operator names with --room is joined by lazymesh itself
+// at start; a join that does not confirm the room fails the start.
+func TestJoinOperatorRoom(t *testing.T) {
+	ok := &joinRecorder{result: `{"room_topic":"` + codingRoom + `","joined":1}`}
+	if err := joinOperatorRoom(context.Background(), ok, codingRoom); err != nil {
+		t.Fatal(err)
+	}
+	if len(ok.joined) != 1 || ok.joined[0]["room_topic"] != codingRoom {
+		t.Fatalf("joins = %v", ok.joined)
+	}
+	bad := &joinRecorder{result: `{"error":"no such room"}`}
+	if err := joinOperatorRoom(context.Background(), bad, codingRoom); err == nil {
+		t.Fatal("an unconfirmed join passed")
+	}
+}

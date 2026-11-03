@@ -58,7 +58,7 @@ var (
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
-	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs)")
+	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs); in the coding profile lazymesh joins it itself at start")
 	goalText := flag.String("goal", "", "additional objective for the agent, beyond ordinary mesh participation (optional)")
 	headless := flag.Bool("headless", false, "run without the TUI (a unix control socket or a signal ends the session)")
 	socketPath := flag.String("unix-socket", "", "serve the control plane on this unix socket (default: $XDG_RUNTIME_DIR/<session-id>.sock)")
@@ -230,9 +230,19 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return err
 	}
 
+	// The coding profile's model has no join tool, so the operator's
+	// --room is joined here, by lazymesh, before the rooms are seeded.
+	if cfg.CodingProfile() && room != "" {
+		if err := joinOperatorRoom(ctx, client, room); err != nil {
+			return err
+		}
+	}
 	initialRooms, err := seedInitialRooms(ctx, client)
 	if err != nil {
 		return fmt.Errorf("seed initial rooms for room-waiter: %w", err)
+	}
+	if cfg.CodingProfile() && len(initialRooms) == 0 {
+		fmt.Fprintln(os.Stderr, "lazymesh: the coding profile is in no room yet, so no crew message can reach it; start with --room <room_topic>")
 	}
 	waiterMgr.Sync(ctx, initialRooms)
 	// The roster gate (macula-io/macula-lazymesh#38) reads room arrivals
@@ -1519,6 +1529,19 @@ func buildRosterGate(ctx context.Context, cfg config.Config, client rostergate.C
 		gate.SetSelf(self)
 	}
 	return gate, nil
+}
+
+// joinOperatorRoom joins room on the operator's behalf (the --room flag
+// in the coding profile) and fails unless the result confirms it.
+func joinOperatorRoom(ctx context.Context, client rostergate.Caller, room string) error {
+	result, err := client.CallTool(ctx, "mesh_join_room", map[string]any{"room_topic": room})
+	if err != nil {
+		return fmt.Errorf("join room %s: %w", room, err)
+	}
+	if parseRoomTopic(result) != room {
+		return fmt.Errorf("join room %s: the mesh did not confirm the join: %s", room, result)
+	}
+	return nil
 }
 
 // selfNodeID reads this session's own node id from mesh_agents' is_self
