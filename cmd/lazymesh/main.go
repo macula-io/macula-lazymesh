@@ -57,6 +57,18 @@ var (
 )
 
 func main() {
+	// `lazymesh attach` is a client of a running session, not a session of
+	// its own: it shares none of the flags below (no provider, no mesh
+	// connection, no config), so it is dispatched before them rather than
+	// threaded through run().
+	if len(os.Args) > 1 && os.Args[1] == "attach" {
+		if err := runAttach(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lazymesh attach:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to config.yaml (default: ~/.config/lazymesh/config.yaml)")
 	room := flag.String("room", "", "mesh room topic to prioritize joining, in addition to whatever rooms the agent is already a member of (optional -- the agent loop always runs); in the coding profile lazymesh joins it itself at start")
@@ -377,10 +389,18 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 
 	// The approval bus (G9): the TUI's approval popup and the control
 	// socket's approve message both land here and answer the session's
-	// outstanding consent question.
+	// outstanding consent question. Declared before the goroutine so the
+	// TUI's own answers can be routed through the control plane when one
+	// is running: an attached frontend must be told when the in-process
+	// TUI answered first, and only the server keeps that record.
+	var ctrl *frontend.Server
 	approvalCh := make(chan tui.ApprovalAnswer, 4)
 	go func() {
 		for answer := range approvalCh {
+			if ctrl != nil {
+				ctrl.AnswerLocal(answer.ID, answer.Allow)
+				continue
+			}
 			sessionhost.AnswerApproval(sessPid, answer.ID, answer.Allow)
 		}
 	}()
@@ -394,7 +414,6 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// attached to the same bus the TUI uses. input lands on userInputCh
 	// exactly like the compose line; queries read live session and mesh
 	// state; shutdown ends the headless run.
-	var ctrl *frontend.Server
 	if controlSocket {
 		path := socketPath
 		if path == "" {
@@ -409,7 +428,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			Events:      frontendEvents,
 			Query:       buildQueryHandler(node, sessPid, client, runtimeCounters),
 			Interrupt:   func() { sessionhost.Interrupt(sessPid) },
-			Approve:     func(id string, allow bool) { sessionhost.AnswerApproval(sessPid, id, allow) },
+			Approve:     func(id string, allow bool) bool { return sessionhost.TryAnswerApproval(sessPid, id, allow) },
 			Schedule:    schedulerMgr.Schedule,
 			PreToolHook: preToolHook,
 			SessionID:   resolvedSessionID,
@@ -438,16 +457,28 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
+	// An attached frontend can answer an approval this TUI is showing, and
+	// the in-process TUI is not one of the control socket's connections, so
+	// the server's broadcast cannot reach it. Without this the popup waits
+	// out the full approval timeout after someone else has already decided
+	// the call. nil when no control socket is running: then nothing else
+	// can answer.
+	var resolvedCh <-chan frontend.ApprovalResolved
+	if ctrl != nil {
+		resolvedCh = ctrl.Resolutions()
+	}
+
 	tuiModel := tui.New(client, tui.Options{
-		AgentEvents:       tuiEvents,
-		UserInputCh:       userInputCh,
-		InterruptCh:       interruptCh,
-		ApprovalCh:        approvalCh,
-		StatusBarPosition: cfg.StatusBarPosition,
-		ContactPolicyFile: cfg.ContactPolicyFile,
-		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
-		AgentModel:        agentModelLabel,
-		MeshServices:      meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
+		AgentEvents:        tuiEvents,
+		UserInputCh:        userInputCh,
+		InterruptCh:        interruptCh,
+		ApprovalCh:         approvalCh,
+		ApprovalResolvedCh: resolvedCh,
+		StatusBarPosition:  cfg.StatusBarPosition,
+		ContactPolicyFile:  cfg.ContactPolicyFile,
+		AutoAcceptKnown:    config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
+		AgentModel:         agentModelLabel,
+		MeshServices:       meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
 		// The l key opens this file in $EDITOR. The same logPath the file
 		// was opened from above, so there is one derivation of the path.
 		LogPath: logPath,
@@ -1837,4 +1868,40 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 	case agent.EventListening:
 		agentLog.Printf("[listening] waiting for the next human message, room arrival, or periodic check")
 	}
+}
+
+// attachUsage is what `lazymesh attach` prints for no argument or -h.
+const attachUsage = "usage: lazymesh attach <session-id|socket-path>  (a session id resolves to its control socket; the TUI detaches on exit and the session keeps running)"
+
+// runAttach opens the single-session TUI on a session that is already
+// running, over its control socket (macula-io/macula-lazymesh#40). The
+// argument is a socket path (anything containing a separator) or a
+// session id, which resolves through the same DefaultSocketPath the
+// session used to create it. Closing the TUI detaches; it never stops the
+// session.
+func runAttach(args []string) error {
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Println(attachUsage)
+		return nil
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("%s", attachUsage)
+	}
+	target := args[0]
+	path := target
+	if !strings.ContainsRune(target, os.PathSeparator) && !strings.HasSuffix(target, ".sock") {
+		path = frontend.DefaultSocketPath(target)
+		if path == "" {
+			return fmt.Errorf("no private directory for session %s: $XDG_RUNTIME_DIR must be a directory you own with mode 0700 (or pass the socket path itself)", target)
+		}
+	}
+
+	ctrl, err := frontend.Dial(path)
+	if err != nil {
+		return fmt.Errorf("no session to attach to at %s: %w", path, err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return tui.RunAttached(ctx, ctrl, tui.Options{})
 }

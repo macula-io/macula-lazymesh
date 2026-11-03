@@ -127,14 +127,53 @@ const approvalTimeout = 2 * time.Minute
 // approvalSlot is what AnswerApproval looks up: the one question the
 // session currently has outstanding, keyed by the approval id so a stale
 // answer can never be delivered to a newer question.
+//
+// The slot itself decides who won, under its own lock. That decision
+// cannot live in the buffered channel: consent drains the buffer as soon
+// as it wakes, so a second caller arriving after the drain but before the
+// slot is deleted would find an empty channel, send successfully, and be
+// told its answer was the one used — two frontends both getting "yes,
+// yours counted" while the second answer fell on the floor. done is what
+// makes "answered" mean answered, whichever of those two moments it is.
 type approvalSlot struct {
 	id string
 	ch chan approvalAnswer
+
+	mu   sync.Mutex
+	done bool
 }
 
 // approvalAnswer is the operator's decision.
 type approvalAnswer struct {
 	allow bool
+}
+
+// answer claims the slot for id and delivers the decision. Only the first
+// caller can win: a second answer, an answer for a different question, or
+// an answer after the question stopped waiting all report false, so the
+// frontend that sent them is told rather than congratulated.
+func (s *approvalSlot) answer(id string, allow bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done || s.id != id {
+		return false
+	}
+	select {
+	case s.ch <- approvalAnswer{allow: allow}:
+		s.done = true
+		return true
+	default:
+		return false
+	}
+}
+
+// abandon closes the slot without an answer, for the timeout and
+// interrupt paths: a decision arriving after the session stopped waiting
+// was never going to be used, and must not be reported as if it were.
+func (s *approvalSlot) abandon() {
+	s.mu.Lock()
+	s.done = true
+	s.mu.Unlock()
 }
 
 // approvals maps each live session to its current outstanding consent
@@ -148,15 +187,22 @@ var approvals sync.Map // gen.PID -> *approvalSlot
 // question, or one whose question's id no longer matches, is a no-op
 // (never delivered to the wrong call).
 func AnswerApproval(session gen.PID, id string, allow bool) {
-	if slot, ok := approvals.Load(session); ok {
-		s := slot.(*approvalSlot)
-		if s.id == id {
-			select {
-			case s.ch <- approvalAnswer{allow: allow}:
-			default:
-			}
-		}
+	TryAnswerApproval(session, id, allow)
+}
+
+// TryAnswerApproval is AnswerApproval reporting whether this answer was
+// the one delivered. More than one frontend can be attached to a session,
+// so several may answer the same question; exactly one answer reaches the
+// session, and only that caller may be told its decision counted. A false
+// return means the question was already answered, is no longer
+// outstanding, or belongs to a different call — never that it was ignored
+// silently by the session.
+func TryAnswerApproval(session gen.PID, id string, allow bool) bool {
+	slot, ok := approvals.Load(session)
+	if !ok {
+		return false
 	}
+	return slot.(*approvalSlot).answer(id, allow)
 }
 
 // consent is the session's own Consent: surface the question to every
@@ -173,7 +219,8 @@ func AnswerApproval(session gen.PID, id string, allow bool) {
 func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool, error) {
 	id := fmt.Sprintf("approve-%d", time.Now().UnixNano())
 	ch := make(chan approvalAnswer, 1)
-	approvals.Store(s.PID(), &approvalSlot{id: id, ch: ch})
+	slot := &approvalSlot{id: id, ch: ch}
+	approvals.Store(s.PID(), slot)
 	defer approvals.Delete(s.PID())
 	s.broadcast(agent.Event{
 		Kind:     agent.EventApprovalRequested,
@@ -187,8 +234,10 @@ func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool
 	case answer := <-ch:
 		return answer.allow, nil
 	case <-ctx.Done():
+		slot.abandon()
 		return false, fmt.Errorf("approval for %q was interrupted", tool)
 	case <-timer.C:
+		slot.abandon()
 		return false, fmt.Errorf("approval for %q timed out after %s", tool, approvalTimeout)
 	}
 }

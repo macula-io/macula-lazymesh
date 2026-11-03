@@ -258,10 +258,13 @@ func TestApproveControlMessageAndApprovalRequestWire(t *testing.T) {
 	events := make(chan agent.Event, 8)
 	path := filepath.Join(t.TempDir(), "ctrl.sock")
 	s, err := Start(Options{
-		Path:      path,
-		Input:     make(chan string, 8),
-		Events:    events,
-		Approve:   func(id string, allow bool) { approveCalls <- [2]any{id, allow} },
+		Path:   path,
+		Input:  make(chan string, 8),
+		Events: events,
+		Approve: func(id string, allow bool) bool {
+			approveCalls <- [2]any{id, allow}
+			return true
+		},
 		SessionID: "approve-test",
 	})
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/termkeys"
@@ -94,6 +95,21 @@ type Options struct {
 	// own approval timeout then refuses the call).
 	ApprovalCh chan<- ApprovalAnswer
 
+	// Attached is true when this TUI reached the session over its control
+	// socket (lazymesh attach) rather than running it. It is set by the
+	// caller, not inferred from a nil client: a caller with no mesh client
+	// and one with no session are different things, and only the second
+	// should stop showing mesh counts.
+	Attached bool
+
+	// ApprovalResolvedCh reports approvals answered while this TUI is
+	// open — including ones another frontend answered first. nil when
+	// unwired (the in-process TUI is the only frontend that can answer).
+	// An attached TUI needs it so a popup that lost the race closes
+	// itself instead of sitting there looking like a decision still to be
+	// made (macula-io/macula-lazymesh#40's threat model).
+	ApprovalResolvedCh <-chan frontend.ApprovalResolved
+
 	StatusBarPosition string // "top" or "bottom"
 
 	// ContactPolicyFile and AutoAcceptKnown together drive the ring
@@ -148,12 +164,18 @@ type Options struct {
 type Model struct {
 	mcp          toolCaller
 	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
+	// attachMode is true when this TUI reached the session over its
+	// control socket instead of running it (macula-lazymesh#40). It has no
+	// macula-mcp of its own, so the mesh strip says so rather than
+	// reporting counts it cannot see.
+	attachMode bool
 
-	agentEvents     <-chan agent.Event
-	userInputCh     chan<- string
-	interruptCh     chan<- struct{}
-	approvalCh      chan<- ApprovalAnswer
-	pendingApproval *pendingApproval
+	agentEvents        <-chan agent.Event
+	userInputCh        chan<- string
+	interruptCh        chan<- struct{}
+	approvalCh         chan<- ApprovalAnswer
+	approvalResolvedCh <-chan frontend.ApprovalResolved
+	pendingApproval    *pendingApproval
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
@@ -282,6 +304,7 @@ func New(client toolCaller, opts Options) Model {
 
 	return Model{
 		mcp:                  client,
+		attachMode:           opts.Attached,
 		meshServices:         opts.MeshServices,
 		maculaMCPVersion:     opts.MaculaMCPVersion,
 		realmIdentityFile:    opts.RealmIdentityFile,
@@ -289,6 +312,7 @@ func New(client toolCaller, opts Options) Model {
 		userInputCh:          opts.UserInputCh,
 		interruptCh:          opts.InterruptCh,
 		approvalCh:           opts.ApprovalCh,
+		approvalResolvedCh:   opts.ApprovalResolvedCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
@@ -320,6 +344,9 @@ func (m Model) Init() tea.Cmd {
 	if m.agentEvents != nil {
 		cmds = append(cmds, waitForAgentEvent(m.agentEvents))
 	}
+	if m.approvalResolvedCh != nil {
+		cmds = append(cmds, waitForApprovalResolved(m.approvalResolvedCh))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -337,6 +364,15 @@ func tick() tea.Cmd {
 
 func (m Model) refreshCmd() tea.Cmd {
 	client := m.mcp
+	if client == nil {
+		// An attached TUI (lazymesh attach) has no macula-mcp of its own:
+		// the session it watches owns the mesh connection. This is not a
+		// failure, so it is not reported as one — an error pop-up on every
+		// attach would greet the operator with a wall they cannot act on,
+		// and empty counts would read as an idle mesh rather than an
+		// unshown one. renderSummaryLine says what is true instead.
+		return func() tea.Msg { return refreshMsg{state: meshState{}} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -352,6 +388,18 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 			return nil
 		}
 		return agentEventMsg(ev)
+	}
+}
+
+// waitForApprovalResolved is waitForAgentEvent for the approval
+// resolution stream an attached TUI reads from its control socket.
+func waitForApprovalResolved(ch <-chan frontend.ApprovalResolved) tea.Cmd {
+	return func() tea.Msg {
+		r, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return approvalResolvedMsg(r)
 	}
 }
 
@@ -532,6 +580,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentEventMsg:
 		return m.handleAgentEvent(msg)
+
+	case approvalResolvedMsg:
+		return m.handleApprovalResolved(msg)
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
@@ -1227,9 +1278,17 @@ func (m Model) renderHintLines() []string {
 // that instead of setting it apart, so the rest of the line
 // (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
-	counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
-		len(m.state.joined), len(m.state.pending), len(m.state.agents))
-	out := summaryStyle.Render(counts)
+	var out string
+	if m.attachMode {
+		// Counts would be fabricated here: this TUI cannot see the mesh at
+		// all, and zero would read as an idle mesh rather than an unshown
+		// one.
+		out = summaryStyle.Render("attached · mesh not shown here (the session owns it)")
+	} else {
+		counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
+			len(m.state.joined), len(m.state.pending), len(m.state.agents))
+		out = summaryStyle.Render(counts)
+	}
 
 	if m.agentModel != "" {
 		// Bold (statusStripStyle -- the weight this whole line shared
@@ -1257,7 +1316,7 @@ func (m Model) renderSummaryLine() string {
 	// 8622117) was only visible by comparing raw node_ids or Presence
 	// panel rows across terminals; this makes distinctness confirmable at
 	// a glance, in the one place that's always on screen.
-	if self, ok := selfAgent(m.state.agents); ok {
+	if self, ok := selfAgent(m.state.agents); ok && !m.attachMode {
 		identity := identityKey(self.NodeID, self.Petname)
 		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
 		out = name + summaryStyle.Render(" · ") + out
