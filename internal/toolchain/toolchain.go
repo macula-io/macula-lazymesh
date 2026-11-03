@@ -44,8 +44,9 @@ type Policy struct {
 	// Base is what the guards wrap: the profile's tool sources, already
 	// combined into one.
 	Base agent.ToolSource
-	// Allowlist is the names reachable at all. Nil means no allowlist --
-	// only a caller that has already listed every name may leave it out.
+	// Allowlist is the names reachable at all. The guard is always in the
+	// chain and fails closed: a nil or empty list admits nothing, so a
+	// profile that means to offer tools must say which.
 	Allowlist []string
 	// WatchedRooms, when set, limits mesh_say to the rooms this session
 	// watches (the coding profile's roster).

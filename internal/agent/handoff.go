@@ -61,7 +61,7 @@ func (h *HandoffSource) CallToolRaw(ctx context.Context, name string, argumentsJ
 	// the one refusal below.
 	_ = json.Unmarshal([]byte(argumentsJSON), &parsed)
 	if replyKinds[parsed.Kind] && !validMessageID(parsed.InReplyTo) {
-		return "", fmt.Errorf("mesh_say: kind %q is a reply and REQUIRES in_reply_to set to the message_id it answers (32 hex chars, read from mesh_read_inbox); the envelope was not sent", parsed.Kind)
+		return "", Refused(fmt.Errorf("mesh_say: kind %q is a reply and REQUIRES in_reply_to set to the message_id it answers (32 hex chars, read from mesh_read_inbox); the envelope was not sent", parsed.Kind))
 	}
 	return h.inner.CallToolRaw(ctx, name, argumentsJSON)
 }

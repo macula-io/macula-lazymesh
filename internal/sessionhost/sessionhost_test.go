@@ -15,6 +15,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // fakeProvider answers every call with one fixed reply — or panics, which
@@ -43,6 +44,23 @@ type fakeTools struct{}
 func (fakeTools) ListTools(context.Context) ([]mcpclient.Tool, error) { return nil, nil }
 func (fakeTools) CallToolRaw(context.Context, string, string) (string, error) {
 	return "ok", nil
+}
+
+// fakeToolchain is a test session's declared chain: the fake source, with
+// "risky" reachable (and, when named, gated behind the session's own
+// consent). The allowlist has to name a tool the approval tests then call
+// -- a chain's allowlist is fail-closed, so an absent entry would refuse
+// the call before consent ever mattered.
+func fakeToolchain(ask ...string) toolchain.Policy {
+	return toolchain.Policy{Base: fakeTools{}, Allowlist: []string{"risky"}, Ask: ask}
+}
+
+// fakeToolchainWith is fakeToolchain with a controller's pre-tool hook, the
+// G8 layering test's shape.
+func fakeToolchainWith(ask string, gate agent.Gate) toolchain.Policy {
+	p := fakeToolchain(ask)
+	p.PreTool = gate
+	return p
 }
 
 // collector is a test-side observer actor: it monitors a session and
@@ -140,7 +158,7 @@ func startSession(t *testing.T, n gen.Node, root gen.PID, p provider.Provider) g
 	t.Helper()
 	return startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain(),
 		SystemPrompt: "you are a test agent",
 	})
 }
@@ -339,7 +357,7 @@ func TestResumeRestoresPersistedConversation(t *testing.T) {
 	}
 	args := SessionArgs{
 		Provider:     &fakeProvider{reply: provider.ChatResponse{Message: provider.Message{Role: provider.RoleAssistant, Content: "hello again"}}},
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain(),
 		SystemPrompt: "you are a test agent",
 		Store:        store,
 		SessionID:    "resumed",
@@ -401,9 +419,8 @@ func TestApprovalGatesAnAskListedToolCall(t *testing.T) {
 	}}
 	pid := startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain("risky"),
 		SystemPrompt: "you are a test agent",
-		AskTools:     []string{"risky"},
 	})
 
 	events := make(chan Event, 16)
@@ -474,9 +491,8 @@ func TestApprovalShowsTheWholeCall(t *testing.T) {
 	}}
 	pid := startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain("risky"),
 		SystemPrompt: "you are a test agent",
-		AskTools:     []string{"risky"},
 	})
 	events := make(chan Event, 16)
 	downs := make(chan gen.MessageDownPID, 8)
@@ -522,9 +538,8 @@ func TestApprovalDenialRefusesWithoutRunning(t *testing.T) {
 	}}
 	pid := startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain("risky"),
 		SystemPrompt: "you are a test agent",
-		AskTools:     []string{"risky"},
 	})
 
 	events := make(chan Event, 16)
@@ -875,7 +890,7 @@ func TestPersistSurvivesContextCompaction(t *testing.T) {
 	root := testRoot(t, n)
 	pid := startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain(),
 		SystemPrompt: "you are a test agent",
 		Store:        store,
 		SessionID:    "compacting",
@@ -917,13 +932,11 @@ func TestPreToolHookRunsBeforeTheApprovalPrompt(t *testing.T) {
 	gated := make(chan string, 4)
 	pid := startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
 		SystemPrompt: "you are a test agent",
-		AskTools:     []string{"risky"},
-		PreTool: func(ctx context.Context, tool, argumentsJSON string) (bool, string, error) {
+		Toolchain: fakeToolchainWith("risky", func(ctx context.Context, tool, argumentsJSON string) (bool, string, error) {
 			gated <- tool
 			return false, "policy says no", nil
-		},
+		}),
 	})
 
 	events := make(chan Event, 16)

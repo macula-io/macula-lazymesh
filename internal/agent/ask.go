@@ -83,7 +83,7 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 		}
 	}
 	if len(shown) > MaxApprovableBytes {
-		return "", fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(shown), MaxApprovableBytes)
+		return "", Refused(fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(shown), MaxApprovableBytes))
 	}
 	allowed, err := a.consent(ctx, name, shown)
 	if err != nil {

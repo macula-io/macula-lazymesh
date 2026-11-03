@@ -11,6 +11,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // TestLiveBuildToolSource_ExcludesMeshServiceToolsByDefault confirms
@@ -35,10 +36,11 @@ func TestLiveBuildToolSource_ExcludesMeshServiceToolsByDefault(t *testing.T) {
 	}
 	defer client.Close()
 
-	tools, err := buildToolSource(config.Config{}, client, nil, codingShell{})
+	policy, err := buildToolSource(config.Config{}, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
+	tools := toolchain.Chain(policy)
 
 	listed, err := tools.ListTools(ctx)
 	if err != nil {
@@ -81,10 +83,11 @@ func TestLiveBuildToolSource_MeshServicesEnabledIncludesCuratedTools(t *testing.
 	// is silently ignored, which is exactly the regression this test
 	// exists to catch, not something to reintroduce via the test's own
 	// setup.
-	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client), codingShell{})
+	policy, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client), codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
+	tools := toolchain.Chain(policy)
 
 	listed, err := tools.ListTools(ctx)
 	if err != nil {
@@ -128,10 +131,11 @@ func TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalTools
 		// second, separate opt-in.
 	}
 
-	tools, err := buildToolSource(cfg, client, nil, codingShell{})
+	policy, err := buildToolSource(cfg, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
+	tools := toolchain.Chain(policy)
 
 	listed, err := tools.ListTools(ctx)
 	if err != nil {
@@ -181,10 +185,11 @@ func TestLiveBuildToolSource_ExplicitAllowlistOverrideExposesShellExec(t *testin
 		ToolAllowlist: []string{"mesh_hello", "shell_exec"},
 	}
 
-	tools, err := buildToolSource(cfg, client, nil, codingShell{})
+	policy, err := buildToolSource(cfg, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
+	tools := toolchain.Chain(policy)
 
 	listed, err := tools.ListTools(ctx)
 	if err != nil {
