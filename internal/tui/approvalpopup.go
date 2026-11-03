@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -312,14 +313,17 @@ func wrapCells(t termText, width int) []string {
 	var lines []string
 	var line strings.Builder
 	cells := 0
-	for _, r := range t {
+	s := string(t)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == '\n' {
 			lines = append(lines, line.String())
 			line.Reset()
 			cells = 0
+			i += size
 			continue
 		}
-		piece, w := runeCell(r)
+		piece, w, n := cellPiece(s[i:])
 		if cells+w > width && cells > 0 {
 			lines = append(lines, line.String())
 			line.Reset()
@@ -327,8 +331,61 @@ func wrapCells(t termText, width int) []string {
 		}
 		line.WriteString(piece)
 		cells += w
+		i += n
 	}
 	return append(lines, line.String())
+}
+
+// cellPiece is what the next row shows for the text at the front of s and
+// how many bytes of s that took: one rune, or a whole <U+XXXX> spelling.
+// The spelling is ONE shown character -- termTextOf writes a control as it
+// -- so wrapping must move it whole: split across two rows it shows
+// "<U+20" and "0B>", which is nothing true about what the peer wrote
+// (#112 r=1).
+func cellPiece(s string) (piece string, width, size int) {
+	if n := spellingLen(s); n > 0 {
+		piece = s[:n]
+		return piece, runewidth.StringWidth(piece), n
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	piece, width = runeCell(r)
+	return piece, width, size
+}
+
+// spellingLen is the byte length of a <U+XXXX> or <XX> spelling at the
+// front of s, or zero when s does not start with one. Both are what
+// termTextOf writes for a rune a terminal would act on: a control, a
+// format character, or a byte that is not UTF-8.
+func spellingLen(s string) int {
+	if len(s) < 4 || s[0] != '<' {
+		return 0
+	}
+	end := strings.IndexByte(s, '>')
+	if end < 3 || end > 10 {
+		return 0
+	}
+	body := strings.TrimPrefix(s[1:end], "U+")
+	if len(body) < 2 || len(body) > 8 {
+		return 0
+	}
+	for _, c := range body {
+		if !strings.ContainsRune("0123456789ABCDEF", c) {
+			return 0
+		}
+	}
+	return end + 1
+}
+
+// fitCells hard-cuts s to at most width terminal cells. It is the last word
+// on a line that has already been laid out: a piece the layout could not
+// break -- a <U+XXXX> spelling wider than a very narrow line -- is cut
+// rather than left for the terminal to wrap, which would push the screen
+// off by a row (#86). A width of zero or less cuts nothing.
+func fitCells(s string, width int) string {
+	if width <= 0 || lipgloss.Width(s) <= width {
+		return s
+	}
+	return lipgloss.NewStyle().MaxWidth(width).Inline(true).Render(s)
 }
 
 // runeCell is what one rune of argument text occupies on screen and how
