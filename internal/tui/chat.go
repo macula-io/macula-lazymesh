@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
 type chatEntryKind int
@@ -55,6 +56,10 @@ type chatEntry struct {
 	// outcome is a tool call's result or error, folded into the call's
 	// entry when it arrives so the two read as one (#78 gap 1).
 	outcome *chatEntry
+	// stop is why the reply ended (#77). Kept beside text, never inside
+	// it: the entry's text is what scrollback and copy return, so the
+	// marker is rendered from this and the answer stays whole.
+	stop provider.Stop
 }
 
 // workingTreeDiffOf returns the diff a shell_exec result carries, and
@@ -77,7 +82,7 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	now := time.Now()
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
-		return chatEntry{kind: chatAssistant, at: now, text: ev.Text}
+		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, stop: ev.Stop}
 	case agent.EventAssistantDelta:
 		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, streaming: true}
 	case agent.EventToolCall:
@@ -156,7 +161,29 @@ var (
 	chatErrorStyleTUI = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	chatSystemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
 	chatTimeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	// chatCutStyle marks a reply that ended before the model was done
+	// (#77): amber and bold, because a silently truncated answer reads as
+	// complete and an operator skimming scrollback must not have to.
+	chatCutStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 )
+
+// chatCutMarker is the visible marker under a reply that stopped for a
+// reason other than the model finishing. It is one place so the words
+// cannot drift between the pane and its tests.
+func chatCutMarker(s provider.Stop) string {
+	switch s.Reason {
+	case provider.StopOutputLimit:
+		return "reply cut: output limit reached"
+	case provider.StopStreamEndedEarly:
+		return "reply cut: stream ended early"
+	case provider.StopOther:
+		if s.Detail != "" {
+			return "reply cut: stopped early (" + s.Detail + ")"
+		}
+		return "reply cut: stopped early"
+	}
+	return ""
+}
 
 // render returns this entry's line(s), in expanded form if detailsExpanded
 // is on and this entry actually has separate detail to show. Assistant
@@ -188,7 +215,11 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	case chatYou:
 		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
 	case chatAssistant:
-		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
+		body := fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
+		if marker := chatCutMarker(e.stop); marker != "" {
+			return body + "\n" + chatCutStyle.Render(marker)
+		}
+		return body
 	case chatToolResult:
 		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
 	case chatError:

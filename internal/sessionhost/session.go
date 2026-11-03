@@ -99,6 +99,10 @@ type Status struct {
 	// and the tool-schema bytes they sent (G17).
 	Rounds          int
 	ToolSchemaBytes int
+	// Stop is why the loop's most recent completion round ended (#77), so
+	// the cycle's usage line can say a reply was cut instead of leaving it
+	// to look like a short answer.
+	Stop provider.Stop
 }
 
 // eventBuffer bounds how many events one Say turn captures before it
@@ -343,7 +347,7 @@ func (s *session) HandleCall(from gen.PID, ref gen.Ref, request any) (any, error
 		return SayReply{Err: s.runSay(req.Text)}, nil
 	case StatusRequest:
 		rounds, schemaBytes := s.loop.Rounds()
-		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage(), Rounds: rounds, ToolSchemaBytes: schemaBytes}, nil
+		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage(), Rounds: rounds, ToolSchemaBytes: schemaBytes, Stop: s.loop.LastStopReason()}, nil
 	case Subscribe:
 		s.subscribers[from] = struct{}{}
 		return len(s.subscribers), nil

@@ -35,6 +35,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/prompthistory"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
@@ -365,6 +366,12 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return fmt.Errorf("open session store: %w", err)
 	}
+	// Prompt recall's history sits beside sessions/, under the same
+	// checkout fingerprint (#78 gap 5); forget_prompts leaves it unused.
+	promptHistoryPath := ""
+	if !cfg.ForgetPrompts {
+		promptHistoryPath = prompthistory.Path(filepath.Dir(dataDir), sessionstore.Fingerprint(wd))
+	}
 	if continueLatest {
 		if resumeRef != "" {
 			return fmt.Errorf("--continue and --resume are the same thing; give one")
@@ -517,6 +524,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	tuiModel := tui.New(client, tui.Options{
 		AgentEvents:        tuiEvents,
 		UserInputCh:        userInputCh,
+		PromptHistoryPath:  promptHistoryPath,
 		InterruptCh:        interruptCh,
 		ApprovalCh:         approvalCh,
 		ApprovalResolvedCh: resolvedCh,
@@ -873,8 +881,11 @@ func privatePaths(cfg config.Config, configPath string) []string {
 		configPath, _ = config.DefaultPath()
 	}
 	paths := []string{filepath.Dir(configPath), filepath.Dir(cfg.ContactPolicyFile)}
+	// The whole lazymesh data directory, not only sessions/: the prompt
+	// history sits beside it (#78 gap 5), and anything added there later
+	// is fenced without having to remember this list.
 	if dataDir, err := sessionstore.DefaultDataDir(); err == nil {
-		paths = append(paths, dataDir)
+		paths = append(paths, filepath.Dir(dataDir))
 	}
 	if cfg.APIKeyFile != "" {
 		paths = append(paths, filepath.Dir(cfg.APIKeyFile))
@@ -1597,6 +1608,10 @@ func metricsReader(n gen.Node, sessPid gen.PID, runtimeCounters *counters.Regist
 // many tokens of tool schemas they resent, with that as a share of the
 // cycle's prompt tokens (G17): the whole tool array travels on every
 // round, so this is the part of the bill that grows with rounds.
+//
+// stop= is the backend's own reason for ending its last round (#77): a
+// reply cut by an output cap reads "stop=output_limit" here instead of
+// looking like the model simply stopped talking.
 func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 	prompt := after.Usage.PromptTokens - before.Usage.PromptTokens
 	schemaTokens := estimateTokens(after.ToolSchemaBytes - before.ToolSchemaBytes)
@@ -1605,7 +1620,7 @@ func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 		share = schemaTokens * 100 / prompt
 	}
 	agentLog.Printf(
-		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens",
+		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens; stop=%s",
 		prompt,
 		after.Usage.CompletionTokens-before.Usage.CompletionTokens,
 		after.Usage.TotalTokens-before.Usage.TotalTokens,
@@ -1615,6 +1630,7 @@ func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 		schemaTokens,
 		share,
 		after.Usage.TotalTokens,
+		after.Stop.String(),
 	)
 }
 
@@ -1996,6 +2012,12 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
 		agentLog.Printf("[agent] %s", ev.Text)
+		// #77: a cut names itself next to the reply it truncated, so a
+		// reader does not have to match a short answer against the cycle's
+		// usage line to find out whether it was cut.
+		if ev.Stop.Cut() {
+			agentLog.Printf("[cut] %s", ev.Stop)
+		}
 	case agent.EventToolCall:
 		agentLog.Printf("[tool call] %s(%s)", ev.ToolName, ev.Text)
 	case agent.EventToolResult:

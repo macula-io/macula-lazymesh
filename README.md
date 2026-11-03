@@ -136,6 +136,16 @@ default.
 | `pgup` / `pgdn` | scroll the chat one page |
 | `ctrl+e` | compose in `$EDITOR` (falls back to `vi`); the result lands in the message box |
 | `ctrl+c` | quit, in every state |
+| `↑` / `↓` in an empty message box | walk back and forward through the last 50 prompts you sent in this checkout, kept across restarts; down past the newest empties the box. Once you edit a recalled prompt it is your draft, and the arrows move inside it again |
+
+Sent prompts are kept for that recall in `history/<checkout>.jsonl` in
+lazymesh's data directory (`$XDG_DATA_HOME/lazymesh`, by default
+`~/.local/share/lazymesh`), beside the session logs: the prompt text only,
+the last 50, in a file only you can read (`0600`). A prompt can contain a
+secret; the session log already keeps every prompt, and this list is a
+second copy of the recent ones. `forget_prompts: true` in `config.yaml` turns
+it off (nothing read, nothing written); deleting the file removes what it
+holds. An attached TUI (`lazymesh attach`) keeps no history of its own.
 
 Commands, pressed after `ctrl+x`:
 
@@ -237,7 +247,12 @@ loses that ambient awareness. Two lines:
   release shows up and is announced in the chat), then the room/ring/agent
   counts, the configured model in bold
   (`mcp 0.51.1 ● · 3 rooms · 2 pending rings · 8 agents seen ·
-  deepseek/deepseek-v4-flash`), then a `listening HH:MM:SS`
+  deepseek/deepseek-v4-flash`), then how full the model's context is and
+  what this run has used (`context 12.3k/200k (6%) · 48.1k this run`; a
+  resumed session counts from the restart, the share is left out for a
+  backend with no known window, nothing shows until a backend has
+  reported usage at all, and the figure is left out whole rather than cut
+  when the terminal is too narrow for it), then a `listening HH:MM:SS`
   heartbeat once the agent loop's had its first idle cycle — an
   advancing clock is what makes a frozen process distinguishable from a
   correctly-idle one. The line is cut to the terminal's width rather than
@@ -587,6 +602,11 @@ full wire protocol is documented at the top of
 - **Rings reach the controller.** A ring still awaiting an answer is sent
   as `ring_pending` (ring id, caller, purpose) the moment it arrives;
   `Say` in both SDKs collects them as `pending_rings`.
+- **Context use reaches the controller.** After every completion round
+  whose backend reported usage, the session sends `usage`: the tokens the
+  conversation holds, the model's window (0 when unknown) and what this
+  run of the session has used (a resumed session starts at 0). A controller skips a type it does not know, so
+  an older one ignores it.
 - **A controller can gate every tool call.** After
   `{"type":"hook","event":"pre_tool"}` the session sends each tool call to
   that controller alone as `pre_tool` (tool and full arguments) and runs it
