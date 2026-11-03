@@ -7,6 +7,18 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Git tool for the coding profile (#45, slice E of #38).** `git_branch`,
+  `git_commit` and `git_push`, offered only in the coding profile and only
+  when `tool_allowlist` names them, working in `local_tools.working_dir`.
+  A push goes only to the checkout's own configured remote, read once at
+  start, and never to `main`, `master` or a tag, never by force, with no
+  refspec and no URL: those calls are refused on their arguments alone,
+  before the operator is asked, whatever an approval would answer. Every
+  call asks by construction, every refusal is logged with its arguments
+  and reason, and every git invocation runs with `core.hooksPath=/dev/null`
+  and `core.fsmonitor=false` on the command line, so a planted hook or
+  fsmonitor command in the checkout never runs.
+
 - **Coding profile with a roster gate (#38, slice A).** `profile: coding`
   plus `roster:` (node ids): lazymesh reads each room arrival itself and
   passes the model only messages the station attests came from a roster

@@ -42,6 +42,11 @@ type SessionArgs struct {
 	// (G8: the control socket's pre_tool hook). It wraps outside the ask
 	// list, so a call it refuses never asks the operator.
 	PreTool agent.Gate
+	// RefuseBeforeAsking, when set, settles a call from its own arguments
+	// before the operator is asked about it (macula-io/macula-lazymesh#45:
+	// a push to main is refused whatever an approval would say, so it is
+	// never put to the operator as a question).
+	RefuseBeforeAsking agent.RefuseFunc
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -217,6 +222,9 @@ func (s *session) Init(args ...any) error {
 	}
 	if sessArgs.PreTool != nil {
 		tools = agent.NewHookSource(tools, sessArgs.PreTool)
+	}
+	if sessArgs.RefuseBeforeAsking != nil {
+		tools = agent.NewRefuseSource(tools, sessArgs.RefuseBeforeAsking)
 	}
 	s.loop = agent.NewLoop(sessArgs.Provider, tools, sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})

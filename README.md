@@ -336,6 +336,16 @@ What changes in this profile:
   `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
   asking.
+- **Handing work out is a separate, narrower tool.** Name `git_branch`,
+  `git_commit` and `git_push` on `tool_allowlist` and the model can create
+  or switch a branch, commit, and push that branch to your checkout's own
+  configured remote (the one in `local_tools.working_dir`). It can never
+  push `main`, `master` or a tag, never force, and never reach a different
+  remote — not even when an approval says yes: those calls are refused
+  before you are asked, and every refusal is written to `agent.log` with
+  its arguments. Git runs with hooks and fsmonitor disabled on its command
+  line, so a checkout's `.git/hooks` cannot run through this tool, and it
+  never prompts for credentials.
 - The roster lives only in your config file. Nothing the model does changes
   it, and it is separate from the ring pop-up's "Answer + Trust" list.
 
