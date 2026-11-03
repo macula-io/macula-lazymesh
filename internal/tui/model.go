@@ -300,6 +300,10 @@ type Model struct {
 	leaderPending bool
 	leader        key.Binding
 
+	// usage is the latest usage report from the agent loop (#78 gap 4),
+	// the zero value until the first one: see usageSegment.
+	usage agent.UsageReport
+
 	// lastKeyAt is when a key last reached the TUI. A pop-up opens only when
 	// this is popupIdleDelay in the past, so one cannot take the screen in the
 	// middle of a word (#62).
@@ -1387,6 +1391,13 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		m.lastListeningAt = time.Now()
 	}
 
+	if ev.Kind == agent.EventUsageReported {
+		// A status figure, never a chat line: it arrives after every
+		// round and would bury the conversation.
+		m.usage = ev.Usage
+		return m, waitForAgentEvent(m.agentEvents)
+	}
+
 	if ev.Kind == agent.EventApprovalRequested {
 		next, cmd := m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
 		// A held request is a tool call waiting on a person who may never see
@@ -1776,6 +1787,12 @@ func (m Model) renderSummaryLine() string {
 		// another per-agent identity (agentBadgeStyle's own deterministic
 		// palette below is reserved for that).
 		out += summaryStyle.Render(" · ") + statusStripStyle.Render(m.agentModel)
+	}
+	if seg := usageSegment(m.usage); seg != "" {
+		// Beside the model it describes, ahead of the tail: the line is
+		// cut tail first, and how full the context is matters more than
+		// the listening heartbeat.
+		out += summaryStyle.Render(" · " + seg)
 	}
 
 	var tail string

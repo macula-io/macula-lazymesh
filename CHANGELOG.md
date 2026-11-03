@@ -7,6 +7,14 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Context use and spend on the summary line (#78 gap 4).** After each
+  completion round that reports token usage, the summary line shows what
+  the conversation holds against the model's window and what the session
+  has used, beside the model: `context 12.3k/200k (6%) · 48.1k used`. A
+  backend that reports no usage shows nothing, and one without a known
+  window shows the tokens without a share. The figure travels on the
+  control socket as `{"type":"usage"}`, so `lazymesh attach` shows it too;
+  a controller older than this skips the line.
 - **Read, search and patch inside the checkout (#46, #38 slice D).** Two
   new local tools for the coding profile. `search` finds a literal string
   or a regular expression and returns `path:line:text` per match,
