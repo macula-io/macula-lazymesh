@@ -10,6 +10,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // sayThenCrashProvider asks for mesh_say once, then panics on the next
@@ -81,7 +82,7 @@ func TestCrashRecovery_ReplacementReportsAStepThatRan(t *testing.T) {
 	root := testRoot(t, n)
 	store := testStore(t)
 	pid := crashedReplacement(t, n, root, SessionArgs{
-		Provider: &sayThenCrashProvider{}, Tools: fakeTools{}, SystemPrompt: "test",
+		Provider: &sayThenCrashProvider{}, Toolchain: fakeToolchain(), SystemPrompt: "test",
 		Store: store, SessionID: "s1",
 	})
 
@@ -119,7 +120,7 @@ func TestCrashRecovery_AStepThatWasRunningIsReportedAsUnknown(t *testing.T) {
 		{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "c1", Name: "shell_exec", Arguments: `{"command":"make deploy"}`}}}},
 	}}
 	pid := crashedReplacement(t, n, root, SessionArgs{
-		Provider: p, Tools: crashingTools{crashIn: "shell_exec"}, SystemPrompt: "test",
+		Provider: p, Toolchain: toolchain.Policy{Base: crashingTools{crashIn: "shell_exec"}, Allowlist: []string{"shell_exec"}}, SystemPrompt: "test",
 		Store: store, SessionID: "s2",
 	})
 
@@ -144,7 +145,7 @@ func TestCrashRecovery_AStepThatWasRunningIsReportedAsUnknown(t *testing.T) {
 func TestCrashRecovery_WithoutALogTheStepsAreNotKnown(t *testing.T) {
 	n := testNode(t)
 	root := testRoot(t, n)
-	pid := crashedReplacement(t, n, root, SessionArgs{Provider: &sayThenCrashProvider{}, Tools: fakeTools{}, SystemPrompt: "test"})
+	pid := crashedReplacement(t, n, root, SessionArgs{Provider: &sayThenCrashProvider{}, Toolchain: fakeToolchain(), SystemPrompt: "test"})
 	report, err := TakeCrashReport(n, pid)
 	if err != nil {
 		t.Fatalf("crash report: %v", err)
