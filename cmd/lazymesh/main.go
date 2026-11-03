@@ -235,24 +235,38 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return fmt.Errorf("resolve working directory: %w", err)
 	}
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(wd))
-	// The checkout's own notes (macula-io/macula-lazymesh#44): in the
-	// coding profile the working directory is a checkout, so its AGENTS.md
-	// and CLAUDE.md are the repository's words -- data, unless the operator
-	// trusted exactly that content. The mesh profile keeps reading them as
-	// the operator's own instructions (G8): there the working directory is
-	// usually the operator's own workspace.
-	var checkoutNotes []checkoutnotes.Note
+	// The checkout's own notes (macula-io/macula-lazymesh#44): the working
+	// directory's AGENTS.md and CLAUDE.md. In the coding profile they are
+	// the repository's words -- data, unless the operator trusted exactly
+	// that content. The mesh profile keeps reading them as the operator's
+	// own instructions (G8): there the working directory is usually the
+	// operator's own workspace.
+	//
+	// Both profiles go through checkoutnotes.Read, so both get the same
+	// answer to what the checkout may point these two names at: a regular
+	// file inside the tree, no larger than the cap. Anything else is
+	// reported rather than delivered, in either profile.
+	var (
+		systemPrompt  string
+		checkoutNotes checkoutnotes.Reading
+	)
 	if cfg.CodingProfile() {
 		var notesErr error
 		checkoutNotes, notesErr = checkoutnotes.ReadWithTrust(wd, checkoutnotes.RecordPath(cfg.Dir))
 		if notesErr != nil {
-			// Fail closed and say so: a trust record that cannot be read
-			// admits nothing, and silence would look like the operator
-			// never trusted anything.
+			// Fail closed and say so: a trust record that cannot be read --
+			// or that lives inside the checkout, where the repository
+			// writes it -- admits nothing, and silence would look like the
+			// operator never trusted anything.
 			agentLog.Printf("[checkoutnotes] %s: every checkout note is delivered as data", notesErr)
 		}
-		systemPrompt = buildCodingSystemPrompt(goalText, localToolsReachable, checkoutnotes.Prompt(checkoutNotes))
+		systemPrompt = buildCodingSystemPrompt(goalText, localToolsReachable, checkoutnotes.Prompt(checkoutNotes.Notes))
+	} else {
+		checkoutNotes = checkoutnotes.Read(wd)
+		systemPrompt = buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(checkoutNotes.Notes))
+	}
+	for _, r := range checkoutNotes.Refused {
+		agentLog.Printf("[checkoutnotes] %s not delivered: %s", r.Name, r.Reason)
 	}
 	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
 		return err
@@ -507,11 +521,13 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
 		// The checkout's notes as they stood at start, with each one's
-		// trust state, so the `N` panel lists exactly what the model was
-		// given and `t` records the bytes the operator is looking at. The
-		// record itself lives beside the operator's config, never in the
-		// checkout (macula-io/macula-lazymesh#44).
-		CheckoutNotes:     checkoutNotes,
+		// trust state, so the `N` panel shows exactly what the model was
+		// given and `t` records the bytes the operator read. The record
+		// itself lives beside the operator's config, never in the checkout
+		// (macula-io/macula-lazymesh#44).
+		CheckoutNotes:     checkoutNotes.Notes,
+		CheckoutRefused:   checkoutNotes.Refused,
+		CheckoutDir:       wd,
 		CheckoutTrustPath: checkoutnotes.RecordPath(cfg.Dir),
 	})
 
@@ -910,31 +926,20 @@ func agentLogPath() (string, error) {
 	return filepath.Join(dir, "agent.log"), nil
 }
 
-// maxLocalInstructionsBytes caps how much of the operator's own
-// instruction files ever reaches the model (G8): the convention files
-// can be huge (a workspace CLAUDE.md is tens of KB), and the startup
-// budget check exists to refuse genuinely oversized prefixes — the cap
-// here keeps one accidentally gigantic file from doing that refusal on
-// its own.
-const maxLocalInstructionsBytes = 100_000
-
-// localInstructions reads the operator's own standing instructions for
-// the working directory (G8): AGENTS.md and CLAUDE.md, the two
-// conventions this ecosystem already uses for agent guidance. Missing
-// files are simply absent; the order is AGENTS.md first, and content
-// past the cap is truncated with a marker rather than silently cut.
-func localInstructions(dir string) string {
+// localInstructions renders the operator's own standing instructions for
+// the working directory (G8) from the notes checkoutnotes.Read delivered:
+// AGENTS.md first, then CLAUDE.md.
+//
+// It reads nothing itself. The checkout chooses what those two names point
+// at, so the reading -- and every refusal that follows from it -- belongs
+// in one place, shared with the coding profile, rather than in a second
+// os.ReadFile that could follow a link out of the tree or read an endless
+// device.
+func localInstructions(notes []checkoutnotes.Note) string {
 	var b strings.Builder
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		content, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		if total := len(content); total > maxLocalInstructionsBytes {
-			content = append(content[:maxLocalInstructionsBytes], []byte(fmt.Sprintf("\n... [truncated: %d of %d bytes shown]", maxLocalInstructionsBytes, total))...)
-		}
-		b.WriteString("\n\n--- " + name + " ---\n")
-		b.Write(content)
+	for _, n := range notes {
+		b.WriteString("\n\n--- " + n.Name + " ---\n")
+		b.WriteString(n.Content)
 	}
 	return b.String()
 }

@@ -77,6 +77,12 @@ const (
 	// ModeApprovalPopup: answering a per-action approval prompt (G9) --
 	// the tool call waits, nothing else proceeds until y/n lands.
 	ModeApprovalPopup
+	// ModeNotesPanel: reading a checkout's note in full before trusting it
+	// (macula-io/macula-lazymesh#44). Its own mode because t means trust
+	// only here, the scroll keys move the note's content rather than the
+	// chat, and esc closes the panel instead of leaving whatever was
+	// underneath.
+	ModeNotesPanel
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -154,11 +160,16 @@ type Options struct {
 	RealmIdentityFile string
 
 	// CheckoutNotes is what the working directory's AGENTS.md/CLAUDE.md
-	// said at start, with each one's trust state, and CheckoutTrustPath is
-	// the record the `t` key writes (beside the operator's config.yaml,
-	// never in the checkout). Empty in the mesh-only profile, which keeps
-	// reading those files as the operator's own instructions.
+	// said at start, with each one's trust state; CheckoutRefused is every
+	// such file that was not delivered and why. CheckoutDir is the working
+	// directory the panel re-reads before recording trust, and
+	// CheckoutTrustPath is the record the `t` key writes (beside the
+	// operator's config.yaml, never in the checkout). Empty in the
+	// mesh-only profile, which keeps reading those files as the operator's
+	// own instructions.
 	CheckoutNotes     []checkoutnotes.Note
+	CheckoutRefused   []checkoutnotes.Refused
+	CheckoutDir       string
 	CheckoutTrustPath string
 
 	// LogPath is the append-mode agent log. The `l` key opens it in
@@ -200,11 +211,14 @@ type Model struct {
 	realmExpanded        bool // `r` -- see renderRealmsOverlay
 	// `N` -- the checkout-notes panel (macula-io/macula-lazymesh#44), and
 	// the notes as read at start. Deliberately never re-read while
-	// running: the row the operator trusts must be the bytes the model was
-	// actually given, not whatever the file says by the time they press t.
-	notesExpanded     bool
+	// running: the content the operator trusts must be the bytes the model
+	// was actually given, not whatever the file says by the time they press
+	// t.
+	notesPanel        *notesPanel
 	notesCursor       int
 	checkoutNotes     []checkoutnotes.Note
+	refusedNotes      []checkoutnotes.Refused
+	checkoutDir       string
 	checkoutTrustPath string
 	detailsExpanded   bool // global expand/collapse for tool-call detail in chat
 	muted             bool
@@ -347,6 +361,8 @@ func New(client toolCaller, opts Options) Model {
 		// anyone who doesn't know to turn it on first.
 		muted:             false,
 		checkoutNotes:     append([]checkoutnotes.Note{}, opts.CheckoutNotes...),
+		refusedNotes:      append([]checkoutnotes.Refused{}, opts.CheckoutRefused...),
+		checkoutDir:       opts.CheckoutDir,
 		checkoutTrustPath: opts.CheckoutTrustPath,
 	}
 	// A file the operator trusted that has changed since is announced
@@ -669,6 +685,10 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleErrorPopupKey(msg)
 	}
 
+	if m.mode == ModeNotesPanel {
+		return m.handleNotesPanelKey(msg)
+	}
+
 	// Works from either Normal or Insert -- composing in $EDITOR is useful
 	// as a way INTO a message (from Normal) just as much as a way to
 	// finish one already started (from Insert), and always lands in
@@ -773,9 +793,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.realmExpanded && m.realmJoinLatest != nil {
 			m.realmJoinLatest = nil
 		}
-		// Esc also closes the checkout-notes panel, like every other
-		// overlay.
-		m.notesExpanded = false
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Insert):
 		// `i` means something different depending on which overlay is
@@ -814,7 +831,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.meshExpanded {
 			m.meshServicesExpanded = false
 			m.realmExpanded = false
-			m.notesExpanded = false
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleMeshServices):
@@ -822,7 +838,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.meshServicesExpanded {
 			m.meshExpanded = false
 			m.realmExpanded = false
-			m.notesExpanded = false
 		} else {
 			// Reopening starts at the top, not wherever the cursor was
 			// left -- same reasoning as realmJoinLatest getting cleared
@@ -833,13 +848,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleNotes):
-		m.notesExpanded = !m.notesExpanded
-		if m.notesExpanded {
-			m.meshExpanded = false
-			m.meshServicesExpanded = false
-			m.realmExpanded = false
-			m.notesCursor = 0
-		}
+		m.openNotes()
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.TrustNote):
 		return m.trustSelectedNote()
@@ -848,7 +857,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.realmExpanded {
 			m.meshExpanded = false
 			m.meshServicesExpanded = false
-			m.notesExpanded = false
 		} else {
 			// Leaving the panel entirely also dismisses whatever join
 			// status was showing -- reopening starts from the plain
@@ -893,10 +901,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.meshServicesCursor > 0 {
 				m.meshServicesCursor--
 			}
-		case m.notesExpanded:
-			if m.notesCursor > 0 {
-				m.notesCursor--
-			}
 		case !m.meshExpanded && !m.realmExpanded:
 			m.chatViewport.LineUp(1)
 		}
@@ -907,10 +911,6 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			entries, _ := m.meshServiceEntries()
 			if m.meshServicesCursor < len(entries)-1 {
 				m.meshServicesCursor++
-			}
-		case m.notesExpanded:
-			if m.notesCursor < len(m.checkoutNotes)-1 {
-				m.notesCursor++
 			}
 		case !m.meshExpanded && !m.realmExpanded:
 			m.chatViewport.LineDown(1)
@@ -1239,6 +1239,17 @@ func (m Model) View() string {
 		return strings.Join([]string{popup, status}, "\n")
 	}
 
+	// The checkout-notes panel takes the whole body: trust is given to the
+	// note's content, so the content is what has to be readable, whole and
+	// scrolled, before t can act on it.
+	if m.mode == ModeNotesPanel && m.notesPanel != nil {
+		popup := m.renderNotesPanel()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
 	var body string
 	switch {
 	case m.meshExpanded:
@@ -1247,8 +1258,6 @@ func (m Model) View() string {
 		body = m.renderMeshServicesOverlay()
 	case m.realmExpanded:
 		body = m.renderRealmsOverlay()
-	case m.notesExpanded:
-		body = m.renderOverlay(panelStyle.Render(m.renderNotes()))
 	default:
 		body = m.chatViewport.View()
 	}
@@ -1327,10 +1336,7 @@ func (m Model) renderHintLines() []string {
 		if m.meshServicesExpanded && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		if m.notesExpanded {
-			insertHint = "↑↓: select  t: trust  esc: close"
-		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  N: checkout notes  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 

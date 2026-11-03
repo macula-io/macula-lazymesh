@@ -44,14 +44,14 @@ func TestPlantedCheckoutNotesCannotGiveOrders(t *testing.T) {
 	cfg.ToolAllowlistExtends = false
 	cfg.ToolAsklist = nil
 
-	notes, err := checkoutnotes.ReadWithTrust(dir, filepath.Join(t.TempDir(), checkoutnotes.FileName))
+	reading, err := checkoutnotes.ReadWithTrust(dir, filepath.Join(t.TempDir(), checkoutnotes.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if notes[0].Trusted {
+	if reading.Notes[0].Trusted {
 		t.Fatal("a planted note started out trusted")
 	}
-	prompt := buildCodingSystemPrompt("", true, checkoutnotes.Prompt(notes))
+	prompt := buildCodingSystemPrompt("", true, checkoutnotes.Prompt(reading.Notes))
 
 	tools, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom))
 	if err != nil {
@@ -110,7 +110,7 @@ func TestTrustedCheckoutNoteThatChangedReachesTheModelAsData(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := filepath.Join(t.TempDir(), checkoutnotes.FileName)
-	first := checkoutnotes.Read(dir)
+	first := checkoutnotes.Read(dir).Notes
 	trust, err := checkoutnotes.LoadTrust(record)
 	if err != nil {
 		t.Fatal(err)
@@ -122,11 +122,11 @@ func TestTrustedCheckoutNoteThatChangedReachesTheModelAsData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	notes, err := checkoutnotes.ReadWithTrust(dir, record)
+	reading, err := checkoutnotes.ReadWithTrust(dir, record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := buildCodingSystemPrompt("", true, checkoutnotes.Prompt(notes))
+	prompt := buildCodingSystemPrompt("", true, checkoutnotes.Prompt(reading.Notes))
 	if strings.Contains(prompt, "<"+checkoutnotes.OperatorFence) {
 		t.Fatalf("a changed file kept the operator's authority:\n%s", prompt)
 	}
