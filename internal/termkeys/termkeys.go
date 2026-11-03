@@ -33,6 +33,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // Enable is the push sequence written to the terminal once the
@@ -48,21 +50,27 @@ const Disable = "\x1b[<u"
 // parses the output.
 //
 // Reader deliberately satisfies charmbracelet/x/term's File interface
-// (ReadWriteCloser + Fd) by delegating to the wrapped file: bubbletea
-// only puts the terminal in raw mode when the input reader it was given
-// IS a term.File, and a wrapper that hid the fd would leave the
-// terminal in cooked mode (the "typed chars echo at the cursor" bug
-// found live 2026-09-12).
+// (ReadWriteCloser, Fd) by delegating to the wrapped file: bubbletea only
+// puts the terminal in raw mode when the input reader it was given IS a
+// term.File, and a wrapper that hid the fd would leave the terminal in
+// cooked mode (the "typed chars echo at the cursor" bug found live
+// 2026-09-12).
+//
+// It does NOT carry Name, which muesli/cancelreader additionally needs
+// before it builds a reader whose Cancel can interrupt a blocked read.
+// That belongs on terminalInput, which New returns only for a real
+// terminal: see the note there.
 type Reader struct {
 	inner io.Reader
 
 	// fd backs raw-mode setup: the wrapped file's descriptor, when the
 	// wrapped reader is a terminal file.
 	fd func() uintptr
-	// writeThrough and closeThrough delegate the rest of the File
-	// contract to the wrapped file, when it has one.
+	// writeThrough, closeThrough and nameThrough delegate the rest of the
+	// File contract to the wrapped file, when it has one.
 	writeThrough func([]byte) (int, error)
 	closeThrough func() error
+	nameThrough  func() string
 
 	// out holds translated bytes ready to be delivered to the caller.
 	out []byte
@@ -72,10 +80,45 @@ type Reader struct {
 	eof     bool
 }
 
-// New wraps inner. When inner is a terminal file (os.Stdin), the
-// returned Reader presents itself as the same file, so bubbletea
-// applies raw mode to it.
-func New(inner io.Reader) *Reader {
+// terminalInput is Reader as bubbletea is given it for a terminal: the
+// same reader, plus Name, so cancelreader recognizes it as a file and
+// builds a CANCELABLE reader.
+//
+// What that buys (macula-lazymesh#60): bubbletea parks a read on stdin
+// and cancels it before it hands the terminal to an editor
+// (tea.ExecProcess). Without Name it gets cancelreader's fallback, whose
+// Cancel cannot interrupt a blocked read, so bubbletea gives up waiting
+// after 500ms and starts the editor with its read still queued on the
+// same terminal. The two then race for every keystroke and the parked
+// one, queued first, wins: nvim opened and ":q" did nothing, measured
+// live 2026-11-03 and in the pty harness.
+//
+// It is a separate type, not a method on Reader, because the cancellation
+// is not free: cancelreader registers the descriptor with epoll, and
+// epoll refuses descriptors that cannot be polled. A read that is not a
+// terminal -- `lazymesh attach < /dev/null`, which is how a signalled or
+// scripted attach runs -- has to keep the fallback, so its reader must
+// not offer Name at all (measured: with Name, attach could not start).
+type terminalInput struct {
+	*Reader
+}
+
+// Name reports the wrapped terminal's name, completing cancelreader's
+// File contract.
+func (t *terminalInput) Name() string { return t.nameThrough() }
+
+// Input is what New returns: the translating reader, exposing the
+// wrapped descriptor bubbletea needs. For a terminal it also satisfies
+// muesli/cancelreader's File; for anything else it does not.
+type Input interface {
+	io.ReadWriteCloser
+	Fd() uintptr
+}
+
+// New wraps inner. When inner is a terminal, the returned reader
+// presents itself as the same file, so bubbletea applies raw mode to it
+// and cancelreader can cancel a read it has parked on it.
+func New(inner io.Reader) Input {
 	r := &Reader{inner: inner}
 	if f, ok := inner.(interface{ Fd() uintptr }); ok {
 		r.fd = f.Fd
@@ -85,6 +128,12 @@ func New(inner io.Reader) *Reader {
 	}
 	if c, ok := inner.(io.Closer); ok {
 		r.closeThrough = c.Close
+	}
+	if n, ok := inner.(interface{ Name() string }); ok {
+		r.nameThrough = n.Name
+	}
+	if r.fd != nil && r.nameThrough != nil && term.IsTerminal(r.fd()) {
+		return &terminalInput{Reader: r}
 	}
 	return r
 }
@@ -121,11 +170,21 @@ func (r *Reader) Close() error {
 // everything has been delivered (including any dangling partial
 // sequence, flushed verbatim).
 func (r *Reader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	for len(r.out) == 0 {
 		if r.eof {
 			return 0, io.EOF
 		}
-		chunk := make([]byte, 4096)
+		// Never read more than the caller can take. The caller here is
+		// bubbletea's cancelable reader, which waits on the terminal's
+		// descriptor BEFORE every Read: translated bytes left over after a
+		// short read would sit there until the next keystroke woke it, so a
+		// paste would arrive in pieces. Reading no more than len(p) and
+		// translating (which never lengthens a sequence) keeps output within
+		// what the caller asked for.
+		chunk := make([]byte, len(p))
 		n, err := r.inner.Read(chunk)
 		if n > 0 {
 			r.process(chunk[:n])
@@ -159,7 +218,15 @@ func (r *Reader) process(data []byte) {
 			break
 		}
 	}
-	buf := append(r.partial, data...)
+	// A fresh buffer, not append(r.partial, data...): that append can reuse
+	// the partial's own array, and the code below then appends a slice of it
+	// back onto itself -- overlapping copies that corrupt the held sequence
+	// whenever a chunk boundary falls inside one (found 2026-11-03 while
+	// bounding reads to the caller's buffer: 3-byte reads turned a split CSI
+	// into the raw bytes and the translation was lost).
+	buf := make([]byte, 0, len(r.partial)+len(data))
+	buf = append(buf, r.partial...)
+	buf = append(buf, data...)
 	r.partial = nil
 	i := 0
 	for i < len(buf) {

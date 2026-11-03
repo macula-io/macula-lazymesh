@@ -9,11 +9,13 @@ import (
 	"github.com/charmbracelet/x/term"
 )
 
-// readAll drains the reader until EOF.
+// readAll drains the reader until EOF. The buffer is large on purpose:
+// readAll is not what models a split read (the chunkReaders below are),
+// and a small buffer here would cut the stream at a size nobody chose.
 func readAll(t *testing.T, r io.Reader) []byte {
 	t.Helper()
 	var out bytes.Buffer
-	buf := make([]byte, 3)
+	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		out.Write(buf[:n])
@@ -193,6 +195,12 @@ func (c *chunkReader) Read(p []byte) (int, error) {
 	n := c.size
 	if n > len(c.data) {
 		n = len(c.data)
+	}
+	// A reader never hands back more than the caller's buffer: this fake
+	// split the stream to exercise the state machine, not to model a
+	// terminal that overfills a read.
+	if n > len(p) {
+		n = len(p)
 	}
 	copy(p, c.data[:n])
 	c.data = c.data[n:]
