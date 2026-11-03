@@ -5,7 +5,8 @@
 //   - the SSRF guard: only http/https schemes, and every address the
 //     connection or a redirect would touch must resolve to a PUBLIC IP —
 //     loopback, private, link-local, multicast and unspecified ranges
-//     are refused. An agent whose context can be steered by arbitrary
+//     are refused — and the connection goes to the addresses checked,
+//     never to the name resolved a second time. An agent whose context can be steered by arbitrary
 //     mesh peers must not become a probe for the operator's LAN;
 //   - bounded size: the response body is capped and truncated with a
 //     marker, never read unbounded;
@@ -47,29 +48,47 @@ type Source struct {
 	// Defaults to PublicAddr (the SSRF guard); a test may substitute a
 	// permissive function to point the client at a loopback test server.
 	AllowAddr func(ip net.IP) bool
+	// LookupIP resolves a host for the guard. Defaults to the system
+	// resolver; a test substitutes its own answers.
+	LookupIP func(ctx context.Context, host string) ([]net.IP, error)
 }
 
 // New returns a Source with the SSRF-guarding client: every dial and
 // every redirect hop validates its resolved addresses against AllowAddr
 // (public-only by default).
 func New() *Source {
-	s := &Source{AllowAddr: PublicAddr}
+	s := &Source{AllowAddr: PublicAddr, LookupIP: systemLookupIP}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, err := net.SplitHostPort(addr)
+			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, fmt.Errorf("webfetch: bad address %q: %w", addr, err)
 			}
-			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			ips, err := s.LookupIP(ctx, host)
 			if err != nil {
 				return nil, fmt.Errorf("webfetch: resolve %s: %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("webfetch: resolve %s: no addresses", host)
 			}
 			for _, ip := range ips {
 				if !s.AllowAddr(ip) {
 					return nil, fmt.Errorf("webfetch: refused %s (%s is not a public address)", host, ip)
 				}
 			}
-			return (&net.Dialer{}).DialContext(ctx, network, addr)
+			// Dial the addresses just checked, never the name: resolving it
+			// again could give an answer the guard never saw (#93). The
+			// transport still sends the name as Host and as the TLS server
+			// name, since both come from the request URL, not from addr.
+			var dialErr error
+			for _, ip := range ips {
+				conn, err := (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					return conn, nil
+				}
+				dialErr = err
+			}
+			return nil, dialErr
 		},
 	}
 	client := &http.Client{Transport: transport, Timeout: fetchTimeout}
@@ -78,7 +97,7 @@ func New() *Source {
 			return fmt.Errorf("webfetch: too many redirects")
 		}
 		host := req.URL.Hostname()
-		ips, err := net.DefaultResolver.LookupIP(req.Context(), "ip", host)
+		ips, err := s.LookupIP(req.Context(), host)
 		if err != nil {
 			return fmt.Errorf("webfetch: resolve redirect target %s: %w", host, err)
 		}
@@ -91,6 +110,11 @@ func New() *Source {
 	}
 	s.HTTP = client
 	return s
+}
+
+// systemLookupIP is the default LookupIP: the system resolver.
+func systemLookupIP(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
 
 // PublicAddr approves exactly the addresses a mesh-facing fetch should

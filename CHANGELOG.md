@@ -260,6 +260,14 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Security
 
+- **`web_fetch` connects to the address it checked (#93).** The guard
+  resolves the URL's host and refuses anything that is not a public
+  address; the connection now goes to exactly those addresses, on the first
+  request and on every redirect, instead of resolving the name a second
+  time. A name whose answer changes between the check and the connection
+  can no longer lead a fetch to loopback, the LAN or a metadata address.
+  The server still sees the URL's name as Host and as the TLS server name.
+
 - **The control socket serves only controllers of the same user.** Each
   connection is checked against the kernel's record of who connected
   (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS); a peer of another uid,

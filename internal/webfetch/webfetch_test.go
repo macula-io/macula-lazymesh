@@ -104,3 +104,124 @@ func TestSSRFGuardRefusesPrivateRanges(t *testing.T) {
 		}
 	}
 }
+
+// listenOn starts srv on addr, for a server that must not sit on
+// 127.0.0.1.
+func listenOn(t *testing.T, addr string, h http.Handler) *httptest.Server {
+	t.Helper()
+	srv := unstartedOn(t, addr, h)
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// unstartedOn is listenOn without the start, for a TLS server.
+func unstartedOn(t *testing.T, addr string, h http.Handler) *httptest.Server {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("listen %s: %v", addr, err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.Listener = ln
+	return srv
+}
+
+// guardedAgainst returns a Source whose guard refuses only the internal
+// address 127.0.0.1 and whose resolver answers "localhost" with the
+// approved address 127.0.0.2 (and "example.com", the name the test TLS
+// certificate carries, likewise), while the system resolver still answers
+// 127.0.0.1 for it. A fetch that dials what the guard checked never
+// reaches 127.0.0.1; one that resolves again at dial time does (#93).
+func guardedAgainst() *Source {
+	s := New()
+	internal := net.ParseIP("127.0.0.1")
+	s.AllowAddr = func(ip net.IP) bool { return !ip.Equal(internal) }
+	s.LookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host == "localhost" || host == "example.com" {
+			return []net.IP{net.ParseIP("127.0.0.2")}, nil
+		}
+		return systemLookupIP(ctx, host)
+	}
+	return s
+}
+
+// TestTheFetchDialsTheAddressTheGuardChecked pins #93 on the first
+// request: the connection goes to the address the guard approved, so a
+// second, different answer for the same name can never be dialed.
+func TestTheFetchDialsTheAddressTheGuardChecked(t *testing.T) {
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("internal"))
+	}))
+	defer internal.Close()
+	_, port, _ := net.SplitHostPort(internal.Listener.Addr().String())
+
+	got, err := guardedAgainst().CallToolRaw(context.Background(), "web_fetch", `{"url":"http://localhost:`+port+`/"}`)
+	if strings.Contains(got, "internal") {
+		t.Fatalf("the fetch reached the refused address: %q", got)
+	}
+	if err == nil {
+		t.Fatal("expected the dial to the checked address (nothing listens there) to fail")
+	}
+}
+
+// TestARedirectDialsTheAddressTheGuardChecked pins #93 on a redirect hop.
+func TestARedirectDialsTheAddressTheGuardChecked(t *testing.T) {
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("internal"))
+	}))
+	defer internal.Close()
+	_, port, _ := net.SplitHostPort(internal.Listener.Addr().String())
+	approved := listenOn(t, "127.0.0.2:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost:"+port+"/", http.StatusFound)
+	}))
+
+	got, err := guardedAgainst().CallToolRaw(context.Background(), "web_fetch", `{"url":"`+approved.URL+`"}`)
+	if strings.Contains(got, "internal") {
+		t.Fatalf("the redirect reached the refused address: %q", got)
+	}
+	if err == nil {
+		t.Fatal("expected the redirect's dial to the checked address (nothing listens there) to fail")
+	}
+}
+
+// TestTheHostnameStillTravelsInTheHostHeader pins that dialing the checked
+// address keeps the URL's name for the server: Host (and SNI) are not the IP.
+func TestTheHostnameStillTravelsInTheHostHeader(t *testing.T) {
+	approved := listenOn(t, "127.0.0.2:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(r.Host))
+	}))
+	_, port, _ := net.SplitHostPort(approved.Listener.Addr().String())
+
+	got, err := guardedAgainst().CallToolRaw(context.Background(), "web_fetch", `{"url":"http://localhost:`+port+`/"}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got != "localhost:"+port {
+		t.Fatalf("Host = %q, want localhost:%s", got, port)
+	}
+}
+
+// TestTheHostnameStillTravelsAsTheTLSServerName pins the same for https:
+// the TLS server name is the URL's name, so the certificate is checked
+// against it.
+func TestTheHostnameStillTravelsAsTheTLSServerName(t *testing.T) {
+	approved := unstartedOn(t, "127.0.0.2:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(r.TLS.ServerName))
+	}))
+	approved.StartTLS()
+	t.Cleanup(approved.Close)
+	_, port, _ := net.SplitHostPort(approved.Listener.Addr().String())
+
+	src := guardedAgainst()
+	trust := approved.Client().Transport.(*http.Transport).TLSClientConfig
+	src.HTTP.Transport.(*http.Transport).TLSClientConfig = trust.Clone()
+
+	got, err := src.CallToolRaw(context.Background(), "web_fetch", `{"url":"https://example.com:`+port+`/"}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got != "example.com" {
+		t.Fatalf("TLS server name = %q, want example.com", got)
+	}
+}
