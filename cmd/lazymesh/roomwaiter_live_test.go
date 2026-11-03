@@ -176,7 +176,11 @@ func TestLiveNewDesign_HumanInputSeenImmediatelyDuringRoomWait(t *testing.T) {
 
 	ringMgr := ringwaiter.New(nil, "") // unstarted -- this probe is about room-arrival vs. human-input priority, not rings
 	pushedAt := time.Now()
-	got, ok := nextEvent(ctx, userInputCh, mgr, ringMgr)
+	// No scheduled wakeups and no roster gate: this probe is about the
+	// room-arrival versus human-input ordering, and both nil are handled by
+	// nextEvent (#84 -- the signature gained them and this call did not
+	// follow, which nothing compiled because the file is behind `live`).
+	got, ok := nextEvent(ctx, userInputCh, mgr, ringMgr, nil, nil)
 	elapsed := time.Since(pushedAt)
 
 	if !ok || got != "hello from a human, are you there?" {
