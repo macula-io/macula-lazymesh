@@ -347,6 +347,8 @@ func parseEvent(line []byte) (agent.Event, bool) {
 		return agent.Event{Kind: agent.EventListening}, true
 	case "ring_pending":
 		return agent.Event{Kind: agent.EventRingPending, ID: raw.RingID, From: raw.From, Text: raw.Purpose}, true
+	case "turn_crashed":
+		return agent.Event{Kind: agent.EventTurnCrashed, Text: raw.Text}, true
 	case "usage":
 		return agent.Event{Kind: agent.EventUsageReported, Usage: agent.UsageReport{ContextTokens: raw.ContextTokens, ContextWindow: raw.ContextWindow, RunTokens: raw.RunTokens}}, true
 	default:

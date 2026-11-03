@@ -524,3 +524,30 @@ func TestBroadcast_AStalledControllerIsDisconnectedNotSkipped(t *testing.T) {
 		}
 	}
 }
+
+// #99 r=2: a turn the previous run crashed in is reported at start, when
+// a controller may not be connected yet. Every controller learns of it
+// once, whenever it connects, as turn_crashed and no turn_complete: it
+// sent no turn for one to settle.
+func TestAnnounce_AControllerConnectingLaterLearnsOfAnEarlierCrash(t *testing.T) {
+	events := make(chan agent.Event, 8)
+	s, path := startTestServer(t, make(chan string, 8), events, nil)
+	early := dial(t, path)
+	early.line(t) // handshake
+
+	s.Announce(agent.Event{Kind: agent.EventTurnCrashed, Text: "the previous run crashed"})
+
+	late := dial(t, path)
+	if hello := late.line(t); hello["type"] != "session" {
+		t.Fatalf("handshake = %v", hello)
+	}
+	events <- agent.Event{Kind: agent.EventAssistantMessage, Text: "next"}
+	for name, c := range map[string]*controller{"early": early, "late": late} {
+		if got := c.line(t); got["type"] != "turn_crashed" || got["text"] != "the previous run crashed" {
+			t.Fatalf("%s: first line = %v, want the earlier crash", name, got)
+		}
+		if got := c.line(t); got["type"] != "assistant" {
+			t.Fatalf("%s: after the earlier crash got %v, want the next event and no turn_complete", name, got)
+		}
+	}
+}

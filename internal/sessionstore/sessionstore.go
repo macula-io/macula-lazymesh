@@ -5,6 +5,13 @@
 // torn trailing line — the last thing a crash was writing — and skips it
 // rather than refusing to resume.
 //
+// Schema 2 (#99): the first line is {"schema":2}, each message is written
+// as it happens, and {"turn":"ended"} follows the last message of every
+// turn that ended, failed or not. The messages after the last such marker
+// are a turn a crash cut short. A schema-1 log (no header, no markers,
+// written whole after each turn) loads as all finished and is upgraded in
+// place by its first write.
+//
 // Layout, per the D2 decision:
 //
 //	$XDG_DATA_HOME (or ~/.local/share)/lazymesh/sessions/
@@ -21,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,6 +50,33 @@ type messageLine struct {
 	ToolCalls  []toolCallLine `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	Failed     bool           `json:"failed,omitempty"`
+}
+
+// schemaVersion is the log format this lazymesh writes and reads; a log
+// with a higher one comes from a newer lazymesh and is refused.
+const schemaVersion = 2
+
+var (
+	schemaHeader = []byte(`{"schema":2}`)
+	turnEnded    = []byte(`{"turn":"ended"}`)
+)
+
+// lineKind tells the three kinds of log line apart: the schema header, a
+// turn marker, and a message (which has a role). Schema is nil when the
+// line has no schema field: a schema-1 log starts with a message.
+type lineKind struct {
+	Schema *int   `json:"schema"`
+	Turn   string `json:"turn"`
+	Role   string `json:"role"`
+}
+
+// Conversation is a loaded log: every message in order, and the trailing
+// ones that belong to a turn that never ended (a crash cut it short).
+// Unfinished is a suffix of Messages, empty when the last turn ended.
+type Conversation struct {
+	Messages   []provider.Message
+	Unfinished []provider.Message
 }
 
 type toolCallLine struct {
@@ -96,50 +131,210 @@ func (s *Store) Append(sessionID string, msgs []provider.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	f, err := os.OpenFile(s.Path(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("sessionstore: open %s: %w", s.Path(sessionID), err)
-	}
-	defer f.Close()
+	lines := make([][]byte, 0, len(msgs))
 	for _, m := range msgs {
 		line, err := json.Marshal(toLine(m))
 		if err != nil {
 			return fmt.Errorf("sessionstore: marshal message: %w", err)
 		}
-		if _, err := f.Write(append(line, '\n')); err != nil {
-			return fmt.Errorf("sessionstore: append to %s: %w", s.Path(sessionID), err)
+		lines = append(lines, line)
+	}
+	return s.write(sessionID, lines)
+}
+
+// EndTurn marks the turn whose messages were appended last as ended:
+// whatever follows belongs to the next turn. last, if any, are the turn's
+// final messages, written with the marker in one write, so a crash cannot
+// leave them in the log without it.
+func (s *Store) EndTurn(sessionID string, last ...provider.Message) error {
+	lines := make([][]byte, 0, len(last)+1)
+	for _, m := range last {
+		line, err := json.Marshal(toLine(m))
+		if err != nil {
+			return fmt.Errorf("sessionstore: marshal message: %w", err)
 		}
+		lines = append(lines, line)
+	}
+	return s.write(sessionID, append(lines, turnEnded))
+}
+
+// write appends lines to a schema-2 log, starting one (or upgrading a
+// schema-1 one) first, and on a line of their own after a torn last line.
+func (s *Store) write(sessionID string, lines [][]byte) error {
+	path := s.Path(sessionID)
+	if err := s.prepare(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("sessionstore: open %s: %w", path, err)
+	}
+	defer f.Close()
+	var buf []byte
+	for _, line := range lines {
+		buf = append(append(buf, line...), '\n')
+	}
+	if _, err := f.Write(buf); err != nil {
+		return fmt.Errorf("sessionstore: append to %s: %w", path, err)
 	}
 	return nil
 }
 
-// Load reads the whole log back into messages. A missing file is an
-// empty conversation, not an error; a torn trailing line (a crash's last
-// half-written record) is skipped so resume never refuses to run.
-func (s *Store) Load(sessionID string) ([]provider.Message, error) {
-	f, err := os.Open(s.Path(sessionID))
+// prepare makes path a schema-2 log ready for an append: a new or empty
+// file gets the header, a schema-1 log is upgraded, a newer schema is
+// refused, and a torn last line is ended so it cannot swallow the next.
+// It reads only the first line and the last byte: it runs before every
+// message a turn writes.
+func (s *Store) prepare(path string) error {
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return os.WriteFile(path, append(append([]byte(nil), schemaHeader...), '\n'), 0o600)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("sessionstore: open %s: %w", s.Path(sessionID), err)
+		return fmt.Errorf("sessionstore: open %s: %w", path, err)
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("sessionstore: stat %s: %w", path, err)
+	}
+	if info.Size() == 0 {
+		return os.WriteFile(path, append(append([]byte(nil), schemaHeader...), '\n'), 0o600)
+	}
+	first, _ := bufio.NewReader(f).ReadBytes('\n')
+	var head lineKind
+	_ = json.Unmarshal(first, &head)
+	if head.Schema == nil {
+		return upgrade(path)
+	}
+	if err := checkSchema(path, *head.Schema); err != nil {
+		return err
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		return fmt.Errorf("sessionstore: read %s: %w", path, err)
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	w, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("sessionstore: open %s: %w", path, err)
+	}
+	defer w.Close()
+	_, err = w.Write([]byte{'\n'})
+	return err
+}
 
-	var msgs []provider.Message
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		var line messageLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			continue // torn trailing line
+// upgrade rewrites a schema-1 log as schema 2: the header, its messages,
+// and a turn marker, since a schema-1 log only ever held finished turns.
+// The new file replaces the old by rename, so a crash leaves one or the
+// other, never half of each.
+func upgrade(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("sessionstore: read %s: %w", path, err)
+	}
+	var out []byte
+	out = append(append(out, schemaHeader...), '\n')
+	for rest := raw; len(rest) > 0; {
+		var line []byte
+		line, rest, _ = bytesLine(rest)
+		var kind lineKind
+		if json.Unmarshal(line, &kind) != nil || kind.Role == "" {
+			continue // a torn line
 		}
-		msgs = append(msgs, fromLine(line))
+		out = append(append(out, line...), '\n')
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("sessionstore: read %s: %w", s.Path(sessionID), err)
+	out = append(append(out, turnEnded...), '\n')
+	tmp := path + ".upgrade"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return fmt.Errorf("sessionstore: upgrade %s: %w", path, err)
 	}
-	return msgs, nil
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("sessionstore: upgrade %s: %w", path, err)
+	}
+	return nil
+}
+
+// bytesLine splits raw at its first newline.
+func bytesLine(raw []byte) (line, rest []byte, ok bool) {
+	for i, b := range raw {
+		if b == '\n' {
+			return raw[:i], raw[i+1:], true
+		}
+	}
+	return raw, nil, false
+}
+
+// Load reads the whole log back. A missing file is an empty conversation,
+// not an error; a torn line (a crash's last half-written record) is
+// skipped so resume never refuses to run. A log from a newer lazymesh is
+// refused.
+func (s *Store) Load(sessionID string) (Conversation, error) {
+	f, err := os.Open(s.Path(sessionID))
+	if os.IsNotExist(err) {
+		return Conversation{}, nil
+	}
+	if err != nil {
+		return Conversation{}, fmt.Errorf("sessionstore: open %s: %w", s.Path(sessionID), err)
+	}
+	defer f.Close()
+	return readLog(f, s.Path(sessionID))
+}
+
+// readLog reads a log line by line with no cap on a line's length: a
+// message is stored whole, and a write_file's arguments can be larger than
+// any fixed buffer. A log it cannot read is an error, never a shorter
+// conversation (#99).
+func readLog(r io.Reader, path string) (Conversation, error) {
+	var msgs []provider.Message
+	schema, ended := 1, 0
+	reader := bufio.NewReader(r)
+	for first := true; ; first = false {
+		raw, err := reader.ReadBytes('\n')
+		if err != nil && err != io.EOF {
+			return Conversation{}, fmt.Errorf("sessionstore: read %s: %w", path, err)
+		}
+		var kind lineKind
+		if len(raw) > 0 && json.Unmarshal(raw, &kind) == nil {
+			switch {
+			case first && kind.Schema != nil:
+				if err := checkSchema(path, *kind.Schema); err != nil {
+					return Conversation{}, err
+				}
+				schema = *kind.Schema
+			case kind.Turn == "ended":
+				ended = len(msgs)
+			case kind.Role != "":
+				var line messageLine
+				if json.Unmarshal(raw, &line) == nil {
+					msgs = append(msgs, fromLine(line))
+				}
+			}
+		} // else a torn line
+		if err == io.EOF {
+			break
+		}
+	}
+	conv := Conversation{Messages: msgs}
+	if schema >= 2 && ended < len(msgs) {
+		conv.Unfinished = msgs[ended:]
+	}
+	return conv, nil
+}
+
+// checkSchema refuses a header naming any schema but this lazymesh's: a
+// higher one comes from a newer lazymesh, and zero or less from no
+// lazymesh at all.
+func checkSchema(path string, schema int) error {
+	switch {
+	case schema > schemaVersion:
+		return fmt.Errorf("sessionstore: %s was written by a newer lazymesh (schema %d)", path, schema)
+	case schema != schemaVersion:
+		return fmt.Errorf("sessionstore: %s has an unknown schema %d", path, schema)
+	}
+	return nil
 }
 
 // Latest returns the id of the most recently modified session log, or
@@ -196,6 +391,7 @@ func toLine(m provider.Message) messageLine {
 		Content:    m.Content,
 		ToolCallID: m.ToolCallID,
 		Name:       m.Name,
+		Failed:     m.Failed,
 	}
 	for _, tc := range m.ToolCalls {
 		line.ToolCalls = append(line.ToolCalls, toolCallLine{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})
@@ -209,6 +405,7 @@ func fromLine(line messageLine) provider.Message {
 		Content:    line.Content,
 		ToolCallID: line.ToolCallID,
 		Name:       line.Name,
+		Failed:     line.Failed,
 	}
 	for _, tc := range line.ToolCalls {
 		m.ToolCalls = append(m.ToolCalls, provider.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})

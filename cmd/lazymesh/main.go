@@ -441,7 +441,8 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}
 	defer sessionhost.StopSession(node, sessPid)
 	runtimeCounters := counters.New()
-	if _, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, roomChanged, runtimeCounters); err != nil {
+	bridgePid, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, roomChanged, runtimeCounters)
+	if err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
 	if cfg.MetricsListen != "" {
@@ -521,6 +522,14 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		defer ctrl.Close()
 	}
 
+	// A turn the previous run crashed in is reported before the driver's
+	// first turn, once the control socket can replay it (#99).
+	var announce func(agent.Event)
+	if ctrl != nil {
+		announce = ctrl.Announce
+	}
+	reportEarlierCrash(node, sessPid, tuiOut, announce, agentLog)
+
 	go func() {
 		// The driver is a plain goroutine, not an Ergo process: a panic
 		// here crashes lazymesh WITHOUT any trace (Go writes the stack to
@@ -533,7 +542,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 				panic(r)
 			}
 		}()
-		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiOut, frontendOut, userInputCh, schedulerMgr.Arrivals(), idleStart, gate, initialRooms)
+		runAgent(ctx, node, rootPid, sessPid, bridgePid, waiterMgr, ringMgr, agentLog, tuiOut, frontendOut, userInputCh, schedulerMgr.Arrivals(), idleStart, gate, initialRooms)
 	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
@@ -1378,13 +1387,14 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // supervised actor.
 //
 // A Say whose Call fails means the session PROCESS died (a panic-restart);
-// the driver reattaches to its supervised replacement and retries the same
-// prompt, because a crashed turn was never answered — that recovery path
-// is exactly what supervision buys. When no replacement appears, the
+// the driver reattaches to its supervised replacement, subscribes the
+// event bridge to it, and tells the operator which steps of the crashed
+// turn ran. It does not send the prompt again (#99): a step such as
+// mesh_say has already reached a peer. When no replacement appears, the
 // failure falls into the ordinary backoff accounting. Room/ring waiting
 // stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
 // this function supplies the cadence, driven by real events.
-func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
+func runAgent(ctx context.Context, n gen.Node, root, sessPid, bridge gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
 	prompt, ok := firstPrompt(ctx, idleStart, userInputCh, waiterMgr, ringMgr, wakeups, gate, initialRooms)
@@ -1402,7 +1412,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 			// The session died before this turn even started. Reattach
 			// and start over with the same prompt — Say never ran, so
 			// nothing was answered twice.
-			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
+			newPid, rerr := reattachAndSubscribe(ctx, n, root, sessPid, bridge, agentLog)
 			if rerr != nil {
 				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
@@ -1416,10 +1426,10 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 
 		reply, err := sessionhost.SayTurn(n, root, sessPid, prompt)
 		if err != nil {
-			// The session died mid-turn. Its replacement gets the SAME
-			// prompt: the crashed turn was never answered, and the fresh
-			// conversation has no record of it.
-			newPid, rerr := reattachSession(ctx, n, root, sessPid, agentLog)
+			// The session died mid-turn. Its replacement restored the
+			// crashed turn from the log; the operator is told which steps
+			// ran and decides whether to send the prompt again.
+			newPid, rerr := recoverFromCrash(ctx, n, root, sessPid, bridge, tuiEvents, frontendEvents, agentLog)
 			if rerr != nil {
 				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
@@ -1428,6 +1438,11 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr 
 				continue
 			}
 			sessPid = newPid
+			var ok bool
+			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
+			if !ok {
+				return
+			}
 			continue
 		}
 		if errors.Is(reply.Err, context.Canceled) {
