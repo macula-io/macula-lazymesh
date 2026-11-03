@@ -25,6 +25,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
+      # Files behind `//go:build live` are outside ./... as Go resolves it,
+      # so a signature change elsewhere can break them with no red run --
+      # it has happened twice (#84). Compile-only: no mesh, no tag run.
+      - name: go vet (live build tag, compile only)
+        run: go vet -tags live ./...
 
   build:
     name: build
