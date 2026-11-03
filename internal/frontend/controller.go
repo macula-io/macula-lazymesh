@@ -34,6 +34,8 @@ type Controller struct {
 	pending map[string]chan error // approval id -> the verdict for our answer
 	closed  bool
 	done    chan struct{}
+	// closing closes on Close and stops delivery to Events.
+	closing chan struct{}
 }
 
 // SessionInfo is the handshake a controller learns on connect.
@@ -72,6 +74,7 @@ func Dial(path string) (*Controller, error) {
 		approvals: make(chan ApprovalResolved, 16),
 		pending:   make(map[string]chan error),
 		done:      make(chan struct{}),
+		closing:   make(chan struct{}),
 	}
 	// The server already refuses a peer that is not this uid, but that
 	// only protects the session. A controller given an explicit socket
@@ -192,6 +195,7 @@ func (c *Controller) Close() error {
 	}
 	c.closed = true
 	c.mu.Unlock()
+	close(c.closing)
 	err := c.conn.Close()
 	return err
 }
@@ -213,7 +217,13 @@ func (c *Controller) send(v any) error {
 // Approve call waiting on them.
 func (c *Controller) read(r *bufio.Reader) {
 	defer close(c.done)
-	defer close(c.events)
+	// The reader never waits on the TUI: events queue in an Outlet, so a
+	// TUI that pauses (its operator in $EDITOR) keeps this controller
+	// draining the socket and is not mistaken by the server for a dead one,
+	// and it still gets every event when it reads again (#98). Events closes
+	// once the queue is delivered.
+	events := agent.NewOutlet(c.closing, c.events)
+	defer events.Close()
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
@@ -257,10 +267,7 @@ func (c *Controller) read(r *bufio.Reader) {
 		if !ok {
 			continue
 		}
-		select {
-		case c.events <- ev:
-		default:
-		}
+		events.Send(ev)
 	}
 }
 

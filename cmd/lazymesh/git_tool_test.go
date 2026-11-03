@@ -144,7 +144,7 @@ func startGitSession(t *testing.T, cfg config.Config, p provider.Provider) (gen.
 	t.Cleanup(cancel)
 	t.Cleanup(func() { sessionhost.StopSession(ergoNode, sessPid) })
 	events := make(chan agent.Event, 256)
-	if _, err := startEventBridge(ergoNode, ctx, sessPid, events, make(chan agent.Event, 64), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), counters.New()); err != nil {
+	if _, err := startEventBridge(ergoNode, ctx, sessPid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), counters.New()); err != nil {
 		t.Fatal(err)
 	}
 	return ergoNode, rootPid, sessPid, events

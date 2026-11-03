@@ -80,6 +80,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -195,12 +196,31 @@ type connection struct {
 	// by the server from the accept order, never read from the wire: a
 	// control message must not be able to claim to be another frontend.
 	label string
+
+	// gone closes when serve starts tearing this connection down, so a
+	// broadcast waiting on a full out stops waiting (#98).
+	gone chan struct{}
+	// Guarded by the server's mu, which broadcast holds: the delta text
+	// this controller had no room for yet (holding says there is some),
+	// and whether it was cut off for not taking an event that had to
+	// arrive.
+	held    strings.Builder
+	holding bool
+	stalled bool
 }
 
 // outBuffer bounds how many unsent output lines one controller may have
-// queued before the broadcaster drops for it — a slow controller loses
-// events, never the session's cadence.
+// queued. Past it, the broadcaster holds back delta text for that
+// controller and waits, for at most controllerStallTimeout, on any other
+// event (#98).
 const outBuffer = 64
+
+// controllerStallTimeout is how long the broadcaster waits for a
+// controller with a full queue to take an event that must arrive, before
+// it disconnects that controller (#98): a controller that stops reading
+// learns it from a closed connection, never from an approval that silently
+// was not there. A var so the tests can shorten it.
+var controllerStallTimeout = 5 * time.Second
 
 // errPeerCredUnsupported is what peerUID returns on a platform whose
 // unix sockets carry no peer credentials.
@@ -313,7 +333,7 @@ func (s *Server) accept() {
 			conn.Close()
 			continue
 		}
-		c := &connection{out: make(chan []byte, outBuffer), conn: conn}
+		c := &connection{out: make(chan []byte, outBuffer), conn: conn, gone: make(chan struct{})}
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
@@ -345,12 +365,80 @@ func (s *Server) broadcast() {
 			s.answeredBy = make(map[string]string)
 		}
 		for _, c := range s.conns {
-			select {
-			case c.out <- line:
-			default:
-			}
+			s.deliver(c, ev, line)
 		}
 		s.mu.Unlock()
+	}
+}
+
+// deliver hands one event to one controller; s.mu is held. Only a delta
+// may be held back (#98): it joins the delta text the controller had no
+// room for, and goes out with the next room. Any other event first sends
+// that held text, then waits for the controller to take it. A controller
+// that takes nothing for controllerStallTimeout is disconnected: it finds
+// out from a closed connection instead of missing an approval or a
+// turn_complete without a trace.
+func (s *Server) deliver(c *connection, ev agent.Event, line []byte) {
+	if c.stalled {
+		return
+	}
+	if ev.Droppable() {
+		c.held.WriteString(ev.Text)
+		c.holding = true
+		// Marshal the merged delta only when there is room for it: a
+		// controller that stays full must not cost a copy of everything
+		// held so far on every new delta.
+		if len(c.out) == cap(c.out) {
+			return
+		}
+		held, err := c.heldLine()
+		if err != nil {
+			return
+		}
+		select {
+		case c.out <- held:
+			c.release()
+		default:
+		}
+		return
+	}
+	if c.holding {
+		held, err := c.heldLine()
+		if err == nil && !s.await(c, held) {
+			return
+		}
+		c.release()
+	}
+	s.await(c, line)
+}
+
+// heldLine is the delta text c had no room for, as one delta line.
+func (c *connection) heldLine() ([]byte, error) {
+	return marshalEvent(agent.Event{Kind: agent.EventAssistantDelta, Text: c.held.String()})
+}
+
+func (c *connection) release() {
+	c.held.Reset()
+	c.holding = false
+}
+
+// await waits for c to take line, and disconnects c if it does not within
+// controllerStallTimeout. Reports whether line was taken.
+func (s *Server) await(c *connection, line []byte) bool {
+	timer := time.NewTimer(controllerStallTimeout)
+	defer timer.Stop()
+	select {
+	case c.out <- line:
+		return true
+	case <-c.gone:
+		return false
+	case <-timer.C:
+		c.stalled = true
+		if s.log != nil {
+			s.log.Printf("frontend: %s took no event for %s; disconnecting it", c.label, controllerStallTimeout)
+		}
+		c.conn.Close()
+		return false
 	}
 }
 
@@ -376,9 +464,11 @@ func (s *Server) serve(conn net.Conn, c *connection, handshake []byte) {
 			break
 		}
 	}
-	// Nothing may send to c.out once it is closed: leave the broadcast
-	// set first (broadcast sends under s.mu), and fail closed a hook this
-	// controller held, which stops the hook sending to it.
+	// Nothing may send to c.out once it is closed: release a broadcast
+	// waiting on it, leave the broadcast set (broadcast sends under s.mu),
+	// and fail closed a hook this controller held, which stops the hook
+	// sending to it.
+	close(c.gone)
 	s.mu.Lock()
 	delete(s.conns, conn)
 	s.mu.Unlock()

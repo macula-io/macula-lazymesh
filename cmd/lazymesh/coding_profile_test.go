@@ -435,7 +435,9 @@ func TestReportGateFailures_ReachesTheOperator(t *testing.T) {
 	roster, _ := rostergate.ParseRoster([]string{codingSupervisor})
 	gate := rostergate.New(brokenInbox{}, roster, rostergate.Enforce, nil)
 	tui, socket := make(chan agent.Event, 1), make(chan agent.Event, 1)
-	reportGateFailures(gate, tui, socket)
+	done := make(chan struct{})
+	defer close(done)
+	reportGateFailures(gate, agent.NewOutlet(done, tui), agent.NewOutlet(done, socket))
 	if _, ok := roomPrompt(context.Background(), gate, codingRoom); ok {
 		t.Fatal("a failed read started a turn")
 	}
@@ -445,7 +447,7 @@ func TestReportGateFailures_ReachesTheOperator(t *testing.T) {
 			if ev.Kind != agent.EventError || ev.Err == nil || !strings.Contains(ev.Err.Error(), codingRoom) {
 				t.Errorf("%s got %+v", name, ev)
 			}
-		default:
+		case <-time.After(2 * time.Second):
 			t.Errorf("the %s never heard the gate failed", name)
 		}
 	}

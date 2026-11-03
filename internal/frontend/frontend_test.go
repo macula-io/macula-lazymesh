@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -428,5 +429,98 @@ func TestDefaultSocketPathRefusesASharedDirectory(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", shared)
 	if got := DefaultSocketPath("s1"); got != "" {
 		t.Fatalf("shared dir: path = %q, want refusal", got)
+	}
+}
+
+// floodThenApproval pushes enough delta text to fill a controller's queue
+// and the socket's own buffer, then an approval request, and returns the
+// delta text in the order it was sent.
+func floodThenApproval(events chan agent.Event) string {
+	var want strings.Builder
+	chunk := strings.Repeat("d", 1024)
+	for i := 0; i < 2000; i++ {
+		text := fmt.Sprintf("[%d]%s", i, chunk)
+		want.WriteString(text)
+		events <- agent.Event{Kind: agent.EventAssistantDelta, Text: text}
+	}
+	events <- agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "risky", Text: "{}"}
+	return want.String()
+}
+
+// #98: a controller that falls behind a flood of deltas still receives the
+// approval request that follows it, after all of the delta text.
+func TestBroadcast_ApprovalAfterADeltaFloodReachesASlowController(t *testing.T) {
+	events := make(chan agent.Event, 4096)
+	_, path := startTestServer(t, make(chan string, 8), events, nil)
+	c := dial(t, path)
+	c.line(t) // handshake
+
+	want := floodThenApproval(events)
+	time.Sleep(300 * time.Millisecond) // the controller is busy: nothing read yet
+
+	var got strings.Builder
+	for {
+		line := c.line(t)
+		switch line["type"] {
+		case "delta":
+			got.WriteString(line["text"].(string))
+		case "approval_request":
+			if got.String() != want {
+				t.Fatalf("delta text before the approval: got %d bytes, want %d", got.Len(), len(want))
+			}
+			return
+		default:
+			t.Fatalf("unexpected line %v", line)
+		}
+	}
+}
+
+// #98: a controller that stops reading altogether is disconnected rather
+// than left to miss an approval silently, and it cannot hold the approval
+// back from a controller that is reading.
+func TestBroadcast_AStalledControllerIsDisconnectedNotSkipped(t *testing.T) {
+	old := controllerStallTimeout
+	controllerStallTimeout = 300 * time.Millisecond
+	defer func() { controllerStallTimeout = old }()
+
+	events := make(chan agent.Event, 4096)
+	_, path := startTestServer(t, make(chan string, 8), events, nil)
+	stalled := dial(t, path)
+	stalled.line(t)
+	reader := dial(t, path)
+	reader.line(t)
+
+	readerSaw := make(chan bool, 1)
+	go func() {
+		for {
+			raw, err := reader.r.ReadBytes('\n')
+			if err != nil {
+				readerSaw <- false
+				return
+			}
+			if strings.Contains(string(raw), `"approval_request"`) {
+				readerSaw <- true
+				return
+			}
+		}
+	}()
+	floodThenApproval(events)
+	if !<-readerSaw {
+		t.Fatal("the reading controller never got the approval")
+	}
+
+	// The stalled controller now finds its connection closed: it reads
+	// what was queued, then EOF, and never the approval it could not take.
+	for {
+		raw, err := stalled.r.ReadBytes('\n')
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				t.Fatalf("stalled controller read: %v, want EOF", err)
+			}
+			return
+		}
+		if strings.Contains(string(raw), `"approval_request"`) {
+			return // it caught up in time: also no loss
+		}
 	}
 }
