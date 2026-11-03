@@ -1480,11 +1480,13 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 }
 
 // lastAssistantText is the finished (non-streaming) assistant entry's raw
-// markdown source, newest first — the thing worth sharing verbatim.
+// markdown source, newest first — the thing worth sharing verbatim,
+// neutralised: pasted into a terminal, an escape sequence would act there
+// (#81).
 func lastAssistantText(entries []chatEntry) (string, bool) {
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].kind == chatAssistant && !entries[i].streaming && entries[i].text != "" {
-			return entries[i].text, true
+			return neutralise(entries[i].text), true
 		}
 	}
 	return "", false
