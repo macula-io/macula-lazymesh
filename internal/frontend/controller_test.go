@@ -322,6 +322,7 @@ func TestEveryEventSurvivesTheRoundTrip(t *testing.T) {
 		{"max_failures", agent.Event{Kind: agent.EventMaxFailuresReached}, agent.Event{Kind: agent.EventMaxFailuresReached}},
 		{"approval_request", agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}, agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}},
 		{"turn_complete", agent.Event{Kind: agent.EventListening}, agent.Event{Kind: agent.EventListening}},
+		{"turn_crashed", agent.Event{Kind: agent.EventTurnCrashed, Text: "the session crashed; steps that ran: 1) mesh_say"}, agent.Event{Kind: agent.EventTurnCrashed, Text: "the session crashed; steps that ran: 1) mesh_say"}},
 		{"ring_pending", agent.Event{Kind: agent.EventRingPending, ID: "ring-1", From: "pluto", Text: "review this"}, agent.Event{Kind: agent.EventRingPending, ID: "ring-1", From: "pluto", Text: "review this"}},
 	}
 

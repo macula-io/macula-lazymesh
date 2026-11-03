@@ -62,6 +62,11 @@
 //	                              session has used: a resumed session starts it at 0.
 //	                              A controller skips any type it does not know, so
 //	                              one older than this line ignores it)
+//	  {"type":"turn_crashed","text":"..."}
+//	                             (the turn crashed and the session was replaced: text
+//	                              names the steps that ran and says nothing was sent
+//	                              again. A turn_complete always follows, so a
+//	                              controller that skips this type still settles)
 //	  {"type":"pre_tool","id":"<hook-id>","tool":"<name>","args":"<full JSON>"}
 //	                             (to the hook's controller only; the call waits for hook_answer)
 //	  {"type":"turn_complete"}   (the settle point: a controller sends one
@@ -734,6 +739,8 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 		line, err = json.Marshal(map[string]any{"type": "turn_complete"})
 	case agent.EventRingPending:
 		line, err = json.Marshal(map[string]any{"type": "ring_pending", "ring_id": ev.ID, "from": ev.From, "purpose": ev.Text})
+	case agent.EventTurnCrashed:
+		line, err = json.Marshal(map[string]any{"type": "turn_crashed", "text": ev.Text})
 	case agent.EventUsageReported:
 		// Added with #78 gap 4. A controller older than that skips a type
 		// it does not know (parseEvent's default), so this line costs it

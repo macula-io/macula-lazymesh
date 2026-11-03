@@ -1442,7 +1442,7 @@ func isChatter(ev agent.Event) bool {
 func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	pattern := bellNone
 	switch ev.Kind {
-	case agent.EventBackoff, agent.EventMaxFailuresReached:
+	case agent.EventBackoff, agent.EventMaxFailuresReached, agent.EventTurnCrashed:
 		pattern = bellTriple
 	}
 
