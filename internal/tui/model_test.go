@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
@@ -594,8 +595,10 @@ func TestHandleAgentEvent_AppendsChatEntryAndReArms(t *testing.T) {
 }
 
 // The hint row IS the mode indicator now (#62): there are no modes to
-// announce, so the row names the leader and, while it is armed, everything
-// the next key can be.
+// announce, so the row names the leader and, while it is armed, the
+// commands that follow it. The list is longer than a terminal row, so the
+// row shows as many as fit whole and `?` writes the rest into the chat
+// (#86: before that, the tail was simply off the edge of the screen).
 func TestRenderHintRow_ShowsTheLeaderAndItsCommandsWhilePending(t *testing.T) {
 	m := newTestModel(t)
 	if !strings.Contains(m.renderStatusStrip(), "ctrl+x") {
@@ -605,10 +608,25 @@ func TestRenderHintRow_ShowsTheLeaderAndItsCommandsWhilePending(t *testing.T) {
 	updated, _ := m.Update(ctrlX())
 	m = updated.(Model)
 	combined := strings.Join(m.renderHintLines(), " ")
-	for _, want := range []string{"ctrl+x …", "m:", "s:", "r:", "N:", "E:", "q:"} {
+	for _, want := range []string{"ctrl+x …", "m:", "s:", "r:", "N:"} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("expected %q on the armed leader row, got %q", want, combined)
 		}
+	}
+	if got := lipgloss.Width(combined); got > m.width {
+		t.Fatalf("the armed leader row is %d cells on a %d-column terminal: %q", got, m.width, combined)
+	}
+
+	// A wider terminal shows more of the same list, not a different one.
+	wide := m
+	wide.width = 200
+	wide.resizeComponents()
+	wideRow := strings.Join(wide.renderHintLines(), " ")
+	if !strings.HasPrefix(wideRow, combined) {
+		t.Fatalf("the wide row is not the narrow one continued:\nnarrow: %q\nwide:   %q", combined, wideRow)
+	}
+	if strings.Count(wideRow, ": ") <= strings.Count(combined, ": ") {
+		t.Fatalf("a wider terminal did not show more commands:\nnarrow: %q\nwide:   %q", combined, wideRow)
 	}
 
 	// esc cancels it and the row goes back to the short one.
@@ -659,14 +677,30 @@ func TestRenderHintLines_AlwaysOneLine(t *testing.T) {
 	}
 }
 
-// The idle row has to name every key a person can reach without the leader,
-// because those are the ones they will try first.
+// The idle row names the keys a person can reach without the leader,
+// because those are the ones they will try first. All of them fit only on
+// a wide terminal (the full row is 111 cells); narrower, the row keeps the
+// highest-priority ones and drops the rest whole (#86 -- before that it
+// was simply wider than the terminal, so the terminal wrapped it and the
+// screen gained a row).
 func TestRenderHintLines_NamesTheKeysThatNeedNoLeader(t *testing.T) {
-	m := newTestModel(t)
-	combined := strings.Join(m.renderHintLines(), " ")
-	for _, want := range []string{"enter: send", "shift+↑↓: scroll", "ctrl+e", "ctrl+x"} {
+	wide := newTestModel(t)
+	wide.width = 140
+	wide.resizeComponents()
+	combined := strings.Join(wide.renderHintLines(), " ")
+	for _, want := range []string{"enter: send", "shift+↑↓: scroll", "shift+enter: newline", "ctrl+e", "ctrl+x"} {
 		if !strings.Contains(combined, want) {
-			t.Fatalf("expected %q somewhere in the hint row, got %q", want, combined)
+			t.Fatalf("at 140 columns, expected %q somewhere in the hint row, got %q", want, combined)
+		}
+	}
+
+	// At the width the tests' own model uses, the row still names what a
+	// person needs to get out of anything and to find the rest.
+	narrow := newTestModel(t)
+	combined = strings.Join(narrow.renderHintLines(), " ")
+	for _, want := range []string{"enter: send", "esc: close or interrupt", "ctrl+x"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("at 80 columns, expected %q somewhere in the hint row, got %q", want, combined)
 		}
 	}
 }
