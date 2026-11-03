@@ -39,6 +39,9 @@ type Controller struct {
 type SessionInfo struct {
 	SessionID string `json:"session_id"`
 	Model     string `json:"model"`
+	// Leader is the session's configured leader key, empty from a session
+	// that predates it (#63) -- which resolves to the default.
+	Leader string `json:"leader,omitempty"`
 }
 
 // ApprovalResolved reports that an approval was answered, and by which
@@ -98,12 +101,13 @@ func Dial(path string) (*Controller, error) {
 		Type      string `json:"type"`
 		SessionID string `json:"session_id"`
 		Model     string `json:"model"`
+		Leader    string `json:"leader"`
 	}
 	if err := json.Unmarshal(line, &hs); err != nil || hs.Type != "session" {
 		conn.Close()
 		return nil, fmt.Errorf("frontend: %s did not open with a session handshake", path)
 	}
-	c.session = SessionInfo{SessionID: hs.SessionID, Model: hs.Model}
+	c.session = SessionInfo{SessionID: hs.SessionID, Model: hs.Model, Leader: hs.Leader}
 	go c.read(r)
 	return c, nil
 }

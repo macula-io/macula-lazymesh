@@ -81,7 +81,11 @@ func leaderCases(t *testing.T) []leaderCase {
 		{"q", func(t *testing.T) Model { return newTestModel(t) },
 			func(_ Model, cmd tea.Cmd) bool { return cmd != nil }},
 		{"?", func(t *testing.T) Model { return newTestModel(t) },
-			func(m Model, _ tea.Cmd) bool { return lastChatSays(m, "ctrl+x then:") }},
+			// That the list was written, not which key it opens with: the
+			// leader is configurable (#63) and its own test asserts the
+			// name, so hardcoding ctrl+x here would fail for a moved leader
+			// without anything being wrong.
+			func(m Model, _ tea.Cmd) bool { return lastChatSays(m, "then:") }},
 	}
 }
 

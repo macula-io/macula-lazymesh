@@ -102,6 +102,13 @@ type Config struct {
 	// is treated as "bottom" -- matching vim's statusline and tmux's
 	// status bar, both bottom by default.
 	StatusBarPosition string `yaml:"status_bar_position,omitempty"`
+	// LeaderKey is the key that arms the command leader in the TUI: the key
+	// pressed before a command letter (`ctrl+x m`, `ctrl+x q`, ...). Default
+	// `ctrl+x`. A key the message box already uses, `ctrl+c`, and anything
+	// that is not ctrl and one letter are refused at start, naming the key
+	// and the reason -- see tui.LeaderBinding, which owns the list because
+	// it owns the keymap.
+	LeaderKey string `yaml:"leader_key,omitempty"`
 	// MaculaMCPVersion pins the exact @macula-io/mcp release Spawn and
 	// realmjoin.Join run. Empty (Default()'s own value, since 2026-09-10)
 	// means no pin: both float to npm's latest published release on every
@@ -292,6 +299,7 @@ func Default() Config {
 			WorkingDir: filepath.Join(home, ".config", "lazymesh", "workspace"),
 		},
 		StatusBarPosition:   "bottom",
+		LeaderKey:           "ctrl+x",
 		MaculaMCPVersion:    "", // float to latest -- see the field's own doc comment
 		ContactPolicyFile:   filepath.Join(home, ".config", "lazymesh", "contact_policy.json"),
 		RingPolicy:          "always-ask",

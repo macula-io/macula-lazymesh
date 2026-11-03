@@ -292,14 +292,27 @@ func (f *fakeTerminal) waitFor(t *testing.T, want string, timeout time.Duration)
 // an absent peer could explain.
 func startFakeSession(t *testing.T) string {
 	t.Helper()
+	return startFakeSessionAs(t, frontend.Options{})
+}
+
+// startFakeSessionAs is startFakeSession with options of the caller's own --
+// the leader a session was configured with, for the attach cases (#63) -- and
+// the identity a session always has.
+func startFakeSessionAs(t *testing.T, opts frontend.Options) string {
+	t.Helper()
 	socketPath := filepath.Join(t.TempDir(), "ctrl.sock")
-	srv, err := frontend.Start(frontend.Options{
-		Path:      socketPath,
-		Input:     make(chan string, 4),
-		Events:    make(chan agent.Event, 4),
-		SessionID: "attach-quit-test",
-		Model:     "testmodel/1",
-	})
+	opts.Path = socketPath
+	if opts.Input == nil {
+		opts.Input = make(chan string, 4)
+	}
+	if opts.Events == nil {
+		opts.Events = make(chan agent.Event, 4)
+	}
+	opts.SessionID = "attach-quit-test"
+	if opts.Model == "" {
+		opts.Model = "testmodel/1"
+	}
+	srv, err := frontend.Start(opts)
 	if err != nil {
 		t.Fatalf("start fake session: %v", err)
 	}
