@@ -76,6 +76,19 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Fixed
 
+- **`lazymesh attach` can be interrupted (#49).** An attached TUI whose stdin
+  is not a terminal — `timeout 5 lazymesh attach … < /dev/null`, a service
+  stop, a supervisor — sometimes ignored SIGINT and SIGTERM and had to be
+  SIGKILLed: bubbletea installs its own signal handler, and when attach's
+  own shutdown won the race to end the event loop, bubbletea's handler was
+  left blocked on an unbuffered channel that nothing read, with `Run`'s
+  shutdown waiting for it. Attach now takes signal handling for itself and
+  tells bubbletea not to, and it releases that handler the moment the first
+  signal arrives: a second ctrl+c is then the terminal's own default action,
+  so it ends a shutdown that will not finish instead of being swallowed by a
+  handler whose reader has already returned. Quitting with `q` or ctrl+c from
+  a real terminal was measured working, and is pinned by a new pty test
+  alongside the signal case.
 - **The approval prompt shows the whole call (#39).** It used to show the
   first 200 characters, so a long command could hide its tail. The prompt
   now wraps the full arguments, shows control characters as text, and
