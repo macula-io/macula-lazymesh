@@ -29,6 +29,19 @@ goreleaser from a `v*` tag; this file records what each one changes.
   last edit; and a hunk's lines are read by its header's counts, so a diff
   that deletes a line beginning `-- ` or adds one beginning `++ ` is
   applied instead of being read as a file header.
+- **The diff shown after a test run is the checkout's (#46, #38 slice D,
+  second half).** `shell_exec` reads the checkout's `git diff` before and
+  after a command; when the command changed the tree the result carries
+  the new diff and the TUI shows it without the details toggle, so a
+  formatter or a test that rewrites a fixture is visible as a change rather
+  than only as output. A command that changed nothing carries nothing. The
+  read cannot be made to run code from the checkout (no external diff
+  driver, no textconv, `core.fsmonitor=false`, submodules ignored, no
+  inherited `GIT_*`, no global or system config), it runs on its own budget
+  so a command that outlives the timeout still reports its change — or says
+  the tree could not be read — and a diff over 16 KB is cut with a note
+  rather than filling the model's context. Tracked changes only: a new
+  untracked file does not appear in it.
 - **Git tool for the coding profile (#45, slice E of #38).** `git_branch`,
   `git_commit` and `git_push`, offered only in the coding profile and only
   when `tool_allowlist` names them, working in `local_tools.working_dir`.

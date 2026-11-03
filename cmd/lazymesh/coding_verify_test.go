@@ -121,7 +121,7 @@ func TestTheDiffShownAfterATestRunIsTheCheckout(t *testing.T) {
 	if !strings.Contains(shownPatch, "+three") {
 		t.Fatalf("the patch's own diff was not shown: %q", shownPatch)
 	}
-	if !strings.Contains(shownRun, "+three") || !strings.Contains(shownRun, "+four") {
+	if shownRun != want {
 		t.Fatalf("the diff shown after the run is not the checkout's:\n%s\nwant:\n%s", shownRun, want)
 	}
 }

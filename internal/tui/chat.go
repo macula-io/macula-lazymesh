@@ -51,17 +51,17 @@ type chatEntry struct {
 	alwaysDetail bool
 }
 
-// carriesWorkingTreeDiff reports whether a shell_exec result carries the
-// diff of a checkout the command changed, which is what makes its entry
-// worth showing without the details toggle (#46).
-func carriesWorkingTreeDiff(text string) bool {
+// workingTreeDiffOf returns the diff a shell_exec result carries, and
+// whether it carries one -- what makes its entry worth showing without the
+// details toggle (#46).
+func workingTreeDiffOf(text string) (string, bool) {
 	var res struct {
 		Diff string `json:"working_tree_diff"`
 	}
-	if json.Unmarshal([]byte(text), &res) != nil {
-		return false
+	if json.Unmarshal([]byte(text), &res) != nil || strings.TrimSpace(res.Diff) == "" {
+		return "", false
 	}
-	return strings.TrimSpace(res.Diff) != ""
+	return res.Diff, true
 }
 
 // chatEntryFromAgentEvent converts one agent.Event into a chat line. Plain
@@ -79,10 +79,14 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	case agent.EventToolResult:
 		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
-		// A command that changed the checkout carries its diff (#46): shown
-		// for the same reason an applied patch is.
-		if ev.ToolName == "shell_exec" && carriesWorkingTreeDiff(ev.Text) {
-			entry.alwaysDetail = true
+		// A command that changed the checkout carries its diff (#46): the
+		// operator is shown the diff itself, decoded, not the result JSON
+		// around it -- the model's own stdout must not be mistaken for it.
+		if ev.ToolName == "shell_exec" {
+			if diff, ok := workingTreeDiffOf(ev.Text); ok {
+				entry.detail = diff
+				entry.alwaysDetail = true
+			}
 		}
 		return entry
 	case agent.EventError:

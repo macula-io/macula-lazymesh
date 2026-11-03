@@ -338,6 +338,19 @@ even one that points back inside the checkout: a committed `tools ->
 section per file per patch — a patch that names the same file twice is
 refused rather than silently keeping the last edit.
 
+A `shell_exec` call reads the checkout's `git diff` before and after it, and
+when the command changed the tree the result carries that diff, which the
+chat shows without the details toggle: a test that rewrites a fixture is
+visible as a change, not only as output. An ordinary test run changes
+nothing and carries nothing. That diff is the host's own `git diff` with
+`--no-ext-diff --no-textconv`, `core.fsmonitor=false`,
+`--ignore-submodules=all`, no inherited `GIT_*` variables and no global or
+system config, so nothing in the checkout — a nested repository's config
+included — can make it run code on your machine. Two limits worth knowing:
+it covers tracked changes only (a brand-new untracked file does not appear),
+and a diff over 16 KB is cut with a note and, on the coding profile, kept
+whole in the scratch directory.
+
 A result too long for one answer is paged, not cut: `read_file` and
 `search` return a page with the offset for the next one in the footer, so
 a search's last match and a long file's last line stay reachable.
