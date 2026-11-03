@@ -97,22 +97,22 @@ func TestNewBelowMarker_NotShownAtBottom(t *testing.T) {
 	}
 }
 
-// TestNewBelowMarker_ShownWhenAnEarlierEntryGrows: output that lands inside
-// an entry already on the list -- a tool result folded into its call, as
-// PR 83 does -- changes neither the count nor the last entry, and is still
-// news (r2 of #78 gap 7, Terra's probe A).
-func TestNewBelowMarker_ShownWhenAnEarlierEntryGrows(t *testing.T) {
+// TestNewBelowMarker_ShownWhenAToolResultFolds: a tool result folds into
+// its call's entry, which changes neither the entry count nor the last
+// entry, and is still news (r2 of #78 gap 7, Terra's probe A).
+func TestNewBelowMarker_ShownWhenAToolResultFolds(t *testing.T) {
 	m := modelWithLeader(t, "")
+	m.agentEvents = make(chan agent.Event)
 	m = fillChat(t, m, 30)
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatToolCall, tool: "shell_exec", text: "→ shell_exec(go test ./...)"})
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatAssistant, text: "running the tests"})
-	m.syncViewport()
+	m = sendAgentEvents(t, m, agent.Event{Kind: agent.EventToolCall, ToolName: "shell_exec", Text: `{"command":"go test ./..."}`})
 	m.chatViewport.GotoTop()
-
-	m.chatEntries[len(m.chatEntries)-2].text += "\nFAIL pkg"
-	m.syncViewport()
+	n := len(m.chatEntries)
+	m = sendAgentEvents(t, m, agent.Event{Kind: agent.EventToolResult, ToolName: "shell_exec", Text: shellResult(t, 1, "FAIL pkg\n")})
+	if len(m.chatEntries) != n {
+		t.Fatalf("test setup: the result did not fold into its call (%d -> %d entries)", n, len(m.chatEntries))
+	}
 	if view := m.View(); !strings.Contains(view, "new below") {
-		t.Fatalf("output folded into an earlier entry left no marker:\n%s", view)
+		t.Fatalf("a tool result folded in below a reader scrolled up left no marker:\n%s", view)
 	}
 }
 

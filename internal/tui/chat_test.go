@@ -78,7 +78,7 @@ func TestChatEntryFromAgentEvent_Listening(t *testing.T) {
 	if !strings.Contains(entry.render(false, 80), "listening") {
 		t.Fatalf("expected the rendered text to say it's listening, got %q", entry.render(false, 80))
 	}
-	if !isChatter(agent.EventListening) {
+	if !isChatter(agent.Event{Kind: agent.EventListening}) {
 		t.Fatalf("expected EventListening to be routed as chatter (status strip, not the main chat pane)")
 	}
 }

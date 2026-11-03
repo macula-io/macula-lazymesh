@@ -31,7 +31,10 @@ func (m *Model) recordError(err error, now time.Time) (isNew bool) {
 	if err == nil {
 		return false
 	}
-	text := err.Error()
+	// Neutralised once, here, where an error enters the history: the popup
+	// shows it and its copy key copies it, and an error's text is often a
+	// provider's or a peer's, not lazymesh's own (#81).
+	text := neutralise(err.Error())
 
 	for i := range m.errorHistory {
 		if m.errorHistory[i].text == text {

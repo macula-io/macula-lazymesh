@@ -169,7 +169,9 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 		}
 		events <- agent.Event{Kind: agent.EventListening}
 		var ok bool
-		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr)
+		// No scheduled wakeups and no roster gate here either, for the same
+		// reason: this loop waits on the mesh, not on the scheduler (#84).
+		prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, nil, nil)
 		if !ok {
 			break
 		}
