@@ -40,6 +40,17 @@ goreleaser from a `v*` tag; this file records what each one changes.
   the call has been on screen. A roster without the coding profile only
   logs what would be dropped.
 
+- **A checkout cannot give orders (#38, slice B).** In the coding profile
+  the working directory's `AGENTS.md` and `CLAUDE.md` are delivered as the
+  repository's notes — inside a `<checkout_notes>` fence, escaped so they
+  cannot end it, after the rules — never as standing orders, and nothing in
+  them changes the tools, the profile or what needs approval. `N` opens a
+  panel listing them; `t` trusts the selected file, recording its path and
+  the SHA-256 of the exact bytes shown in `trusted_checkout_notes.json`
+  beside `config.yaml` (never in the checkout, and only that key writes
+  it). Only a matching hash ranks as the operator's own instruction; a file
+  that changes afterwards drops back to data at the next start, and the TUI
+  says why. The mesh-only profile is unchanged.
 - **Rings reach a headless controller.** A ring still awaiting an answer is
   sent on the control socket as `{"type":"ring_pending","ring_id",
   "from","purpose"}` the moment it arrives, not when the agent next idles.

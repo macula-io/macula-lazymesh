@@ -20,7 +20,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/termkeys"
@@ -75,6 +77,12 @@ const (
 	// ModeApprovalPopup: answering a per-action approval prompt (G9) --
 	// the tool call waits, nothing else proceeds until y/n lands.
 	ModeApprovalPopup
+	// ModeNotesPanel: reading a checkout's note in full before trusting it
+	// (macula-io/macula-lazymesh#44). Its own mode because t means trust
+	// only here, the scroll keys move the note's content rather than the
+	// chat, and esc closes the panel instead of leaving whatever was
+	// underneath.
+	ModeNotesPanel
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -93,6 +101,21 @@ type Options struct {
 	// dismisses the prompt but the answer goes nowhere (the session's
 	// own approval timeout then refuses the call).
 	ApprovalCh chan<- ApprovalAnswer
+
+	// Attached is true when this TUI reached the session over its control
+	// socket (lazymesh attach) rather than running it. It is set by the
+	// caller, not inferred from a nil client: a caller with no mesh client
+	// and one with no session are different things, and only the second
+	// should stop showing mesh counts.
+	Attached bool
+
+	// ApprovalResolvedCh reports approvals answered while this TUI is
+	// open — including ones another frontend answered first. nil when
+	// unwired (the in-process TUI is the only frontend that can answer).
+	// An attached TUI needs it so a popup that lost the race closes
+	// itself instead of sitting there looking like a decision still to be
+	// made (macula-io/macula-lazymesh#40's threat model).
+	ApprovalResolvedCh <-chan frontend.ApprovalResolved
 
 	StatusBarPosition string // "top" or "bottom"
 
@@ -136,6 +159,19 @@ type Options struct {
 	MaculaMCPVersion  string
 	RealmIdentityFile string
 
+	// CheckoutNotes is what the working directory's AGENTS.md/CLAUDE.md
+	// said at start, with each one's trust state; CheckoutRefused is every
+	// such file that was not delivered and why. CheckoutDir is the working
+	// directory the panel re-reads before recording trust, and
+	// CheckoutTrustPath is the record the `t` key writes (beside the
+	// operator's config.yaml, never in the checkout). Empty in the
+	// mesh-only profile, which keeps reading those files as the operator's
+	// own instructions.
+	CheckoutNotes     []checkoutnotes.Note
+	CheckoutRefused   []checkoutnotes.Refused
+	CheckoutDir       string
+	CheckoutTrustPath string
+
 	// LogPath is the append-mode agent log. The `l` key opens it in
 	// $EDITOR rather than rendering it: the file already exists, and an
 	// editor already has search, jumping, copy and highlighting that an
@@ -148,12 +184,18 @@ type Options struct {
 type Model struct {
 	mcp          toolCaller
 	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
+	// attachMode is true when this TUI reached the session over its
+	// control socket instead of running it (macula-lazymesh#40). It has no
+	// macula-mcp of its own, so the mesh strip says so rather than
+	// reporting counts it cannot see.
+	attachMode bool
 
-	agentEvents     <-chan agent.Event
-	userInputCh     chan<- string
-	interruptCh     chan<- struct{}
-	approvalCh      chan<- ApprovalAnswer
-	pendingApproval *pendingApproval
+	agentEvents        <-chan agent.Event
+	userInputCh        chan<- string
+	interruptCh        chan<- struct{}
+	approvalCh         chan<- ApprovalAnswer
+	approvalResolvedCh <-chan frontend.ApprovalResolved
+	pendingApproval    *pendingApproval
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
@@ -167,10 +209,21 @@ type Model struct {
 	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
 	meshServicesCursor   int  // selected row in the `s` panel's table -- clamped in handleKey's Up/Down cases, not here, since this field alone doesn't know the current entry count
 	realmExpanded        bool // `r` -- see renderRealmsOverlay
-	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
-	muted                bool
-	statusBarPosition    string // "top" or "bottom"
-	agentModel           string // see Options.AgentModel
+	// `N` -- the checkout-notes panel (macula-io/macula-lazymesh#44), and
+	// the notes as read at start. Deliberately never re-read while
+	// running: the content the operator trusts must be the bytes the model
+	// was actually given, not whatever the file says by the time they press
+	// t.
+	notesPanel        *notesPanel
+	notesCursor       int
+	checkoutNotes     []checkoutnotes.Note
+	refusedNotes      []checkoutnotes.Refused
+	checkoutDir       string
+	checkoutTrustPath string
+	detailsExpanded   bool // global expand/collapse for tool-call detail in chat
+	muted             bool
+	statusBarPosition string // "top" or "bottom"
+	agentModel        string // see Options.AgentModel
 
 	// showChatter controls whether routine tool-call activity (mesh
 	// operations) reaches the conversation pane at all. Off by default:
@@ -280,8 +333,9 @@ func New(client toolCaller, opts Options) Model {
 		statusBarPosition = "bottom"
 	}
 
-	return Model{
+	m := Model{
 		mcp:                  client,
+		attachMode:           opts.Attached,
 		meshServices:         opts.MeshServices,
 		maculaMCPVersion:     opts.MaculaMCPVersion,
 		realmIdentityFile:    opts.RealmIdentityFile,
@@ -289,6 +343,7 @@ func New(client toolCaller, opts Options) Model {
 		userInputCh:          opts.UserInputCh,
 		interruptCh:          opts.InterruptCh,
 		approvalCh:           opts.ApprovalCh,
+		approvalResolvedCh:   opts.ApprovalResolvedCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
@@ -304,8 +359,27 @@ func New(client toolCaller, opts Options) Model {
 		// wedged agent looks identical to a healthy one on screen: a cue
 		// that's off by default would silently defeat its own purpose for
 		// anyone who doesn't know to turn it on first.
-		muted: false,
+		muted:             false,
+		checkoutNotes:     append([]checkoutnotes.Note{}, opts.CheckoutNotes...),
+		refusedNotes:      append([]checkoutnotes.Refused{}, opts.CheckoutRefused...),
+		checkoutDir:       opts.CheckoutDir,
+		checkoutTrustPath: opts.CheckoutTrustPath,
 	}
+	// A file the operator trusted that has changed since is announced
+	// rather than quietly demoted: the next start delivers it as data, and
+	// the operator should hear that from the TUI, not discover it by
+	// wondering why the model ignored their notes.
+	for _, n := range m.checkoutNotes {
+		if !n.Changed {
+			continue
+		}
+		m.chatEntries = append(m.chatEntries, chatEntry{
+			kind: chatSystem,
+			at:   time.Now(),
+			text: fmt.Sprintf("%s changed since you trusted it: it reaches the model as data until you trust this version again (N to review).", n.Name),
+		})
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -319,6 +393,9 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.refreshCmd(), tick(), textinput.Blink}
 	if m.agentEvents != nil {
 		cmds = append(cmds, waitForAgentEvent(m.agentEvents))
+	}
+	if m.approvalResolvedCh != nil {
+		cmds = append(cmds, waitForApprovalResolved(m.approvalResolvedCh))
 	}
 	return tea.Batch(cmds...)
 }
@@ -337,6 +414,15 @@ func tick() tea.Cmd {
 
 func (m Model) refreshCmd() tea.Cmd {
 	client := m.mcp
+	if client == nil {
+		// An attached TUI (lazymesh attach) has no macula-mcp of its own:
+		// the session it watches owns the mesh connection. This is not a
+		// failure, so it is not reported as one — an error pop-up on every
+		// attach would greet the operator with a wall they cannot act on,
+		// and empty counts would read as an idle mesh rather than an
+		// unshown one. renderSummaryLine says what is true instead.
+		return func() tea.Msg { return refreshMsg{state: meshState{}} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -352,6 +438,18 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 			return nil
 		}
 		return agentEventMsg(ev)
+	}
+}
+
+// waitForApprovalResolved is waitForAgentEvent for the approval
+// resolution stream an attached TUI reads from its control socket.
+func waitForApprovalResolved(ch <-chan frontend.ApprovalResolved) tea.Cmd {
+	return func() tea.Msg {
+		r, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return approvalResolvedMsg(r)
 	}
 }
 
@@ -533,6 +631,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return m.handleAgentEvent(msg)
 
+	case approvalResolvedMsg:
+		return m.handleApprovalResolved(msg)
+
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 
@@ -582,6 +683,10 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.mode == ModeErrorPopup {
 		return m.handleErrorPopupKey(msg)
+	}
+
+	if m.mode == ModeNotesPanel {
+		return m.handleNotesPanelKey(msg)
 	}
 
 	// Works from either Normal or Insert -- composing in $EDITOR is useful
@@ -742,6 +847,11 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.meshServicesCursor = 0
 		}
 		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleNotes):
+		m.openNotes()
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.TrustNote):
+		return m.trustSelectedNote()
 	case key.Matches(msg, DefaultKeyMap.ToggleRealm):
 		m.realmExpanded = !m.realmExpanded
 		if m.realmExpanded {
@@ -786,21 +896,23 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// point of keeping the list at all.
 		return m.openErrorPopup(len(m.errorHistory) - 1), nil
 	case key.Matches(msg, DefaultKeyMap.Up):
-		if m.meshServicesExpanded {
+		switch {
+		case m.meshServicesExpanded:
 			if m.meshServicesCursor > 0 {
 				m.meshServicesCursor--
 			}
-		} else if !m.meshExpanded && !m.realmExpanded {
+		case !m.meshExpanded && !m.realmExpanded:
 			m.chatViewport.LineUp(1)
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Down):
-		if m.meshServicesExpanded {
+		switch {
+		case m.meshServicesExpanded:
 			entries, _ := m.meshServiceEntries()
 			if m.meshServicesCursor < len(entries)-1 {
 				m.meshServicesCursor++
 			}
-		} else if !m.meshExpanded && !m.realmExpanded {
+		case !m.meshExpanded && !m.realmExpanded:
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
@@ -1127,6 +1239,17 @@ func (m Model) View() string {
 		return strings.Join([]string{popup, status}, "\n")
 	}
 
+	// The checkout-notes panel takes the whole body: trust is given to the
+	// note's content, so the content is what has to be readable, whole and
+	// scrolled, before t can act on it.
+	if m.mode == ModeNotesPanel && m.notesPanel != nil {
+		popup := m.renderNotesPanel()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
 	var body string
 	switch {
 	case m.meshExpanded:
@@ -1213,7 +1336,7 @@ func (m Model) renderHintLines() []string {
 		if m.meshServicesExpanded && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  N: checkout notes  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 
@@ -1227,9 +1350,17 @@ func (m Model) renderHintLines() []string {
 // that instead of setting it apart, so the rest of the line
 // (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
-	counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
-		len(m.state.joined), len(m.state.pending), len(m.state.agents))
-	out := summaryStyle.Render(counts)
+	var out string
+	if m.attachMode {
+		// Counts would be fabricated here: this TUI cannot see the mesh at
+		// all, and zero would read as an idle mesh rather than an unshown
+		// one.
+		out = summaryStyle.Render("attached · mesh not shown here (the session owns it)")
+	} else {
+		counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
+			len(m.state.joined), len(m.state.pending), len(m.state.agents))
+		out = summaryStyle.Render(counts)
+	}
 
 	if m.agentModel != "" {
 		// Bold (statusStripStyle -- the weight this whole line shared
@@ -1257,7 +1388,7 @@ func (m Model) renderSummaryLine() string {
 	// 8622117) was only visible by comparing raw node_ids or Presence
 	// panel rows across terminals; this makes distinctness confirmable at
 	// a glance, in the one place that's always on screen.
-	if self, ok := selfAgent(m.state.agents); ok {
+	if self, ok := selfAgent(m.state.agents); ok && !m.attachMode {
 		identity := identityKey(self.NodeID, self.Petname)
 		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
 		out = name + summaryStyle.Render(" · ") + out
