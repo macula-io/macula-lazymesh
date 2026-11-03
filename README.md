@@ -332,6 +332,12 @@ edited by the model and both are shown to you: a patch is asked about with
 its whole text on screen before it runs, and the diff of the working tree
 appears in the chat as soon as it has been applied.
 
+Neither `write_file` nor `apply_patch` writes through a symlinked directory,
+even one that points back inside the checkout: a committed `tools ->
+.git/hooks` would otherwise put a hook where your own git runs it. One
+section per file per patch — a patch that names the same file twice is
+refused rather than silently keeping the last edit.
+
 A result too long for one answer is paged, not cut: `read_file` and
 `search` return a page with the offset for the next one in the footer, so
 a search's last match and a long file's last line stay reachable.

@@ -439,6 +439,32 @@ func insideGitDir(rel string) bool {
 	return false
 }
 
+// refuseSymlinkedPath refuses rel when any one of its components, as the
+// host would traverse it, is a symlink.
+//
+// os.Root keeps a symlink from reaching outside the checkout, but it
+// follows a middle component whose target stays inside -- which is how a
+// committed `tools -> .git/hooks` reached .git through both file tools
+// (#46 review r=1). The tools are model-driven, so they refuse the whole
+// class instead of reasoning about which links are harmless: an untrusted
+// repository can commit one, and the confined shell can plant one.
+func (s *Source) refuseSymlinkedPath(rel, display string) error {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for i := 1; i <= len(parts); i++ {
+		prefix := strings.Join(parts[:i], "/")
+		info, err := s.root.Lstat(prefix)
+		if err != nil {
+			// Nothing there yet: no link to follow, and the open that
+			// follows reports anything else.
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%q goes through the symlink %s; the file tools never write through one", display, prefix)
+		}
+	}
+	return nil
+}
+
 // checkContained verifies path stays within the canonical working
 // directory.
 func (s *Source) checkContained(path string) error {
@@ -678,7 +704,9 @@ func (s *Source) matchesInFile(path string, d os.DirEntry, matcher *regexp.Regex
 		return nil, false
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	// The size above is the listing's word for it; the read is bounded by
+	// the same number rather than trusted to agree (#46 review r=1).
+	data, err := io.ReadAll(io.LimitReader(f, maxSearchFileBytes))
 	if err != nil || isBinary(data) {
 		return nil, false
 	}
@@ -800,13 +828,13 @@ func (s *Source) writeFile(args map[string]any) (string, error) {
 	if insideGitDir(rel) {
 		return "", fmt.Errorf("write_file: %q is inside .git; write_file never writes there", relPath)
 	}
+	if err := s.refuseSymlinkedPath(rel, relPath); err != nil {
+		return "", fmt.Errorf("write_file: %w", err)
+	}
 	if dir := filepath.Dir(rel); dir != "." {
 		if err := s.root.MkdirAll(dir, 0o755); err != nil {
 			return "", fmt.Errorf("write_file: create parent directory: %w", err)
 		}
-	}
-	if info, err := s.root.Lstat(rel); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("write_file: %q is a symlink; write_file does not follow symlinks", relPath)
 	}
 	f, err := s.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -846,11 +874,19 @@ func (s *Source) applyPatch(ctx context.Context, args map[string]any) (string, e
 	}
 
 	plans := make([]patchPlan, 0, len(files))
+	named := make(map[string]bool, len(files))
 	for _, file := range files {
 		plan, err := s.planPatchFile(file)
 		if err != nil {
 			return "", fmt.Errorf("apply_patch: %w", err)
 		}
+		// Every section is planned from what is on disk, so a second
+		// section on the same file would overwrite the first and report
+		// success for an edit that was never applied (#46 review r=1).
+		if named[plan.rel] {
+			return "", fmt.Errorf("apply_patch: the patch names %s twice; send one section per file", plan.display)
+		}
+		named[plan.rel] = true
 		plans = append(plans, plan)
 	}
 	for _, plan := range plans {
@@ -890,7 +926,12 @@ type patchFile struct {
 
 type patchHunk struct {
 	oldStart, oldCount int
-	lines              []patchLine
+	newCount           int
+	// oldLeft and newLeft are how many lines of each side the header
+	// still promises: a line belongs to the hunk until both reach zero,
+	// which is how git knows where a hunk ends (#46 review r=1).
+	oldLeft, newLeft int
+	lines            []patchLine
 }
 
 // patchLine is one line of a hunk: its kind (' ', '-' or '+') and text.
@@ -926,6 +967,50 @@ func parsePatch(patch string) ([]patchFile, error) {
 
 	for _, raw := range lines {
 		line := strings.TrimSuffix(raw, "\r")
+
+		// Inside a hunk every line belongs to it until the header's counts
+		// are spent -- git emits exactly that many. Read the other way, a
+		// deletion of "-- old note" is written "--- old note" and an
+		// addition of "++ x" is written "+++ x", so a patch could name a
+		// file through the text it carries (#46 review r=1).
+		if hunk != nil && (hunk.oldLeft > 0 || hunk.newLeft > 0) {
+			switch {
+			case strings.HasPrefix(line, "\\"):
+				if len(hunk.lines) == 0 {
+					return nil, fmt.Errorf("a \"no newline at end of file\" marker appears with no line before it")
+				}
+				hunk.lines[len(hunk.lines)-1].noNewline = true
+			case line == "":
+				// Some tools emit a truly empty line for an empty context line.
+				hunk.lines = append(hunk.lines, patchLine{kind: ' '})
+				hunk.oldLeft--
+				hunk.newLeft--
+			case line[0] == ' ' || line[0] == '-' || line[0] == '+':
+				hunk.lines = append(hunk.lines, patchLine{kind: line[0], text: line[1:]})
+				if line[0] != '+' {
+					hunk.oldLeft--
+				}
+				if line[0] != '-' {
+					hunk.newLeft--
+				}
+			default:
+				return nil, fmt.Errorf("unexpected line in the patch: %q", line)
+			}
+			if hunk.oldLeft < 0 || hunk.newLeft < 0 {
+				return nil, fmt.Errorf("a hunk carries more lines than its header counts")
+			}
+			continue
+		}
+		if hunk != nil {
+			if strings.HasPrefix(line, "\\") {
+				if len(hunk.lines) == 0 {
+					return nil, fmt.Errorf("a \"no newline at end of file\" marker appears with no line before it")
+				}
+				hunk.lines[len(hunk.lines)-1].noNewline = true
+				continue
+			}
+			flushHunk() // its counts are spent: the next line is not its own
+		}
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			flushFile()
@@ -978,21 +1063,14 @@ func parsePatch(patch string) ([]patchFile, error) {
 				return nil, err
 			}
 			hunk = parsed
-		case strings.HasPrefix(line, "\\"):
-			if hunk == nil || len(hunk.lines) == 0 {
-				return nil, fmt.Errorf("a \"no newline at end of file\" marker appears with no line before it")
-			}
-			hunk.lines[len(hunk.lines)-1].noNewline = true
-		case line == "" && hunk != nil:
-			// Some tools emit a truly empty line for an empty context line.
-			hunk.lines = append(hunk.lines, patchLine{kind: ' '})
-		case hunk != nil && (line[0] == ' ' || line[0] == '-' || line[0] == '+'):
-			hunk.lines = append(hunk.lines, patchLine{kind: line[0], text: line[1:]})
 		case line == "":
 			// Blank line between files.
 		default:
 			return nil, fmt.Errorf("unexpected line in the patch: %q", line)
 		}
+	}
+	if hunk != nil && (hunk.oldLeft > 0 || hunk.newLeft > 0) {
+		return nil, fmt.Errorf("the last hunk ends before its header's line count")
 	}
 	flushFile()
 	if len(files) == 0 {
@@ -1031,11 +1109,11 @@ func parseHunkHeader(line string) (*patchHunk, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, _, err = parseHunkRange(fields[2])
+	_, newCount, err := parseHunkRange(fields[2])
 	if err != nil {
 		return nil, err
 	}
-	return &patchHunk{oldStart: oldStart, oldCount: oldCount}, nil
+	return &patchHunk{oldStart: oldStart, oldCount: oldCount, newCount: newCount, oldLeft: oldCount, newLeft: newCount}, nil
 }
 
 // parseHunkRange reads "start" or "start,count" (the count defaults to 1
@@ -1072,8 +1150,8 @@ func (s *Source) planPatchFile(file patchFile) (patchPlan, error) {
 		return patchPlan{}, fmt.Errorf("%q is inside .git; apply_patch never writes there", relPath)
 	}
 	plan := patchPlan{rel: rel, display: relPath, create: file.create, remove: file.remove, hunks: len(file.hunks)}
-	if info, err := s.root.Lstat(rel); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return patchPlan{}, fmt.Errorf("%q is a symlink, dangling or not; apply_patch never writes through one", relPath)
+	if err := s.refuseSymlinkedPath(rel, relPath); err != nil {
+		return patchPlan{}, err
 	}
 
 	old, trailing, err := s.readForPatch(rel)
@@ -1261,7 +1339,7 @@ func (s *Source) commitPatchPlan(plan patchPlan) error {
 // operator is shown: the change as the checkout now holds it, not the patch
 // as the model wrote it. Read-only: nothing here writes.
 func (s *Source) workingTreeDiff(ctx context.Context, targets []string) string {
-	args := append([]string{"--no-pager", "diff", "--no-color", "--"}, targets...)
+	args := append([]string{"--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--"}, targets...)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = s.workingDir
 	out, err := cmd.Output()

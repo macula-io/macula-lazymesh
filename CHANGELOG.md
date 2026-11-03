@@ -22,6 +22,13 @@ goreleaser from a `v*` tag; this file records what each one changes.
   result cap with the offset for the next one, so nothing is silently
   cut. An applied patch's result carries the working tree's `git diff` of
   the paths it touched, and the TUI shows it without the details toggle.
+  Neither `write_file` nor `apply_patch` writes through a symlinked
+  directory, even one that points back inside the checkout, so a committed
+  `tools -> .git/hooks` cannot plant a hook the operator's own git runs; a
+  patch that names one file twice is refused rather than keeping only its
+  last edit; and a hunk's lines are read by its header's counts, so a diff
+  that deletes a line beginning `-- ` or adds one beginning `++ ` is
+  applied instead of being read as a file header.
 - **Git tool for the coding profile (#45, slice E of #38).** `git_branch`,
   `git_commit` and `git_push`, offered only in the coding profile and only
   when `tool_allowlist` names them, working in `local_tools.working_dir`.
