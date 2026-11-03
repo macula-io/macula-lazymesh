@@ -1694,9 +1694,11 @@ func (m Model) renderHintLines() []string {
 		return []string{m.renderLeaderHint()}
 	}
 
-	hint := "enter: send  shift+enter: newline  esc: close or interrupt  shift+↑↓: scroll  ctrl+e: $EDITOR  " + m.leaderLabel() + ": commands"
+	hint := keyHint(DefaultKeyMap.Submit, "send") + "  shift+enter: newline  " +
+		keyHint(DefaultKeyMap.Normal, "close or interrupt") + "  shift+↑↓: scroll  " +
+		keyHint(DefaultKeyMap.OpenEditor, "$EDITOR") + "  " + m.leaderLabel() + ": commands"
 	if m.realmExpanded && m.realmJoinLatest == nil && strings.TrimSpace(m.input.Value()) == "" {
-		hint = "enter: join a realm  " + hint
+		hint = keyHint(DefaultKeyMap.Submit, "join a realm") + "  " + hint
 	}
 	return []string{dimStyle.Render(hint)}
 }

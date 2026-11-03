@@ -7,12 +7,15 @@ package tui
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/key"
+
+	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 )
 
 // boundKeys is every key the TUI actually binds, read off the keymap
@@ -53,23 +56,48 @@ func TestRenderRealms_PlaceholderNamesTheRealJoinKey(t *testing.T) {
 	}
 }
 
-// TestPanelPlaceholdersNameOnlyBoundKeys is the class check: every key
-// hint a panel prints is a key the keymap binds. A literal that outlives
-// its binding fails here instead of in someone's terminal.
-func TestPanelPlaceholdersNameOnlyBoundKeys(t *testing.T) {
-	src, err := os.ReadFile("panels.go")
+// TestHintLiteralsNameOnlyBoundKeys is the class check: no hint written
+// into a string literal names a key the keymap does not bind. A literal
+// outlives its binding, which is how the realms panel came to offer `i`
+// twice (#74). It scans every non-test file in the package for the "-- key: "
+// shape hints are written in, so a hint in an fmt.Sprintf is caught too.
+func TestHintLiteralsNameOnlyBoundKeys(t *testing.T) {
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	placeholder := regexp.MustCompile(`panelPlaceholder\("([^"]*)"\)`)
-	hint := regexp.MustCompile(`(?:^|\s|--) ?([A-Za-z][A-Za-z0-9+↑↓]*):\s`)
+	literal := regexp.MustCompile(`"([^"\n]*)"`)
+	hint := regexp.MustCompile(`-- ([A-Za-z][A-Za-z0-9+↑↓]*): `)
 	bound := boundKeys()
 
-	for _, match := range placeholder.FindAllStringSubmatch(string(src), -1) {
-		for _, token := range hint.FindAllStringSubmatch(match[1], -1) {
-			if !bound[token[1]] {
-				t.Errorf("the placeholder %q names %q, which the keymap does not bind", match[1], token[1])
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, lit := range literal.FindAllStringSubmatch(string(src), -1) {
+			for _, token := range hint.FindAllStringSubmatch(lit[1], -1) {
+				if !bound[token[1]] {
+					t.Errorf("%s: the hint %q names %q, which the keymap does not bind", name, lit[1], token[1])
+				}
 			}
+		}
+	}
+}
+
+// TestRealmJoinStatusLineNamesTheRetryPath: a failed join tells the
+// operator the keys that actually try again -- esc to dismiss the status,
+// then enter to open the join input. `i` did neither (#74).
+func TestRealmJoinStatusLineNamesTheRetryPath(t *testing.T) {
+	dismiss := DefaultKeyMap.Normal.Help().Key
+	retry := DefaultKeyMap.Submit.Help().Key
+	for _, kind := range []string{"expired", "timeout"} {
+		line := realmJoinStatusLine(realmjoin.Event{Kind: kind, Realm: "io.macula"})
+		if !strings.Contains(line, dismiss+": dismiss") || !strings.Contains(line, retry+": try again") {
+			t.Fatalf("%s line does not name %q then %q:\n%s", kind, dismiss, retry, line)
 		}
 	}
 }

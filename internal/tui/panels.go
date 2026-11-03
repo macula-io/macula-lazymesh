@@ -529,14 +529,21 @@ func realmJoinStatusLine(ev realmjoin.Event) string {
 	case "confirmed":
 		return statusStripStyle.Render(fmt.Sprintf("✓ joined %s as %s", ev.Realm, displayHandle(ev)))
 	case "expired":
-		return errStyle.Render(fmt.Sprintf("session for %s expired before it was confirmed -- i: try again", ev.Realm))
+		return errStyle.Render(fmt.Sprintf("session for %s expired before it was confirmed -- %s", ev.Realm, realmRetryHint()))
 	case "timeout":
-		return errStyle.Render(fmt.Sprintf("gave up waiting for %s -- i: try again", ev.Realm))
+		return errStyle.Render(fmt.Sprintf("gave up waiting for %s -- %s", ev.Realm, realmRetryHint()))
 	case "error", "spawn_error":
 		return errStyle.Render(fmt.Sprintf("error joining %s: %s", ev.Realm, ev.Message))
 	default: // "session" -- interim, still polling
 		return dimStyle.Render(fmt.Sprintf("waiting for confirmation (session expires %s)...", ev.ExpiresAt))
 	}
+}
+
+// realmRetryHint is how a join is tried again: a finished join's status
+// holds the panel, so esc dismisses it and enter opens the join input
+// again. Written from the bindings, like every other hint on screen (#74).
+func realmRetryHint() string {
+	return keyHint(DefaultKeyMap.Normal, "dismiss") + ", then " + keyHint(DefaultKeyMap.Submit, "try again")
 }
 
 func displayHandle(ev realmjoin.Event) string {
