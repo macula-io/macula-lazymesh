@@ -1610,6 +1610,14 @@ func (m *Model) resizeComponents() {
 	if m.width > 6 {
 		m.input.SetWidth(m.width - 6)
 	}
+	// The mesh-service call field is one line inside the `s` panel: give
+	// it the panel's inner width so a long args string scrolls under the
+	// cursor instead of widening the box past the terminal (#113).
+	callValueWidth := m.panelInnerWidth() - lipgloss.Width(m.meshServiceCallInput.Prompt) - 1
+	if callValueWidth < 1 {
+		callValueWidth = 1
+	}
+	m.meshServiceCallInput.Width = callValueWidth
 }
 
 func (m *Model) syncViewport() {

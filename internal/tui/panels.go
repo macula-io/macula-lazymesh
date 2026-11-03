@@ -397,12 +397,20 @@ func (m Model) renderMeshServices() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("MeshServices (%d curated, %d live)", len(entries), liveCount)) + "\n")
-	if !enabled {
-		b.WriteString(dimStyle.Render("disabled -- set mesh_services_enabled: true in config.yaml to enable") + "\n")
-	}
-
 	inner := m.panelInnerWidth()
+	// Every line this panel writes itself wraps to the room the panel
+	// border and padding leave. A fixed-width line here is what made the
+	// whole box 72 cells wide on any terminal (#113): the box sizes to its
+	// widest line, so one long sentence pushed every other line past the
+	// edge with it.
+	for _, line := range wrapCells(termTextOf(fmt.Sprintf("MeshServices (%d curated, %d live)", len(entries), liveCount)), inner) {
+		b.WriteString(titleStyle.Render(line) + "\n")
+	}
+	if !enabled {
+		for _, line := range wrapCells(termTextOf("disabled -- set mesh_services_enabled: true in config.yaml to enable"), inner) {
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
+	}
 	// Procedure, not Description, is the flex column here -- unlike the
 	// sibling panels (Rooms' own flex column is likewise its identifying
 	// content), an operator scanning this list needs to know WHICH exact
@@ -462,7 +470,13 @@ func meshServiceTableStyles() table.Styles {
 // same reasoning, see ModeMeshServiceCall's own doc comment (model.go).
 func (m Model) renderMeshServiceCallInput() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("MeshServices -- call "+m.meshServiceCallProcedure) + "\n\n")
+	// The procedure's name is the panel's own text and can be long: it
+	// wraps to the panel's inner width like every other line here, or the
+	// box grows past the terminal with it (#113).
+	for _, line := range wrapCells(termTextOf("MeshServices -- call "+m.meshServiceCallProcedure), m.panelInnerWidth()) {
+		b.WriteString(titleStyle.Render(line) + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(m.meshServiceCallInput.View())
 	return b.String()
 }
