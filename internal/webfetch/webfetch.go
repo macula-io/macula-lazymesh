@@ -5,7 +5,8 @@
 //   - the SSRF guard: only http/https schemes, and every address the
 //     connection or a redirect would touch must resolve to a PUBLIC IP —
 //     loopback, private, link-local, multicast and unspecified ranges
-//     are refused. An agent whose context can be steered by arbitrary
+//     are refused — and the connection goes to the addresses checked,
+//     never to the name resolved a second time. An agent whose context can be steered by arbitrary
 //     mesh peers must not become a probe for the operator's LAN;
 //   - bounded size: the response body is capped and truncated with a
 //     marker, never read unbounded;
@@ -25,6 +26,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -35,6 +37,10 @@ import (
 // fetchTimeout bounds one whole fetch (connect + body), the same
 // bounded-operation posture as the mesh content transfer's own timeouts.
 const fetchTimeout = 15 * time.Second
+
+// dialAttemptTimeout bounds one address's connect, so an address that
+// never answers leaves time to try the next one within fetchTimeout.
+const dialAttemptTimeout = 5 * time.Second
 
 // maxBodyBytes caps how much of a response ever reaches the model: a
 // fetch is for reading a page, not for downloading the internet.
@@ -47,29 +53,48 @@ type Source struct {
 	// Defaults to PublicAddr (the SSRF guard); a test may substitute a
 	// permissive function to point the client at a loopback test server.
 	AllowAddr func(ip net.IP) bool
+	// LookupIP resolves a host for the guard. Defaults to the system
+	// resolver; a test substitutes its own answers.
+	LookupIP func(ctx context.Context, host string) ([]net.IP, error)
 }
 
 // New returns a Source with the SSRF-guarding client: every dial and
 // every redirect hop validates its resolved addresses against AllowAddr
 // (public-only by default).
 func New() *Source {
-	s := &Source{AllowAddr: PublicAddr}
+	s := &Source{AllowAddr: PublicAddr, LookupIP: systemLookupIP}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, err := net.SplitHostPort(addr)
+			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, fmt.Errorf("webfetch: bad address %q: %w", addr, err)
 			}
-			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			ips, err := s.LookupIP(ctx, host)
 			if err != nil {
 				return nil, fmt.Errorf("webfetch: resolve %s: %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("webfetch: resolve %s: no addresses", host)
 			}
 			for _, ip := range ips {
 				if !s.AllowAddr(ip) {
 					return nil, fmt.Errorf("webfetch: refused %s (%s is not a public address)", host, ip)
 				}
 			}
-			return (&net.Dialer{}).DialContext(ctx, network, addr)
+			// Dial the addresses just checked, never the name: resolving it
+			// again could give an answer the guard never saw (#93). The
+			// transport still sends the name as Host and as the TLS server
+			// name, since both come from the request URL, not from addr.
+			var dialErr error
+			for _, ip := range ips {
+				dialer := &net.Dialer{Timeout: dialAttemptTimeout}
+				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					return conn, nil
+				}
+				dialErr = err
+			}
+			return nil, dialErr
 		},
 	}
 	client := &http.Client{Transport: transport, Timeout: fetchTimeout}
@@ -78,7 +103,7 @@ func New() *Source {
 			return fmt.Errorf("webfetch: too many redirects")
 		}
 		host := req.URL.Hostname()
-		ips, err := net.DefaultResolver.LookupIP(req.Context(), "ip", host)
+		ips, err := s.LookupIP(req.Context(), host)
 		if err != nil {
 			return fmt.Errorf("webfetch: resolve redirect target %s: %w", host, err)
 		}
@@ -93,17 +118,94 @@ func New() *Source {
 	return s
 }
 
-// PublicAddr approves exactly the addresses a mesh-facing fetch should
-// ever touch: everything not loopback, private, link-local, multicast or
-// unspecified.
-func PublicAddr(ip net.IP) bool {
-	return !ip.IsLoopback() &&
-		!ip.IsPrivate() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast() &&
-		!ip.IsUnspecified()
+// systemLookupIP is the default LookupIP: the system resolver.
+func systemLookupIP(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
+
+// PublicAddr approves exactly the addresses a mesh-facing fetch should
+// ever touch: none of the IANA special-purpose ranges in nonPublic. An
+// IPv4-mapped address is judged as its IPv4 address, and a NAT64 or 6to4
+// address as the IPv4 address it carries, so wrapping a private address
+// in IPv6 does not make it public.
+func PublicAddr(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	return publicAddr(addr.Unmap().WithZone(""))
+}
+
+func publicAddr(addr netip.Addr) bool {
+	for _, prefix := range nonPublic {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	if v4, ok := embeddedV4(addr); ok {
+		return publicAddr(v4)
+	}
+	return true
+}
+
+// nat64 and sixToFour carry an IPv4 address inside an IPv6 one: in the
+// last 32 bits (RFC 6052) and in bits 16-47 (RFC 3056).
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+)
+
+func embeddedV4(addr netip.Addr) (netip.Addr, bool) {
+	b := addr.As16()
+	if nat64.Contains(addr) {
+		return netip.AddrFrom4([4]byte(b[12:16])), true
+	}
+	if sixToFour.Contains(addr) {
+		return netip.AddrFrom4([4]byte(b[2:6])), true
+	}
+	return netip.Addr{}, false
+}
+
+// nonPublic is every range that is not the public internet, from the IANA
+// IPv4 and IPv6 special-purpose address registries plus multicast and the
+// reserved space. Global-but-special ranges are refused too: a fetch has no
+// business reaching any of them.
+var nonPublic = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, s := range []string{
+		// IPv4
+		"0.0.0.0/8",       // this network
+		"10.0.0.0/8",      // private
+		"100.64.0.0/10",   // shared address space (CGNAT), also cloud metadata
+		"127.0.0.0/8",     // loopback
+		"169.254.0.0/16",  // link-local, also cloud metadata
+		"172.16.0.0/12",   // private
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // documentation
+		"192.88.99.0/24",  // 6to4 relay anycast
+		"192.168.0.0/16",  // private
+		"198.18.0.0/15",   // benchmarking
+		"198.51.100.0/24", // documentation
+		"203.0.113.0/24",  // documentation
+		"224.0.0.0/4",     // multicast
+		"240.0.0.0/4",     // reserved, and the limited broadcast address
+		// IPv6
+		"::/96",          // unspecified, loopback and IPv4-compatible
+		"64:ff9b:1::/48", // local-use NAT64
+		"100::/64",       // discard-only
+		"2001::/23",      // IETF protocol assignments, Teredo included
+		"2001:db8::/32",  // documentation
+		"3fff::/20",      // documentation
+		"5f00::/16",      // segment routing SIDs
+		"fc00::/7",       // unique local
+		"fe80::/10",      // link-local
+		"fec0::/10",      // site-local (deprecated)
+		"ff00::/8",       // multicast
+	} {
+		out = append(out, netip.MustParsePrefix(s))
+	}
+	return out
+}()
 
 // webFetchTool is the one tool this source advertises.
 const webFetchTool = "web_fetch"
