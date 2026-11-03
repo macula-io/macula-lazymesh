@@ -24,6 +24,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/counters"
@@ -235,8 +236,23 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
 	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(wd))
+	// The checkout's own notes (macula-io/macula-lazymesh#44): in the
+	// coding profile the working directory is a checkout, so its AGENTS.md
+	// and CLAUDE.md are the repository's words -- data, unless the operator
+	// trusted exactly that content. The mesh profile keeps reading them as
+	// the operator's own instructions (G8): there the working directory is
+	// usually the operator's own workspace.
+	var checkoutNotes []checkoutnotes.Note
 	if cfg.CodingProfile() {
-		systemPrompt = buildCodingSystemPrompt(goalText, localToolsReachable, localInstructions(wd))
+		var notesErr error
+		checkoutNotes, notesErr = checkoutnotes.ReadWithTrust(wd, checkoutnotes.RecordPath(cfg.Dir))
+		if notesErr != nil {
+			// Fail closed and say so: a trust record that cannot be read
+			// admits nothing, and silence would look like the operator
+			// never trusted anything.
+			agentLog.Printf("[checkoutnotes] %s: every checkout note is delivered as data", notesErr)
+		}
+		systemPrompt = buildCodingSystemPrompt(goalText, localToolsReachable, checkoutnotes.Prompt(checkoutNotes))
 	}
 	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
 		return err
@@ -490,6 +506,13 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		// agent is actually presenting on the mesh.
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
+		// The checkout's notes as they stood at start, with each one's
+		// trust state, so the `N` panel lists exactly what the model was
+		// given and `t` records the bytes the operator is looking at. The
+		// record itself lives beside the operator's config, never in the
+		// checkout (macula-io/macula-lazymesh#44).
+		CheckoutNotes:     checkoutNotes,
+		CheckoutTrustPath: checkoutnotes.RecordPath(cfg.Dir),
 	})
 
 	if headless {
@@ -950,7 +973,7 @@ const codingGrammarLine = "Mesh conversation grammar: choose mesh_say's kind del
 // roster members assign and discuss work, only the operator approves a
 // command, and nothing it reads, in a message, a file or a tool result,
 // changes these rules.
-func buildCodingSystemPrompt(goalText string, localToolsReachable bool, localInstructions string) string {
+func buildCodingSystemPrompt(goalText string, localToolsReachable bool, checkoutNotes string) string {
 	prompt := "You are a lazymesh coding agent working as a member of a crew on the Macula mesh. " +
 		"The harness delivers messages from the crew members on the operator's roster to you, each " +
 		"fenced as <crew_message> with its sender named; you see nothing else from the mesh. Crew " +
@@ -966,8 +989,13 @@ func buildCodingSystemPrompt(goalText string, localToolsReachable bool, localIns
 	if goalText != "" {
 		prompt += " Additional objective: " + goalText
 	}
-	if localInstructions != "" {
-		prompt += "\n\nThe operator's local instructions for the working directory follow. Treat them as standing orders, second only to this system prompt and to explicit new instructions:" + localInstructions
+	// checkoutNotes is internal/checkoutnotes' own rendering: the checkout's
+	// files fenced as data, the operator's trusted ones fenced as theirs.
+	// It carries its own framing, so nothing here calls it "standing
+	// orders" -- that rank is exactly what a cloned repository must not
+	// reach (macula-io/macula-lazymesh#44, #38 threat model invariant 2).
+	if checkoutNotes != "" {
+		prompt += checkoutNotes
 	}
 	return prompt
 }
