@@ -13,34 +13,42 @@ import (
 // reattachAndSubscribe finds the replacement of a session that died and
 // subscribes the event bridge to it. A restarted session starts with no
 // subscribers, so without the subscription the TUI and the control socket
-// would see nothing from it.
-func reattachAndSubscribe(ctx context.Context, n gen.Node, root, oldPid, bridge gen.PID, agentLog *log.Logger) (gen.PID, error) {
-	newPid, err := reattachSession(ctx, n, root, oldPid, agentLog)
+// would see nothing from it. It then moves sess to the replacement, before
+// anything tells the operator the turn ended (#107): an operator who acts
+// on that notice reaches the live session, not the dead one.
+func reattachAndSubscribe(ctx context.Context, n gen.Node, root, bridge gen.PID, sess *currentSession, agentLog *log.Logger) error {
+	newPid, err := reattachSession(ctx, n, root, sess.Pid(), agentLog)
 	if err != nil {
-		return gen.PID{}, err
+		return err
 	}
 	if _, err := n.Call(bridge, bridgeSubscribeTo{Session: newPid}); err != nil {
-		return gen.PID{}, err
+		return err
 	}
-	return newPid, nil
+	sess.MoveTo(newPid)
+	return nil
 }
+
+// afterCrashReported runs once recoverFromCrash has told the operator.
+// Tests delay it to prove the session moved before the notice, not after.
+var afterCrashReported = func() {}
 
 // recoverFromCrash handles a turn the session crashed in (#99): it
 // reattaches to the replacement and tells the operator which steps of the
 // turn ran, instead of sending the prompt again. A step such as mesh_say
 // has already reached a peer; running the turn again would repeat it.
-func recoverFromCrash(ctx context.Context, n gen.Node, root, oldPid, bridge gen.PID, tuiEvents, frontendEvents *agent.Outlet, agentLog *log.Logger) (gen.PID, error) {
-	newPid, err := reattachAndSubscribe(ctx, n, root, oldPid, bridge, agentLog)
-	if err != nil {
-		return gen.PID{}, err
+func recoverFromCrash(ctx context.Context, n gen.Node, root, bridge gen.PID, sess *currentSession, tuiEvents, frontendEvents *agent.Outlet, agentLog *log.Logger) error {
+	if err := reattachAndSubscribe(ctx, n, root, bridge, sess, agentLog); err != nil {
+		return err
 	}
+	newPid := sess.Pid()
 	report, err := sessionhost.TakeCrashReport(n, newPid)
 	if err != nil {
 		agentLog.Printf("lazymesh agent: crash report of %s unreadable: %s", newPid, err)
 		report = sessionhost.CrashReport{}
 	}
 	reportCrash(tuiEvents, frontendEvents, agentLog, report)
-	return newPid, nil
+	afterCrashReported()
+	return nil
 }
 
 // reportCrash ends the crashed turn on both outlets: the notice, then the
