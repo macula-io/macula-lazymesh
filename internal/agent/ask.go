@@ -57,14 +57,14 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 		return a.inner.CallToolRaw(ctx, name, argumentsJSON)
 	}
 	if len(argumentsJSON) > MaxApprovableBytes {
-		return "", fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(argumentsJSON), MaxApprovableBytes)
+		return "", Refused(fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(argumentsJSON), MaxApprovableBytes))
 	}
 	allowed, err := a.consent(ctx, name, argumentsJSON)
 	if err != nil {
-		return "", fmt.Errorf("approval for %q could not be obtained: %w", name, err)
+		return "", Refused(fmt.Errorf("approval for %q could not be obtained: %w", name, err))
 	}
 	if !allowed {
-		return "", fmt.Errorf("approval for %q was denied by the operator", name)
+		return "", Refused(fmt.Errorf("approval for %q was denied by the operator", name))
 	}
 	return a.inner.CallToolRaw(ctx, name, argumentsJSON)
 }

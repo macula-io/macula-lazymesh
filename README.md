@@ -347,8 +347,51 @@ way to join one.
 logs, in agent.log, which messages a coding agent would have dropped, so
 you can check the filter against your own rooms first.
 
-**Not yet:** the shell is not confined in this profile yet (#26). Until it
-is, do not add `shell_exec` to `tool_allowlist` here either.
+### The shell in the coding profile is confined, or not there
+
+Put `shell_exec` on `tool_allowlist` and lazymesh runs every command it is
+allowed inside [bubblewrap](https://github.com/containers/bubblewrap)
+(#26). An approved command sees:
+
+- your working directory, which it may change, except its `.git`
+  directory, which it may only read;
+- a scratch directory of its own (its `HOME`, the Go build cache, and the
+  full text of any output too long for one answer);
+- the system's programs and libraries and the Go toolchain, read-only.
+
+It does not see the rest of your home directory, has no network, starts
+with none of lazymesh's environment (so no API key), and cannot type into
+your terminal. You still approve every command; this is what holds if you
+misread one.
+
+At start lazymesh checks all of this on your machine: it plants a file
+outside the working directory and makes sure a command cannot read it,
+looks for any network interface besides loopback, and so on. If any check
+fails, or bubblewrap is not installed, or you are not on Linux, the coding
+profile has **no shell at all** and says why when it starts. There is no
+setting that runs it unconfined.
+
+Other toolchains outside the system directories can be mounted read-only:
+
+```yaml
+local_tools:
+  enabled: true
+  working_dir: /path/to/the/checkout
+  read_only_paths:
+    - /opt/node-22
+```
+
+A path that is your home directory, holds it, or overlaps lazymesh's
+config, session data, key or identity files is refused, and the shell is
+then not offered. Do not start the coding profile in your home directory:
+the working directory is writable, so that is refused too.
+
+Every call lazymesh refuses (you denied it, it was too long to show, the
+tool is not allowed, there is no shell) is written whole, with the reason,
+to `<session-id>.denials.jsonl` next to the session's own log.
+
+Install bubblewrap from your distribution: `apt install bubblewrap`,
+`dnf install bubblewrap`, `pacman -S bubblewrap`.
 
 ## Driving lazymesh from another program
 

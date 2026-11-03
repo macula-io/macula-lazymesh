@@ -116,7 +116,7 @@ func (a *AllowlistSource) ListTools(ctx context.Context) ([]mcpclient.Tool, erro
 
 func (a *AllowlistSource) CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error) {
 	if !a.allowed[name] {
-		return "", fmt.Errorf("tool %q is not on the allowlist and cannot be called", name)
+		return "", Refused(fmt.Errorf("tool %q is not on the allowlist and cannot be called", name))
 	}
 	return a.inner.CallToolRaw(ctx, name, argumentsJSON)
 }

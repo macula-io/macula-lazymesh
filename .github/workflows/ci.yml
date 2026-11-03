@@ -56,6 +56,13 @@ jobs:
       # wire format via httptest, agent's tool-calling loop via fakes,
       # tui's mesh-state parsing against real captured JSON fixtures) is
       # a real offline test, not a stub.
+      #
+      # The coding profile's confined shell (#26) is proven on this runner,
+      # not assumed: internal/confinedshell and cmd/lazymesh's shell tests
+      # FAIL without a working bubblewrap, they never skip on Linux. A
+      # runner that cannot confine fails this job.
+      - name: install bubblewrap
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
       - run: go test ./...
 
   goreleaser-check:

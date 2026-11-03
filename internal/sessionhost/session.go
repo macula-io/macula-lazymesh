@@ -42,6 +42,10 @@ type SessionArgs struct {
 	// (G8: the control socket's pre_tool hook). It wraps outside the ask
 	// list, so a call it refuses never asks the operator.
 	PreTool agent.Gate
+	// RecordDenial, when set, receives every tool call the chain refused
+	// (#26): operator denials, hook and allowlist refusals, a missing
+	// shell. It wraps outermost, so it sees all of them.
+	RecordDenial func(agent.Denial)
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -217,6 +221,9 @@ func (s *session) Init(args ...any) error {
 	}
 	if sessArgs.PreTool != nil {
 		tools = agent.NewHookSource(tools, sessArgs.PreTool)
+	}
+	if sessArgs.RecordDenial != nil {
+		tools = agent.NewDenialSource(tools, sessArgs.RecordDenial)
 	}
 	s.loop = agent.NewLoop(sessArgs.Provider, tools, sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})

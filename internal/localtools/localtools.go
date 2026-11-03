@@ -13,6 +13,10 @@
 // reach. Enabling this means trusting the configured provider/model with
 // real local execution, the same trust an operator running commands
 // themselves would carry.
+//
+// That describes the mesh profile, which passes HostShell. The coding
+// profile passes a confinedshell.Sandbox instead, or no shell at all
+// when the sandbox cannot be proven on this machine (#26).
 package localtools
 
 import (
@@ -25,7 +29,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/confinedshell"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 )
 
@@ -48,13 +55,52 @@ type Config struct {
 	Enabled      bool
 	WorkingDir   string        // required if Enabled; shell_exec's cwd, and the sandbox root for read_file/write_file
 	ShellTimeout time.Duration // defaults to 30s if zero
+	// Shell runs shell_exec's commands: HostShell for the mesh profile,
+	// a confinedshell.Sandbox for the coding profile. nil means no
+	// shell: shell_exec is not offered, and a call to it is refused with
+	// NoShellReason.
+	Shell         confinedshell.Runner
+	NoShellReason string
+	// OutputDir, when set, keeps a command's whole output in a file once
+	// it is longer than one result, and the result carries the first
+	// page and the file's path (#26: a cut test run reads as a pass).
+	OutputDir string
+}
+
+// HostShell is the mesh profile's shell: sh -c in dir with the
+// operator's own rights, unconfined.
+func HostShell(dir string) confinedshell.Runner {
+	return hostShell{dir: dir}
+}
+
+type hostShell struct{ dir string }
+
+func (h hostShell) Run(ctx context.Context, command string) (confinedshell.Result, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = h.dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	res := confinedshell.Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	if runErr != nil {
+		exitErr, ok := runErr.(*exec.ExitError)
+		if !ok {
+			return res, runErr
+		}
+		res.ExitCode = exitErr.ExitCode()
+	}
+	return res, nil
 }
 
 // Source implements agent.ToolSource, giving an agent loop shell_exec,
 // read_file, and write_file, all scoped to Config.WorkingDir.
 type Source struct {
-	workingDir   string
-	shellTimeout time.Duration
+	workingDir    string
+	shellTimeout  time.Duration
+	shell         confinedshell.Runner
+	noShellReason string
+	outputDir     string
 }
 
 // New validates cfg and returns a Source. It errors rather than silently
@@ -82,11 +128,11 @@ func New(cfg Config) (*Source, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Source{workingDir: canonical, shellTimeout: timeout}, nil
+	return &Source{workingDir: canonical, shellTimeout: timeout, shell: cfg.Shell, noShellReason: cfg.NoShellReason, outputDir: cfg.OutputDir}, nil
 }
 
 func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
-	return []mcpclient.Tool{
+	tools := []mcpclient.Tool{
 		{
 			Name:        toolShellExec,
 			Description: "Run a shell command in lazymesh's configured working directory. Returns stdout, stderr, and the exit code.",
@@ -133,7 +179,11 @@ func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 				"required": []string{"path", "content"},
 			},
 		},
-	}, nil
+	}
+	if s.shell == nil {
+		return tools[1:], nil
+	}
+	return tools, nil
 }
 
 func (s *Source) CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error) {
@@ -157,6 +207,9 @@ func (s *Source) CallToolRaw(ctx context.Context, name string, argumentsJSON str
 }
 
 func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, error) {
+	if s.shell == nil {
+		return "", agent.Refused(fmt.Errorf("shell_exec is not offered: %s", s.noShellReason))
+	}
 	command, _ := args["command"].(string)
 	if command == "" {
 		return "", fmt.Errorf("shell_exec: \"command\" is required")
@@ -165,31 +218,54 @@ func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, er
 	ctx, cancel := context.WithTimeout(ctx, s.shellTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Dir = s.workingDir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	runErr := cmd.Run()
-	exitCode := 0
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return "", fmt.Errorf("shell_exec: %w", runErr)
+	res, err := s.shell.Run(ctx, command)
+	if err != nil {
+		return "", fmt.Errorf("shell_exec: %w", err)
+	}
+	fields := map[string]any{"stdout": res.Stdout, "stderr": res.Stderr, "exit_code": res.ExitCode}
+	if s.outputDir != "" && len(res.Stdout)+len(res.Stderr) > shellPageBytes {
+		if fields, err = s.pagedOutput(res); err != nil {
+			return "", err
 		}
 	}
-
-	result, err := json.Marshal(map[string]any{
-		"stdout":    stdout.String(),
-		"stderr":    stderr.String(),
-		"exit_code": exitCode,
-	})
+	result, err := json.Marshal(fields)
 	if err != nil {
 		return "", fmt.Errorf("shell_exec: marshal result: %w", err)
 	}
 	return string(result), nil
+}
+
+// shellPageBytes is the most output one shell_exec result carries; it
+// leaves room under the agent's 20 KB result cap for the JSON around it.
+const shellPageBytes = 16_000
+
+// pagedOutput writes a long output whole to a file in the output
+// directory and returns its first page, its size and its path.
+func (s *Source) pagedOutput(res confinedshell.Result) (map[string]any, error) {
+	whole := res.Stdout
+	if res.Stderr != "" {
+		whole += "\n--- stderr ---\n" + res.Stderr
+	}
+	file, err := os.CreateTemp(s.outputDir, "shell-*.log")
+	if err != nil {
+		return nil, fmt.Errorf("shell_exec: keep long output: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(whole); err != nil {
+		return nil, fmt.Errorf("shell_exec: keep long output: %w", err)
+	}
+	cut := shellPageBytes
+	for cut > 0 && !utf8.RuneStart(whole[cut]) {
+		cut--
+	}
+	return map[string]any{
+		"exit_code":    res.ExitCode,
+		"first_page":   whole[:cut],
+		"output_file":  file.Name(),
+		"output_bytes": len(whole),
+		"lines":        strings.Count(whole, "\n") + 1,
+		"note":         "The output is longer than one result. All of it is in output_file; read further pages with shell_exec, for example sed -n '200,400p' on that file.",
+	}, nil
 }
 
 // resolveInSandbox resolves a caller-supplied relative path against

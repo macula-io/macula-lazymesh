@@ -22,6 +22,18 @@ goreleaser from a `v*` tag; this file records what each one changes.
   the call has been on screen. A roster without the coding profile only
   logs what would be dropped.
 
+- **The coding profile's shell is confined, or not offered (#26, #38
+  slice C).** `shell_exec` runs inside bubblewrap: the working directory
+  read-write (its `.git` read-only), a per-checkout scratch directory, the
+  system and Go toolchain read-only, no network, a cleared environment, no
+  controlling terminal. A self-test at start proves it on the machine; if
+  it fails, bubblewrap is missing, or the system is not Linux, the profile
+  has no shell. `local_tools.read_only_paths` mounts other toolchains and
+  refuses home, its parents and lazymesh's private files. Output longer
+  than one result is kept whole in the scratch directory and paged. Every
+  refused tool call, in either profile, is recorded in
+  `<session-id>.denials.jsonl`.
+
 - **Rings reach a headless controller.** A ring still awaiting an answer is
   sent on the control socket as `{"type":"ring_pending","ring_id",
   "from","purpose"}` the moment it arrives, not when the agent next idles.
