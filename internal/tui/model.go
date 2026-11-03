@@ -36,6 +36,14 @@ const refreshInterval = 2 * time.Second
 type refreshMsg struct {
 	state meshState
 	err   error
+	// serverVersion is the release macula-mcp reports NOW, read on every
+	// refresh rather than once at start: a respawn is transparent (the
+	// same Client keeps answering), and an unpinned macula-mcp floats to
+	// npm's latest on every spawn, so the release behind a healthy-looking
+	// session can change under it -- the segment has to follow, or it
+	// keeps naming a release that is no longer running
+	// (macula-lazymesh#61 review).
+	serverVersion string
 }
 
 type tickMsg time.Time
@@ -158,6 +166,18 @@ type Options struct {
 	// mesh presence uses.
 	MaculaMCPVersion  string
 	RealmIdentityFile string
+
+	// MaculaMCPReportedVersion is the release macula-mcp named in its own
+	// MCP handshake -- mcpclient.Client.ServerVersion(), the version
+	// actually running rather than the one npm or the config would have
+	// suggested. The summary line shows it as `mcp <version> ●`, which is
+	// how a person can tell lazymesh is using macula-mcp and which release
+	// (macula-lazymesh#61). Leave it empty when there is no macula-mcp of
+	// this process's own to report (an attached TUI): the line then
+	// carries no mcp segment, which is true, rather than a fabricated one.
+	// MaculaMCPVersion above says whether a release is PINNED (non-empty)
+	// or floating (empty), and the segment says `(pinned)` for the former.
+	MaculaMCPReportedVersion string
 
 	// CheckoutNotes is what the working directory's AGENTS.md/CLAUDE.md
 	// said at start, with each one's trust state; CheckoutRefused is every
@@ -299,6 +319,20 @@ type Model struct {
 	realmJoinEvents   <-chan realmjoin.Event // nil when no join is in flight
 	realmJoinLatest   *realmjoin.Event       // the most recent event for the in-flight (or just-finished) join, nil once dismissed
 
+	// mcpReportedVersion is the release macula-mcp said it was in its own
+	// handshake (mcpclient.Client.ServerVersion), shown on the summary line
+	// so a person can see macula-mcp is in use and which release. Empty in
+	// an attached TUI, which has no macula-mcp of its own, and then the
+	// line carries no mcp segment at all rather than a made-up one
+	// (macula-lazymesh#61).
+	mcpReportedVersion string
+	// mcpConnected is whether the last refresh call reached macula-mcp:
+	// true until one fails or the subprocess exits, which is exactly what
+	// the summary line's green/red segment reports. It says nothing about
+	// the mesh beyond that (an unreachable peer is not a disconnected
+	// macula-mcp).
+	mcpConnected bool
+
 	// ModeMeshServiceCall's own draft input -- a SEPARATE textinput.Model
 	// from input/realmJoinInput, same reasoning as realmJoinInput's own
 	// doc comment: never share a draft across genuinely different actions
@@ -349,10 +383,16 @@ func New(client toolCaller, opts Options) Model {
 	}
 
 	m := Model{
-		mcp:                  client,
-		attachMode:           opts.Attached,
-		meshServices:         opts.MeshServices,
-		maculaMCPVersion:     opts.MaculaMCPVersion,
+		mcp:                client,
+		attachMode:         opts.Attached,
+		meshServices:       opts.MeshServices,
+		maculaMCPVersion:   opts.MaculaMCPVersion,
+		mcpReportedVersion: opts.MaculaMCPReportedVersion,
+		// The TUI is only built once macula-mcp is up (main.go spawns it
+		// first, and a failed spawn never reaches here), so the first
+		// refresh has something to reach. A refresh that then fails is
+		// what turns the segment red.
+		mcpConnected:         true,
 		realmIdentityFile:    opts.RealmIdentityFile,
 		agentEvents:          opts.AgentEvents,
 		userInputCh:          opts.UserInputCh,
@@ -379,6 +419,18 @@ func New(client toolCaller, opts Options) Model {
 		refusedNotes:      append([]checkoutnotes.Refused{}, opts.CheckoutRefused...),
 		checkoutDir:       opts.CheckoutDir,
 		checkoutTrustPath: opts.CheckoutTrustPath,
+	}
+	// One line at start naming the macula-mcp this session is running on
+	// (macula-lazymesh#61): the summary segment is a glance, this is the
+	// record in the conversation itself, in the same voice as the rest of
+	// the chat's system lines. Left out for an attached TUI, which has no
+	// macula-mcp of its own to have connected to.
+	if m.mcpReportedVersion != "" {
+		m.chatEntries = append(m.chatEntries, chatEntry{
+			kind: chatSystem,
+			at:   time.Now(),
+			text: fmt.Sprintf("connected to macula-mcp %s over stdio", m.mcpReportedVersion),
+		})
 	}
 	// A file the operator trusted that has changed since is announced
 	// rather than quietly demoted: the next start delivers it as data, and
@@ -442,7 +494,14 @@ func (m Model) refreshCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		state, err := fetchMeshState(ctx, client)
-		return refreshMsg{state: state, err: err}
+		// Read after the calls, so a respawn this refresh triggered (or
+		// found) is already reflected: Client.ServerVersion reads the
+		// session that is live now.
+		var version string
+		if reporter, ok := client.(versionReporter); ok {
+			version = reporter.ServerVersion()
+		}
+		return refreshMsg{state: state, err: err, serverVersion: version}
 	}
 }
 
@@ -947,9 +1006,41 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// takeServerVersion follows the release macula-mcp is actually running, as
+// every refresh re-reads it. The first report is simply taken -- the start
+// line already said what the session began on. A CHANGE is a respawn that
+// brought up a different release (an unpinned macula-mcp floats to npm's
+// latest on every spawn), and it is announced in the chat: the segment alone
+// would change under the operator's eyes mid-conversation with no word about
+// what happened, and the rest of the conversation's answers and tool calls
+// now came from a different build (macula-lazymesh#61 review).
+func (m Model) takeServerVersion(v string) Model {
+	if v == "" || v == m.mcpReportedVersion {
+		return m
+	}
+	was := m.mcpReportedVersion
+	m.mcpReportedVersion = v
+	if was == "" {
+		return m
+	}
+	m.chatEntries = append(m.chatEntries, chatEntry{
+		kind: chatSystem,
+		at:   time.Now(),
+		text: fmt.Sprintf("macula-mcp is now %s (was %s)", v, was),
+	})
+	return m
+}
+
 func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
+	m = m.takeServerVersion(msg.serverVersion)
 	if msg.err != nil {
 		m.lastErr = msg.err
+		// The refresh is the one call every two seconds that proves
+		// macula-mcp is still there, so a failure is also what turns the
+		// summary line's mcp segment red -- including when the subprocess
+		// died, since a dead session is exactly what a refresh reports
+		// (macula-lazymesh#61).
+		m.mcpConnected = false
 		// Only a FIRST sighting asks for the screen. The refresh loop
 		// runs every two seconds, so popping per occurrence would put
 		// the program behind a box that reopens faster than it can be
@@ -962,6 +1053,7 @@ func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
 	prev := m.state
 	m.lastErr = nil
 	m.state = msg.state
+	m.mcpConnected = true
 
 	self := selfNodeID(m.state.agents)
 	pattern := detectRoomMessageBell(prev, m.state, self)
@@ -1212,6 +1304,12 @@ var (
 	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	statusStripStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38BDF8"))
+	// The summary line's macula-mcp segment (macula-lazymesh#61): green
+	// while the last refresh reached it, the line's own error red once one
+	// failed -- the same 196 errStyle and chatErrorStyleTUI use, so "red"
+	// means one thing on this screen.
+	mcpUpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E"))
+	mcpDownStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	// summaryStyle is statusStripStyle's normal-weight sibling, for the
 	// rooms/pending-rings/agents-seen/model portion of the summary line
 	// specifically -- found live 2026-09-07: bold there read as louder
@@ -1368,15 +1466,41 @@ func (m Model) renderHintLines() []string {
 // (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
 	var out string
+
+	// Which macula-mcp this is, and whether it is still answering: a person
+	// could not tell lazymesh used macula-mcp at all before this
+	// (macula-lazymesh#61). Green while the last refresh call reached it,
+	// red once one fails or the subprocess exits; `(pinned)` when the
+	// release running is the one that was pinned, so a floating build and a
+	// pinned one do not look identical. No segment when there is no
+	// macula-mcp of this process's own (an attached TUI).
+	//
+	// First on the line, ahead of the counts, because the line is cut to
+	// the terminal's width and this is the part that must survive the cut:
+	// at a narrow terminal a long petname and the counts can fill it, and
+	// "disconnected" is exactly what someone needs to see then
+	// (macula-lazymesh#61 review).
+	if m.mcpReportedVersion != "" {
+		if m.mcpConnected {
+			out += mcpUpStyle.Render("mcp " + m.mcpReportedVersion + " ●")
+		} else {
+			out += mcpDownStyle.Render("mcp ✗ disconnected")
+		}
+		if m.mcpPinned() {
+			out += summaryStyle.Render(" (pinned)")
+		}
+		out += summaryStyle.Render(" · ")
+	}
+
 	if m.attachMode {
 		// Counts would be fabricated here: this TUI cannot see the mesh at
 		// all, and zero would read as an idle mesh rather than an unshown
 		// one.
-		out = summaryStyle.Render("attached · mesh not shown here (the session owns it)")
+		out += summaryStyle.Render("attached · mesh not shown here (the session owns it)")
 	} else {
 		counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
 			len(m.state.joined), len(m.state.pending), len(m.state.agents))
-		out = summaryStyle.Render(counts)
+		out += summaryStyle.Render(counts)
 	}
 
 	if m.agentModel != "" {
@@ -1413,11 +1537,37 @@ func (m Model) renderSummaryLine() string {
 	if m.lastErr != nil {
 		out += "  " + formatSummaryError(m.lastErr)
 	}
+	// One row, whatever is on it. resizeComponents reserves exactly
+	// len(statusLines()) rows for the status block, so a summary line that
+	// wrapped would push the chat body off the bottom and drift the two
+	// apart -- the same class the no-embedded-newline rule guards. Cut to
+	// the terminal's own width, ANSI-aware, tail first: the tail is the
+	// least load-bearing part (the model label, the listening heartbeat),
+	// and a full error is a keypress away in the error popup. Only when a
+	// width is known, which is not yet true before the first resize.
+	if m.width > 0 && lipgloss.Width(out) > m.width {
+		out = lipgloss.NewStyle().MaxWidth(m.width).Inline(true).Render(out)
+	}
 	return out
 }
 
 func (m Model) renderStatusStrip() string {
 	return strings.Join(m.statusLines(), "\n")
+}
+
+// mcpPinned reports whether the release actually running is the one
+// `macula_mcp_version` pinned -- judged by comparing the two, never by the
+// pin alone: a pin npm did not honour, or a floating build that happens to
+// equal it, would otherwise be labelled `(pinned)` on the strength of config,
+// beside a version it does not describe (macula-lazymesh#61 review).
+func (m Model) mcpPinned() bool {
+	return m.maculaMCPVersion != "" && sameRelease(m.maculaMCPVersion, m.mcpReportedVersion)
+}
+
+// sameRelease compares two version strings, ignoring a leading `v` so a pin
+// written `v0.51.1` matches a server reporting `0.51.1`.
+func sameRelease(a, b string) bool {
+	return strings.TrimPrefix(a, "v") == strings.TrimPrefix(b, "v")
 }
 
 // renderInputLine always shows the compose line, in either mode (issue

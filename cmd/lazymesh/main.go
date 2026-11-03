@@ -523,6 +523,12 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		// agent is actually presenting on the mesh.
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
+		// The release macula-mcp said it was in its own handshake -- what
+		// is actually running, which the summary line shows and the start
+		// line records (macula-lazymesh#61). Read from the client rather
+		// than cfg, so an unpinned floating build shows the release npx
+		// resolved, and a respawn shows the one it brought up.
+		MaculaMCPReportedVersion: client.ServerVersion(),
 		// The checkout's notes as they stood at start, with each one's
 		// trust state, so the `N` panel shows exactly what the model was
 		// given and `t` records the bytes the operator read. The record
