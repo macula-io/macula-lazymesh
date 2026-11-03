@@ -179,6 +179,10 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 			text = fmt.Sprintf("error (%s): %s", e.tool, e.detail)
 		}
 	}
+	// The one door every non-tool entry's text passes to the terminal: an
+	// answer, a peer's ring purpose, a provider's error are none of them
+	// lazymesh's own text (#81). The assistant's goes in markdownBody.
+	text = neutralise(text)
 
 	switch e.kind {
 	case chatYou:
@@ -186,9 +190,9 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	case chatAssistant:
 		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
 	case chatToolResult:
-		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(neutralise(text)))
+		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
 	case chatError:
-		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(neutralise(text)))
+		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(text))
 	case chatSystem:
 		return fmt.Sprintf("%s %s", ts, chatSystemStyle.Render(text))
 	default:
@@ -303,17 +307,22 @@ func collapseBlankLines(md string) string {
 // rendering keyed by width (the table preprocessor is width-dependent);
 // a streaming entry re-renders as its text grows, and any failure falls
 // back to the raw text — a display concern must never lose content.
+//
+// The text is neutralised before glamour sees it, and always the whole
+// accumulated text, never one delta: a sequence split across two chunks
+// is only whole here (#81). Glamour passes control sequences through.
 func (e *chatEntry) markdownBody(width int) string {
 	if !e.streaming && e.md != "" && e.mdWidth == width {
 		return e.md
 	}
+	text := neutralise(e.text)
 	renderer := markdownRenderer(width)
 	if renderer == nil {
-		return e.text
+		return text
 	}
-	rendered, err := renderer.Render(flattenWideTables(collapseBlankLines(e.text), width-8))
+	rendered, err := renderer.Render(flattenWideTables(collapseBlankLines(text), width-8))
 	if err != nil {
-		return e.text
+		return text
 	}
 	if !e.streaming {
 		e.md = rendered
