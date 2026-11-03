@@ -51,3 +51,35 @@ func TestRefuseSourceRefusesBeforeAsking(t *testing.T) {
 		t.Fatalf("the operator was asked %d times, want 1", asked)
 	}
 }
+
+// TestAskSourceShowsWhatWillRun: the operator approves the described
+// command, not the arguments the model passed, and a call that cannot be
+// described is refused without asking.
+func TestAskSourceShowsWhatWillRun(t *testing.T) {
+	inner := &countSource{}
+	var shown []string
+	src := NewAskSource(inner, []string{"git_push", "git_commit"}, func(_ context.Context, _, args string) (bool, error) {
+		shown = append(shown, args)
+		return true, nil
+	}).Describe(func(tool, args string) (string, error) {
+		if tool == "git_push" {
+			return `{"remote":"origin","url":"https://example.invalid/x.git","branch":"work"}`, nil
+		}
+		if tool == "git_commit" {
+			return "", errors.New("the checkout's .git changed")
+		}
+		return args, nil
+	})
+	if _, err := src.CallToolRaw(context.Background(), "git_push", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 1 || !strings.Contains(shown[0], "https://example.invalid/x.git") {
+		t.Fatalf("the operator was shown %v, not the resolved command", shown)
+	}
+	if _, err := src.CallToolRaw(context.Background(), "git_commit", `{"message":"m"}`); err == nil {
+		t.Fatal("a call that cannot be described was allowed")
+	}
+	if len(shown) != 1 {
+		t.Fatalf("the operator was asked about a call that could not be described: %v", shown)
+	}
+}

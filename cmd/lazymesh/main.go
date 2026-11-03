@@ -740,14 +740,16 @@ func withAsklist(cfg config.Config, args sessionhost.SessionArgs) sessionhost.Se
 }
 
 // codingSessionArgs finishes a session's arguments for the coding
-// profile: the ask list, and the git tool's own structural refusal, so a
-// call it will refuse is settled before the operator is asked about it
+// profile: the ask list, the git tool's own structural refusal, so a call
+// it will refuse is settled before the operator is asked about it, and its
+// approval text, so a push is approved as the URL and ref it resolves to
 // (macula-io/macula-lazymesh#45). run and its tests both go through here,
 // so no test can pass on wiring that run does not have.
 func codingSessionArgs(cfg config.Config, args sessionhost.SessionArgs, gitTool *gittools.Source) sessionhost.SessionArgs {
 	args = withAsklist(cfg, args)
 	if gitTool != nil {
 		args.RefuseBeforeAsking = gitTool.RefuseBeforeAsking
+		args.ApprovalText = gitTool.ApprovalText
 	}
 	return args
 }

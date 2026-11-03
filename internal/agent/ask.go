@@ -22,6 +22,14 @@ type Consent func(ctx context.Context, tool, argumentsJSON string) (bool, error)
 // person can read through is refused without asking.
 const MaxApprovableBytes = 16 << 10
 
+// DescribeFunc turns a call into the text the operator approves, so the
+// question is about the command that will actually run rather than about
+// the arguments the model happened to pass (macula-io/macula-lazymesh#45:
+// git_push {} resolves to a URL and a ref the operator must see). A
+// non-nil error refuses the call: a call that cannot be described cannot
+// be approved.
+type DescribeFunc func(tool, argumentsJSON string) (string, error)
+
 // AskSource wraps another ToolSource and gates a configured set of tools
 // behind Consent (G9: per-action approval for the sharp tools — the
 // operator answers per call instead of a static allowlist answering
@@ -33,9 +41,10 @@ const MaxApprovableBytes = 16 << 10
 // model can legitimately attempt it and learn from a denial's result;
 // what changes is that each attempt waits for a human decision.
 type AskSource struct {
-	inner   ToolSource
-	ask     map[string]bool
-	consent Consent
+	inner    ToolSource
+	ask      map[string]bool
+	consent  Consent
+	describe DescribeFunc
 }
 
 // NewAskSource wraps inner, gating exactly the given tool names behind
@@ -48,6 +57,13 @@ func NewAskSource(inner ToolSource, ask []string, consent Consent) *AskSource {
 	return &AskSource{inner: inner, ask: set, consent: consent}
 }
 
+// Describe sets what the operator is shown for a call. Without one, the
+// call's own arguments are shown, which is what every tool did before.
+func (a *AskSource) Describe(f DescribeFunc) *AskSource {
+	a.describe = f
+	return a
+}
+
 func (a *AskSource) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 	return a.inner.ListTools(ctx)
 }
@@ -56,10 +72,20 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 	if !a.ask[name] || a.consent == nil {
 		return a.inner.CallToolRaw(ctx, name, argumentsJSON)
 	}
-	if len(argumentsJSON) > MaxApprovableBytes {
-		return "", fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(argumentsJSON), MaxApprovableBytes)
+	shown := argumentsJSON
+	if a.describe != nil {
+		described, err := a.describe(name, argumentsJSON)
+		if err != nil {
+			return "", fmt.Errorf("%q was refused before approval was asked: %w", name, err)
+		}
+		if described != "" {
+			shown = described
+		}
 	}
-	allowed, err := a.consent(ctx, name, argumentsJSON)
+	if len(shown) > MaxApprovableBytes {
+		return "", fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(shown), MaxApprovableBytes)
+	}
+	allowed, err := a.consent(ctx, name, shown)
 	if err != nil {
 		return "", fmt.Errorf("approval for %q could not be obtained: %w", name, err)
 	}

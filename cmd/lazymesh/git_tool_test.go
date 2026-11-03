@@ -254,6 +254,11 @@ func TestGitPushWithApprovalReachesTheConfiguredRemote(t *testing.T) {
 		case ev := <-events:
 			if ev.Kind == agent.EventApprovalRequested && ev.ToolName == "git_push" {
 				approvalID = ev.ID
+				for _, want := range []string{remote, "refs/heads/titan/45-test", "origin"} {
+					if !strings.Contains(ev.Text, want) {
+						t.Fatalf("the approval prompt does not name %q: %s", want, ev.Text)
+					}
+				}
 			}
 		case err := <-done:
 			t.Fatalf("the turn finished without asking (err %v); the push ran unasked", err)
