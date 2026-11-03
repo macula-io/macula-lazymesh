@@ -115,6 +115,14 @@ in your message, and every command lives behind the leader `ctrl+x`.
 Press `ctrl+x ?` to see the whole list in the chat, or press `ctrl+x` and
 read the hint row: while the leader is armed it offers every command.
 
+`ctrl+x` is the default. `leader_key` in `config.yaml` moves it — for a
+terminal or a habit that already uses `ctrl+x` somewhere else — for example
+`leader_key: ctrl+g`. Only a ctrl key and one letter is accepted; a key the
+message box needs (`ctrl+a/b/d/e/f/h/j/k/m/n/p/t/u/v/w`), `ctrl+c`, and
+anything that is not ctrl and one letter are refused at start, naming the key
+and the reason. The hint row, the `?` list and the error marker all name the
+configured key. The tables below show the default.
+
 | Key | What it does |
 |---|---|
 | `Enter` | send the composed message to the agent; the message box keeps focus |

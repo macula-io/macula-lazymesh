@@ -1,14 +1,19 @@
 package tui
 
-import "github.com/charmbracelet/bubbles/key"
+import (
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/key"
+)
 
 // KeyMap is the TUI's own key bindings. The composer is focused by default,
 // so almost nothing is a bare key: a bare key is a letter someone meant to
-// type. Commands sit behind the leader (ctrl+x), the keys a person needs while
-// reading sit on modifier or navigation keys the composer already leaves free,
-// and the pop-ups keep their own single keys, guarded (#59).
-//
-// The leader is a constant here; making it configurable is #63.
+// type. Commands sit behind the leader (ctrl+x unless leader_key says
+// otherwise, #63), the keys a person needs while reading sit on modifier or
+// navigation keys the composer already leaves free, and the pop-ups keep their
+// own single keys, guarded (#59).
 type KeyMap struct {
 	// Leader arms the leader: the next key is a command, never a letter.
 	Leader key.Binding
@@ -97,8 +102,8 @@ var DefaultKeyMap = KeyMap{
 }
 
 // leaderHelp is the whole keymap behind the leader, in the order the hint row
-// shows it, for `ctrl+x ?`. The same list is what the hint row offers while
-// the leader is pending.
+// shows it, for the leader then `?`. The same list is what the hint row offers
+// while the leader is pending.
 func leaderHelp() []struct{ Key, Action string } {
 	return []struct{ Key, Action string }{
 		{"m", "mesh view"},
@@ -117,4 +122,47 @@ func leaderHelp() []struct{ Key, Action string } {
 		{"q", "quit"},
 		{"?", "this list"},
 	}
+}
+
+// composerKeys are the ctrl combinations the message box itself uses: the
+// bubbles textarea v1.0.0 defaults plus lazymesh's own ctrl+e (compose in
+// $EDITOR) and ctrl+j (newline). A leader on one of them would swallow a key
+// someone typing needs, so it is refused rather than reassigned (#63).
+var composerKeys = []string{
+	"ctrl+a", "ctrl+b", "ctrl+d", "ctrl+e", "ctrl+f", "ctrl+h", "ctrl+j",
+	"ctrl+k", "ctrl+m", "ctrl+n", "ctrl+p", "ctrl+t", "ctrl+u", "ctrl+v",
+	"ctrl+w",
+}
+
+// LeaderBinding resolves the configured leader_key. Empty means the default,
+// ctrl+x: an unset setting is not a choice. Everything else is either a
+// binding or a refusal that names the key and why it cannot be the leader --
+// a key the message box uses, the quit key, or anything that is not ctrl and
+// one letter. It is called once at start, so a refusal reaches the operator
+// before the TUI opens rather than after they find they cannot type.
+func LeaderBinding(name string) (key.Binding, error) {
+	if name == "" {
+		return DefaultKeyMap.Leader, nil
+	}
+	if !isCtrlLetter(name) {
+		return key.Binding{}, fmt.Errorf("leader_key %q: the leader must be ctrl and one letter, like ctrl+x", name)
+	}
+	if name == "ctrl+c" {
+		return key.Binding{}, fmt.Errorf("leader_key %q: ctrl+c quits lazymesh, so it cannot also be the leader", name)
+	}
+	if slices.Contains(composerKeys, name) {
+		return key.Binding{}, fmt.Errorf("leader_key %q: the message box uses it to type, edit or open $EDITOR, so the leader would swallow a key you need while writing", name)
+	}
+	return key.NewBinding(key.WithKeys(name), key.WithHelp(name, "leader")), nil
+}
+
+// isCtrlLetter is the shape the leader has to have: ctrl and exactly one
+// lowercase letter. The key names here are bubbletea's own, which is what a
+// terminal actually sends.
+func isCtrlLetter(name string) bool {
+	if !strings.HasPrefix(name, "ctrl+") || len(name) != len("ctrl+x") {
+		return false
+	}
+	c := name[len("ctrl+")]
+	return c >= 'a' && c <= 'z'
 }

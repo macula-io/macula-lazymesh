@@ -134,6 +134,14 @@ type Options struct {
 
 	StatusBarPosition string // "top" or "bottom"
 
+	// Leader is the resolved key that arms the command leader, from the
+	// config file's leader_key (see config.Config.LeaderKey) through
+	// LeaderBinding, which is what refuses an unusable choice -- a key the
+	// message box uses, ctrl+c, and anything that is not ctrl and one
+	// letter. Resolved by the caller so the TUI never holds a leader it
+	// cannot arm; the zero value means the default, ctrl+x.
+	Leader key.Binding
+
 	// ContactPolicyFile and AutoAcceptKnown together drive the ring
 	// pop-up's own layered policy (see config.RingPolicy's doc comment
 	// for why this isn't a direct map onto macula-mcp's contact_policy):
@@ -283,11 +291,14 @@ type Model struct {
 	// time.Now; tests set it so a 600 ms guard costs no wall clock.
 	now func() time.Time
 
-	// leaderPending is true between ctrl+x and the key after it (#62). While
-	// it is set the next key is a command or a cancel, never a letter: what
-	// someone meant to type cannot become a command, and a command cannot
-	// land in the draft.
+	// leaderPending is true between the leader key and the key after it
+	// (#62). While it is set the next key is a command or a cancel, never a
+	// letter: what someone meant to type cannot become a command, and a
+	// command cannot land in the draft. Which key arms it is configurable
+	// (#63): leader holds the configured binding, and every place that names
+	// the key reads it from there.
 	leaderPending bool
+	leader        key.Binding
 
 	// lastKeyAt is when a key last reached the TUI. A pop-up opens only when
 	// this is popupIdleDelay in the past, so one cannot take the screen in the
@@ -420,6 +431,14 @@ func New(client toolCaller, opts Options) Model {
 		statusBarPosition = "bottom"
 	}
 
+	// The leader from config, already resolved and refused-if-unusable by
+	// LeaderBinding (main.go does it before the TUI opens). Unset means the
+	// default: an operator who never wrote leader_key gets ctrl+x.
+	leader := opts.Leader
+	if len(leader.Keys()) == 0 {
+		leader = DefaultKeyMap.Leader
+	}
+
 	m := Model{
 		mcp:                client,
 		attachMode:         opts.Attached,
@@ -442,6 +461,7 @@ func New(client toolCaller, opts Options) Model {
 		seenRingIDs:          make(map[string]bool),
 		mode:                 ModeCompose,
 		statusBarPosition:    statusBarPosition,
+		leader:               leader,
 		agentModel:           opts.AgentModel,
 		logPath:              opts.LogPath,
 		input:                ti,
@@ -814,7 +834,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runLeader(msg)
 	}
 
-	if key.Matches(msg, DefaultKeyMap.Leader) {
+	if key.Matches(msg, m.leader) {
 		m.leaderPending = true
 		m.resizeComponents()
 		return m, nil
@@ -1109,7 +1129,7 @@ func (m Model) takeServerVersion(v string) Model {
 // twice.
 func (m *Model) explainLeader() {
 	var b strings.Builder
-	b.WriteString("ctrl+x then:")
+	b.WriteString(m.leaderLabel() + " then:")
 	for _, c := range leaderHelp() {
 		b.WriteString("  " + c.Key + " " + c.Action)
 	}
@@ -1644,7 +1664,7 @@ func (m Model) renderHeldApprovalLine() (string, bool) {
 		return "", false
 	}
 	return statusStripStyle.Render("-- APPROVAL WAITING -- ") +
-		dimStyle.Render("stop typing (or close the panel, or cancel ctrl+x) to answer: "+m.deferredApproval.Tool), true
+		dimStyle.Render("stop typing (or close the panel, or cancel "+m.leaderLabel()+") to answer: "+m.deferredApproval.Tool), true
 }
 
 // renderHintLines is the shortcuts row. While the leader is pending it shows
@@ -1674,18 +1694,26 @@ func (m Model) renderHintLines() []string {
 		return []string{m.renderLeaderHint()}
 	}
 
-	hint := "enter: send  shift+enter: newline  esc: close or interrupt  shift+↑↓: scroll  ctrl+e: $EDITOR  ctrl+x: commands"
+	hint := "enter: send  shift+enter: newline  esc: close or interrupt  shift+↑↓: scroll  ctrl+e: $EDITOR  " + m.leaderLabel() + ": commands"
 	if m.realmExpanded && m.realmJoinLatest == nil && strings.TrimSpace(m.input.Value()) == "" {
 		hint = "enter: join a realm  " + hint
 	}
 	return []string{dimStyle.Render(hint)}
 }
 
+// leaderLabel is the leader as the screen names it: the configured key, never
+// a constant. The hint row, the list `?` writes into the chat, the held
+// approval's own sentence and the error marker all read it from here, so they
+// cannot drift apart from the key that actually arms the leader (#63).
+func (m Model) leaderLabel() string {
+	return m.leader.Help().Key
+}
+
 // renderLeaderHint is the leader's own list: what it is waiting for and
 // everything it can do, so the next key is never a guess.
 func (m Model) renderLeaderHint() string {
 	var b strings.Builder
-	b.WriteString(statusStripStyle.Render("ctrl+x …"))
+	b.WriteString(statusStripStyle.Render(m.leaderLabel() + " …"))
 	for _, c := range leaderHelp() {
 		b.WriteString(dimStyle.Render("  " + c.Key + ": " + c.Action))
 	}
@@ -1772,7 +1800,7 @@ func (m Model) renderSummaryLine() string {
 		out = name + summaryStyle.Render(" · ") + out
 	}
 	if m.lastErr != nil {
-		out += "  " + formatSummaryError(m.lastErr)
+		out += "  " + formatSummaryError(m.leaderLabel(), m.lastErr)
 	}
 	// One row, whatever is on it. resizeComponents reserves exactly
 	// len(statusLines()) rows for the status block, so a summary line that

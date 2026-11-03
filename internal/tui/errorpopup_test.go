@@ -150,7 +150,7 @@ func TestErrorPopup_EscClosesButKeepsLastErr(t *testing.T) {
 // the right edge, so a hint appended after it would be the first thing
 // lost, on the very error it exists to rescue.
 func TestSummaryError_MarkerComesBeforeTheMessage(t *testing.T) {
-	line := formatSummaryError(errors.New(realRefreshError))
+	line := formatSummaryError("ctrl+x", errors.New(realRefreshError))
 	markerAt := strings.Index(line, "ctrl+x E")
 	msgAt := strings.Index(line, "mesh_list_realms")
 	if markerAt < 0 {

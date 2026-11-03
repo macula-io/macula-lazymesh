@@ -100,6 +100,15 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// The leader is refused here, before anything opens: a key the message
+	// box uses, ctrl+c, or anything that is not ctrl and one letter would
+	// otherwise leave a TUI whose hint row names a key that arms nothing
+	// (#63). LeaderBinding names the key and the reason in its error.
+	leader, err := tui.LeaderBinding(cfg.LeaderKey)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -508,6 +517,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		ApprovalCh:         approvalCh,
 		ApprovalResolvedCh: resolvedCh,
 		StatusBarPosition:  cfg.StatusBarPosition,
+		Leader:             leader,
 		ContactPolicyFile:  cfg.ContactPolicyFile,
 		AutoAcceptKnown:    config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
 		AgentModel:         agentModelLabel,
@@ -2013,6 +2023,19 @@ func runAttach(args []string) error {
 		return fmt.Errorf("no session to attach to at %s: %w", path, err)
 	}
 
+	// The attached TUI types the same leader the operator configured: it is
+	// the same machine and the same config file, and a hint row naming a
+	// key the session's own config moved away from would be a lie about
+	// what to press (#63).
+	cfg, err := config.Load("")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	leader, err := tui.LeaderBinding(cfg.LeaderKey)
+	if err != nil {
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Release the handler as soon as the first signal has been taken. Until
@@ -2025,5 +2048,5 @@ func runAttach(args []string) error {
 		<-ctx.Done()
 		stop()
 	}()
-	return tui.RunAttached(ctx, ctrl, tui.Options{})
+	return tui.RunAttached(ctx, ctrl, tui.Options{Leader: leader})
 }

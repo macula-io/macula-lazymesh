@@ -226,11 +226,13 @@ func (m Model) renderErrorPopup() string {
 // runs off the right edge, so a hint appended after it would be the first
 // thing lost -- exactly on the error it is meant to rescue. It names the
 // whole leader sequence since #62, not just the letter: `E` alone types an
-// E into the composer.
-func errorPopupMarker() string {
-	return errStyle.Render("[ctrl+x E]")
+// E into the composer. The leader is the configured one (#63), passed in
+// rather than assumed, so a moved leader does not leave a marker naming a
+// key that no longer does anything.
+func errorPopupMarker(leader string) string {
+	return errStyle.Render("[" + leader + " E]")
 }
 
-func formatSummaryError(err error) string {
-	return fmt.Sprintf("%s %s", errorPopupMarker(), errStyle.Render(fmt.Sprintf("error: %s", err)))
+func formatSummaryError(leader string, err error) string {
+	return fmt.Sprintf("%s %s", errorPopupMarker(leader), errStyle.Render(fmt.Sprintf("error: %s", err)))
 }
