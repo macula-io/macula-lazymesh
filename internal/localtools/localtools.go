@@ -329,6 +329,11 @@ func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, er
 	ctx, cancel := context.WithTimeout(ctx, s.shellTimeout)
 	defer cancel()
 
+	// A command may change the checkout -- a formatter, a test that writes
+	// an artifact -- so the tree is read before and after it: the diff the
+	// operator is shown has to be the checkout as it now stands, not the
+	// patch's snapshot from earlier (#46).
+	before, beforeOK := s.treeDiff(ctx, nil)
 	res, err := s.shell.Run(ctx, command)
 	if err != nil {
 		return "", fmt.Errorf("shell_exec: %w", err)
@@ -337,6 +342,11 @@ func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, er
 	if s.outputDir != "" && len(res.Stdout)+len(res.Stderr) > shellPageBytes {
 		if fields, err = s.pagedOutput(res); err != nil {
 			return "", err
+		}
+	}
+	if beforeOK {
+		if after, ok := s.treeDiff(ctx, nil); ok && after != before && strings.TrimSpace(after) != "" {
+			fields["working_tree_diff"] = after
 		}
 	}
 	result, err := json.Marshal(fields)
@@ -1339,15 +1349,26 @@ func (s *Source) commitPatchPlan(plan patchPlan) error {
 // operator is shown: the change as the checkout now holds it, not the patch
 // as the model wrote it. Read-only: nothing here writes.
 func (s *Source) workingTreeDiff(ctx context.Context, targets []string) string {
+	out, ok := s.treeDiff(ctx, targets)
+	if !ok {
+		return "[no working-tree diff: this checkout is not a git repository]\n"
+	}
+	if strings.TrimSpace(out) == "" {
+		return "[the working tree shows no change in those paths]\n"
+	}
+	return out
+}
+
+// treeDiff runs git's own diff in the checkout and says whether git
+// answered at all. --no-ext-diff and --no-textconv keep a .git/config from
+// turning this read into a program run on the host.
+func (s *Source) treeDiff(ctx context.Context, targets []string) (string, bool) {
 	args := append([]string{"--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--"}, targets...)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = s.workingDir
 	out, err := cmd.Output()
 	if err != nil {
-		return "[no working-tree diff: this checkout is not a git repository]\n"
+		return "", false
 	}
-	if strings.TrimSpace(string(out)) == "" {
-		return "[the working tree shows no change in those paths]\n"
-	}
-	return string(out)
+	return string(out), true
 }
