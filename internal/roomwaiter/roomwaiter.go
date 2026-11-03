@@ -191,6 +191,15 @@ func (m *Manager) StopAll() {
 	}
 }
 
+// Watches reports whether room is one of the rooms being watched right
+// now: the set the coding profile lets the model speak into.
+func (m *Manager) Watches(room string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.cancels[room]
+	return ok
+}
+
 // Watching reports how many rooms currently have a live waiter -- for
 // measurement/logging, not control flow.
 func (m *Manager) Watching() int {

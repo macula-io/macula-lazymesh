@@ -349,3 +349,27 @@ func TestManager_DroppedEnqueueClearsPendingSoTheRoomIsNotStuckForever(t *testin
 		}
 	}
 }
+
+// TestManager_WatchesNamesExactlyTheWatchedRooms: the coding profile's
+// mesh_say limit asks this, so a room the session never watched, or
+// stopped watching, must answer false.
+func TestManager_WatchesNamesExactlyTheWatchedRooms(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Sync(ctx, []string{"agents.room.a"})
+	if !m.Watches("agents.room.a") {
+		t.Error("a watched room is not reported as watched")
+	}
+	if m.Watches("agents.room.attacker") || m.Watches("") {
+		t.Error("an unwatched room is reported as watched")
+	}
+	m.Remove("agents.room.a")
+	if m.Watches("agents.room.a") {
+		t.Error("a removed room is still reported as watched")
+	}
+}

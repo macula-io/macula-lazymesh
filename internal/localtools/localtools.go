@@ -36,6 +36,12 @@ const (
 	toolWriteFile    = "write_file"
 )
 
+// ToolNames is every tool this source serves: the names an operator can
+// put on an allowlist for it.
+func ToolNames() []string {
+	return []string{toolShellExec, toolReadFile, toolWriteFile}
+}
+
 // Config controls Phase 2's local tool set. Enabled defaults to false --
 // callers must opt in explicitly.
 type Config struct {

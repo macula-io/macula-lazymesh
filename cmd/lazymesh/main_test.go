@@ -468,7 +468,7 @@ func TestParseAnsweredRingRoom_MalformedReturnsFalse(t *testing.T) {
 func TestNextEvent_NilManagerBehavesLikeNextPrompt(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "from the human"
-	got, ok := nextEvent(context.Background(), ch, nil, nil, nil)
+	got, ok := nextEvent(context.Background(), ch, nil, nil, nil, nil)
 	if !ok || got != "from the human" {
 		t.Fatalf("expected nil-manager nextEvent to behave like nextPrompt, got (%q, %v)", got, ok)
 	}
@@ -480,7 +480,7 @@ func TestNextEvent_HumanInputWinsWhenAlreadyPending(t *testing.T) {
 	ch := make(chan string, 1)
 	ch <- "human message"
 
-	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr, nil)
+	got, ok := nextEvent(context.Background(), ch, mgr, ringMgr, nil, nil)
 	if !ok || got != "human message" {
 		t.Fatalf("expected pending human input to win outright, got (%q, %v)", got, ok)
 	}
@@ -493,7 +493,7 @@ func TestNextEvent_ReturnsNotOkWhenContextDone(t *testing.T) {
 	cancel()
 	ch := make(chan string)
 
-	_, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
+	_, ok := nextEvent(ctx, ch, mgr, ringMgr, nil, nil)
 	if ok {
 		t.Fatalf("expected nextEvent to report !ok once ctx is done")
 	}
@@ -516,7 +516,7 @@ func TestNextEvent_ConsumesARealRoomArrival(t *testing.T) {
 	mgr.Sync(ctx, []string{"agents.room.deadbeef"})
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil, nil)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
@@ -549,7 +549,7 @@ func TestNextEvent_ConsumesARealRingArrival(t *testing.T) {
 	ringMgr.Start(ctx)
 
 	ch := make(chan string)
-	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil)
+	got, ok := nextEvent(ctx, ch, mgr, ringMgr, nil, nil)
 	if !ok {
 		t.Fatalf("expected ok, got false")
 	}
@@ -705,7 +705,7 @@ func TestNextEvent_WakeupDeliversPromptVerbatim(t *testing.T) {
 	wakeups <- "check the mesh now"
 	mgr := roomwaiter.New(nil, "")
 	ringMgr := ringwaiter.New(nil, "")
-	got, ok := nextEvent(context.Background(), make(chan string, 1), mgr, ringMgr, wakeups)
+	got, ok := nextEvent(context.Background(), make(chan string, 1), mgr, ringMgr, wakeups, nil)
 	if !ok {
 		t.Fatal("nextEvent reported the driver should stop")
 	}
@@ -800,11 +800,11 @@ func TestLogCycleUsage_ReportsRoundsAndToolSchemaCost(t *testing.T) {
 func TestFirstPrompt_IdleStartWaitsForTheFirstEvent(t *testing.T) {
 	input := make(chan string, 1)
 	input <- "your subtask"
-	got, ok := firstPrompt(context.Background(), true, input, nil, nil, nil)
+	got, ok := firstPrompt(context.Background(), true, input, nil, nil, nil, nil, nil)
 	if !ok || got != "your subtask" {
 		t.Fatalf("idle start: first prompt = %q, %v", got, ok)
 	}
-	if got, ok := firstPrompt(context.Background(), false, make(chan string), nil, nil, nil); !ok || got != agentInitialPrompt {
+	if got, ok := firstPrompt(context.Background(), false, make(chan string), nil, nil, nil, nil, nil); !ok || got != agentInitialPrompt {
 		t.Fatalf("default start: first prompt = %q, %v", got, ok)
 	}
 }

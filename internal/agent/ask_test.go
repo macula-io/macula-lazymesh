@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
@@ -67,24 +68,24 @@ func TestAskSourceDenyRefusesTheCall(t *testing.T) {
 	}
 }
 
-// TestApprovalPreviewTruncates pins the display helper: small args pass
-// through, large args truncate with a marker.
-func TestApprovalPreviewTruncates(t *testing.T) {
-	if got := ApprovalPreview(`{"a":1}`, 100); got != `{"a":1}` {
-		t.Fatalf("small preview = %q", got)
+// TestAskRefusesACallTooLongToShowWhole (#39): the operator approves
+// what they can read in full, so a call longer than the approval prompt
+// can show is refused without asking, and never runs.
+func TestAskRefusesACallTooLongToShowWhole(t *testing.T) {
+	inner := &askRecordingTools{}
+	asked := false
+	src := NewAskSource(inner, []string{"shell_exec"}, func(ctx context.Context, tool, args string) (bool, error) {
+		asked = true
+		return true, nil
+	})
+	long := `{"command":"` + strings.Repeat("a", MaxApprovableBytes) + `"}`
+	if _, err := src.CallToolRaw(context.Background(), "shell_exec", long); err == nil {
+		t.Fatal("a call too long to show whole was allowed")
 	}
-	big := "123456789012345678901234567890"
-	got := ApprovalPreview(big, 10)
-	if len(got) <= 10 || !contains(got, "truncated") {
-		t.Fatalf("truncated preview = %q", got)
+	if asked {
+		t.Fatal("the operator was asked about a call the prompt cannot show whole")
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
+	if len(inner.calls) != 0 {
+		t.Fatalf("the refused call ran: %v", inner.calls)
 	}
-	return false
 }
