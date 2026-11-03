@@ -101,6 +101,20 @@ var DefaultKeyMap = KeyMap{
 	NewerError: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "newer error")),
 }
 
+// keyHint is "key: action" with the key as the binding spells it. A hint
+// written from the binding follows a keymap change; a literal outlives it,
+// which is how the realms panel came to offer `i` after `i` had stopped
+// meaning anything (#74).
+func keyHint(b key.Binding, action string) string {
+	name := b.Help().Key
+	if name == "" {
+		if keys := b.Keys(); len(keys) > 0 {
+			name = keys[0]
+		}
+	}
+	return name + ": " + action
+}
+
 // leaderHelp is the whole keymap behind the leader, in the order the hint row
 // shows it, for the leader then `?`. The same list is what the hint row offers
 // while the leader is pending.
