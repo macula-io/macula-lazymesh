@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 func newTestSource(t *testing.T) *Source {
 	t.Helper()
 	dir := t.TempDir()
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 5 * time.Second})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 5 * time.Second, Shell: HostShell(dir)})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
@@ -280,5 +281,55 @@ func TestReadFile_AllowsSymlinkInsideSandbox(t *testing.T) {
 	}
 	if got != "inside content" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+// TestNoShellOffersNoShellExec: without a shell runner, shell_exec is
+// not listed, and a call to it by name is refused with the reason.
+func TestNoShellOffersNoShellExec(t *testing.T) {
+	src, err := New(Config{Enabled: true, WorkingDir: t.TempDir(), NoShellReason: "bubblewrap is not installed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := src.ListTools(context.Background())
+	for _, tool := range tools {
+		if tool.Name == toolShellExec {
+			t.Fatal("shell_exec is listed with no shell")
+		}
+	}
+	_, err = src.CallToolRaw(context.Background(), toolShellExec, `{"command":"true"}`)
+	if err == nil || !strings.Contains(err.Error(), "bubblewrap is not installed") {
+		t.Fatalf("a call with no shell = %v, want a refusal naming the reason", err)
+	}
+}
+
+// TestLongOutputIsPagedNotCut (#26): output longer than one result is
+// kept whole in the output directory, and its last line is reachable.
+func TestLongOutputIsPagedNotCut(t *testing.T) {
+	dir, out := t.TempDir(), t.TempDir()
+	src, err := New(Config{Enabled: true, WorkingDir: dir, Shell: HostShell(dir), OutputDir: out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := src.CallToolRaw(context.Background(), toolShellExec, `{"command":"i=0; while [ $i -lt 5000 ]; do echo line-$i; i=$((i+1)); done; echo LAST-LINE FAIL"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > 20_000 {
+		t.Fatalf("one result is %d bytes, past the agent's 20 KB cap", len(raw))
+	}
+	var res struct {
+		FirstPage  string `json:"first_page"`
+		OutputFile string `json:"output_file"`
+	}
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.FirstPage, "line-0\n") || !strings.HasPrefix(res.OutputFile, out) {
+		t.Fatalf("result = %.200s", raw)
+	}
+	whole, err := os.ReadFile(res.OutputFile)
+	if err != nil || !strings.Contains(string(whole), "LAST-LINE FAIL") {
+		t.Fatalf("the last line is not in the kept output: %v", err)
 	}
 }

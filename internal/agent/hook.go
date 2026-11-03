@@ -34,13 +34,13 @@ func (h *HookSource) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 func (h *HookSource) CallToolRaw(ctx context.Context, name string, argumentsJSON string) (string, error) {
 	allow, reason, err := h.gate(ctx, name, argumentsJSON)
 	if err != nil {
-		return "", fmt.Errorf("the pre-tool hook could not decide %q: %w", name, err)
+		return "", Refused(fmt.Errorf("the pre-tool hook could not decide %q: %w", name, err))
 	}
 	if !allow {
 		if reason == "" {
-			return "", fmt.Errorf("%q was refused by the pre-tool hook", name)
+			return "", Refused(fmt.Errorf("%q was refused by the pre-tool hook", name))
 		}
-		return "", fmt.Errorf("%q was refused by the pre-tool hook: %s", name, reason)
+		return "", Refused(fmt.Errorf("%q was refused by the pre-tool hook: %s", name, reason))
 	}
 	return h.inner.CallToolRaw(ctx, name, argumentsJSON)
 }

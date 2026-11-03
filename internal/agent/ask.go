@@ -76,7 +76,7 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 	if a.describe != nil {
 		described, err := a.describe(name, argumentsJSON)
 		if err != nil {
-			return "", fmt.Errorf("%q was refused before approval was asked: %w", name, err)
+			return "", Refused(fmt.Errorf("%q was refused before approval was asked: %w", name, err))
 		}
 		if described != "" {
 			shown = described
@@ -87,10 +87,10 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 	}
 	allowed, err := a.consent(ctx, name, shown)
 	if err != nil {
-		return "", fmt.Errorf("approval for %q could not be obtained: %w", name, err)
+		return "", Refused(fmt.Errorf("approval for %q could not be obtained: %w", name, err))
 	}
 	if !allowed {
-		return "", fmt.Errorf("approval for %q was denied by the operator", name)
+		return "", Refused(fmt.Errorf("approval for %q was denied by the operator", name))
 	}
 	return a.inner.CallToolRaw(ctx, name, argumentsJSON)
 }

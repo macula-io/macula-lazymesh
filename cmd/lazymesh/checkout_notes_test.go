@@ -53,7 +53,7 @@ func TestPlantedCheckoutNotesCannotGiveOrders(t *testing.T) {
 	}
 	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes))
 
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), nil)
+	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/config"
+	"github.com/macula-io/macula-lazymesh/internal/confinedshell"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/counters"
 	"github.com/macula-io/macula-lazymesh/internal/frontend"
@@ -217,9 +218,15 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	waiterMgr := roomwaiter.New(client, "")
 	defer waiterMgr.StopAll()
 	var tools agent.ToolSource
+	var shell codingShell
 	var gitTool *gittools.Source
 	if cfg.CodingProfile() {
-		tools, gitTool, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, logStack.StdFor("git").Printf)
+		shell = prepareCodingShell(ctx, cfg, configPath)
+		if shell.reason != "" {
+			fmt.Fprintln(os.Stderr, "lazymesh:", shell.reason)
+			agentLog.Printf("[shell] %s", shell.reason)
+		}
+		tools, gitTool, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, shell, logStack.StdFor("git").Printf)
 	} else {
 		tools, err = buildToolSource(cfg, client, meshSvc)
 	}
@@ -263,7 +270,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			// operator never trusted anything.
 			agentLog.Printf("[checkoutnotes] %s: every checkout note is delivered as data", notesErr)
 		}
-		systemPrompt = buildCodingSystemPrompt(goalText, localToolsReachable, gitReachable, checkoutnotes.Prompt(checkoutNotes.Notes))
+		systemPrompt = buildCodingSystemPrompt(goalText, shell.sandbox != nil, gitReachable, checkoutnotes.Prompt(checkoutNotes.Notes))
 	} else {
 		checkoutNotes = checkoutnotes.Read(wd)
 		systemPrompt = buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(checkoutNotes.Notes))
@@ -384,6 +391,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		Store:        sessionStore,
 		SessionID:    resolvedSessionID,
 		PreTool:      preTool,
+		RecordDenial: denialRecorder(filepath.Join(sessionStore.Dir, resolvedSessionID+".denials.jsonl"), agentLog),
 	}, gitTool))
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -699,13 +707,9 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 		sources = append(sources, meshSvc)
 	}
 	if cfg.LocalTools.Enabled {
-		local, err := localtools.New(localtools.Config{
-			Enabled:      cfg.LocalTools.Enabled,
-			WorkingDir:   cfg.LocalTools.WorkingDir,
-			ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
-		})
+		local, err := meshLocalTools(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("local tools: %w", err)
+			return nil, err
 		}
 		sources = append(sources, local)
 	}
@@ -723,6 +727,22 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 	return agent.NewTerseDescriptionSource(gated), nil
 }
 
+// meshLocalTools is the mesh profile's local tool set. Its shell is
+// unconfined, behind its two opt-ins (local_tools.enabled and the
+// allowlist); only the coding profile confines it (#26).
+func meshLocalTools(cfg config.Config) (*localtools.Source, error) {
+	local, err := localtools.New(localtools.Config{
+		Enabled:      cfg.LocalTools.Enabled,
+		WorkingDir:   cfg.LocalTools.WorkingDir,
+		ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
+		Shell:        localtools.HostShell(cfg.LocalTools.WorkingDir),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("local tools: %w", err)
+	}
+	return local, nil
+}
+
 // buildCodingToolSource is buildToolSource for the coding profile
 // (macula-io/macula-lazymesh#38): the mesh contributes only
 // rostergate.CodingMeshTools, mesh_say is limited to the rooms the
@@ -736,18 +756,28 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 // tool; when it is not nil, run hands its RefuseBeforeAsking to the
 // session so a push this tool would refuse never becomes an approval
 // prompt (macula-io/macula-lazymesh#45).
-func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches func(room string) bool, logf gittools.Logf) (agent.ToolSource, *gittools.Source, error) {
+func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches func(room string) bool, shell codingShell, logf gittools.Logf) (agent.ToolSource, *gittools.Source, error) {
 	sources := []agent.ToolSource{mesh}
 	if cfg.LocalTools.Enabled {
-		local, err := localtools.New(localtools.Config{
-			Enabled:      cfg.LocalTools.Enabled,
-			WorkingDir:   cfg.LocalTools.WorkingDir,
-			ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
-		})
+		localCfg := localtools.Config{
+			Enabled:       cfg.LocalTools.Enabled,
+			WorkingDir:    cfg.LocalTools.WorkingDir,
+			ShellTimeout:  time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
+			NoShellReason: shell.reason,
+		}
+		if shell.sandbox != nil {
+			localCfg.Shell = shell.sandbox
+			localCfg.OutputDir = shell.sandbox.OutputDir()
+		}
+		local, err := localtools.New(localCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("local tools: %w", err)
 		}
 		sources = append(sources, local)
+	}
+	allowed := codingAllowlist(cfg)
+	if shell.sandbox == nil {
+		allowed = withoutTool(allowed, "shell_exec")
 	}
 	var gitTool *gittools.Source
 	if gcfg, ok := gitToolConfig(cfg); ok {
@@ -759,7 +789,7 @@ func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches fun
 		}
 		sources = append(sources, gitTool)
 	}
-	var gated agent.ToolSource = agent.NewAllowlistSource(agent.NewMultiSource(sources...), codingAllowlist(cfg))
+	var gated agent.ToolSource = agent.NewAllowlistSource(agent.NewMultiSource(sources...), allowed)
 	gated = rostergate.NewSayOnlyToWatchedRooms(gated, watches)
 	gated = agent.NewHandoffSource(gated)
 	return agent.NewTerseDescriptionSource(gated), gitTool, nil
@@ -787,6 +817,99 @@ func gitToolConfig(cfg config.Config) (gittools.Config, bool) {
 		return gittools.Config{}, false
 	}
 	return gittools.Config{Checkout: cfg.LocalTools.WorkingDir}, true
+}
+
+// codingShell is the coding profile's shell: a sandbox that passed its
+// self-test, or the reason there is none. There is no third state.
+type codingShell struct {
+	sandbox *confinedshell.Sandbox
+	reason  string
+}
+
+// prepareCodingShell builds and self-tests the confined shell when the
+// operator's allowlist names shell_exec (#26). Any failure leaves the
+// coding profile without a shell, never with an unconfined one.
+func prepareCodingShell(ctx context.Context, cfg config.Config, configPath string) codingShell {
+	if !cfg.LocalTools.Enabled || !allowlistIncludes(codingAllowlist(cfg), "shell_exec") {
+		return codingShell{reason: "shell_exec is not on tool_allowlist, so the coding profile has no shell"}
+	}
+	checkout, err := filepath.Abs(cfg.LocalTools.WorkingDir)
+	if err == nil {
+		err = os.MkdirAll(checkout, 0o755)
+	}
+	if err != nil {
+		return codingShell{reason: "no shell in the coding profile: working_dir: " + err.Error()}
+	}
+	sb, err := confinedshell.Prepare(ctx, confinedshell.Options{
+		Checkout: checkout,
+		ReadOnly: cfg.LocalTools.ReadOnlyPaths,
+		Private:  privatePaths(cfg, configPath),
+	})
+	if err != nil {
+		return codingShell{reason: "no shell in the coding profile: " + err.Error()}
+	}
+	return codingShell{sandbox: sb}
+}
+
+// privatePaths are the paths the confined shell may never mount or
+// contain: lazymesh's config and session data, the provider key's
+// directory, the mesh identity and macula-mcp's own config.
+func privatePaths(cfg config.Config, configPath string) []string {
+	if configPath == "" {
+		configPath, _ = config.DefaultPath()
+	}
+	paths := []string{filepath.Dir(configPath), filepath.Dir(cfg.ContactPolicyFile)}
+	if dataDir, err := sessionstore.DefaultDataDir(); err == nil {
+		paths = append(paths, dataDir)
+	}
+	if cfg.APIKeyFile != "" {
+		paths = append(paths, filepath.Dir(cfg.APIKeyFile))
+	}
+	if cfg.IdentityFile != "" {
+		paths = append(paths, cfg.IdentityFile)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "macula-mcp"))
+	}
+	var abs []string
+	for _, p := range paths {
+		if a, err := filepath.Abs(p); err == nil && p != "" && p != "." {
+			abs = append(abs, a)
+		}
+	}
+	return abs
+}
+
+func withoutTool(names []string, drop string) []string {
+	var kept []string
+	for _, n := range names {
+		if n != drop {
+			kept = append(kept, n)
+		}
+	}
+	return kept
+}
+
+// denialRecorder appends each refused tool call to path as one JSON
+// line and logs it (#26, threat model C8).
+func denialRecorder(path string, agentLog *log.Logger) func(agent.Denial) {
+	return func(d agent.Denial) {
+		agentLog.Printf("[denial] %s refused: %s", d.Tool, d.Reason)
+		line, err := json.Marshal(d)
+		if err != nil {
+			agentLog.Printf("[denial] encode: %s", err)
+			return
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			agentLog.Printf("[denial] record to %s: %s", path, err)
+			return
+		}
+		defer f.Close()
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			agentLog.Printf("[denial] record to %s: %s", path, err)
+		}
+	}
 }
 
 // codingAllowlist is the coding profile's allowlist: the vetted mesh

@@ -56,6 +56,23 @@ jobs:
       # wire format via httptest, agent's tool-calling loop via fakes,
       # tui's mesh-state parsing against real captured JSON fixtures) is
       # a real offline test, not a stub.
+      #
+      # The coding profile's confined shell (#26) is proven on this runner,
+      # not assumed: internal/confinedshell and cmd/lazymesh's shell tests
+      # FAIL without a working bubblewrap, they never skip on Linux. A
+      # runner that cannot confine fails this job.
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+      # so bwrap gets a namespace without the capabilities to set it up and
+      # the self-test fails closed. CI loads Ubuntu's own
+      # bwrap-userns-restrict profile, the one the README recommends: bwrap
+      # may set up its namespace, and what it runs gets no capabilities and
+      # no further namespaces. This proves the recommended path works with
+      # our sandbox, on this runner.
+      - name: install bubblewrap
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap apparmor-profiles
+          sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - run: go test ./...
 
   goreleaser-check:
