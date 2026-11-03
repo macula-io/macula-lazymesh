@@ -54,7 +54,7 @@ func verifyCodingTools(t *testing.T, dir string) agent.ToolSource {
 	cfg.LocalTools.WorkingDir = dir
 	cfg.ToolAllowlist = []string{"apply_patch", "shell_exec"}
 	cfg.ToolAllowlistExtends = false
-	shell := prepareCodingShell(context.Background(), cfg, filepath.Join(t.TempDir(), "config.yaml"))
+	shell := prepareShell(context.Background(), cfg, filepath.Join(t.TempDir(), "config.yaml"), "coding profile", codingAllowlist(cfg))
 	if shell.sandbox == nil {
 		t.Fatalf("no sandbox: %s", shell.reason)
 	}

@@ -16,7 +16,7 @@ import (
 func newTestSource(t *testing.T) *Source {
 	t.Helper()
 	dir := t.TempDir()
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 5 * time.Second, Shell: HostShell(dir)})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 5 * time.Second, Shell: testShell(dir)})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestNoShellOffersNoShellExec(t *testing.T) {
 // kept whole in the output directory, and its last line is reachable.
 func TestLongOutputIsPagedNotCut(t *testing.T) {
 	dir, out := t.TempDir(), t.TempDir()
-	src, err := New(Config{Enabled: true, WorkingDir: dir, Shell: HostShell(dir), OutputDir: out})
+	src, err := New(Config{Enabled: true, WorkingDir: dir, Shell: testShell(dir), OutputDir: out})
 	if err != nil {
 		t.Fatal(err)
 	}

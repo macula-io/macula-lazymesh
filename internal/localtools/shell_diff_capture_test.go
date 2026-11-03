@@ -43,7 +43,7 @@ func TestATimedOutCommandStillReportsItsChange(t *testing.T) {
 	mustGit(t, dir, "init", "--quiet")
 	mustGit(t, dir, "add", "f.txt")
 	mustGit(t, dir, "-c", "user.email=test@example.invalid", "-c", "user.name=test", "commit", "--quiet", "-m", "start")
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 1 * time.Second, Shell: HostShell(dir)})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 1 * time.Second, Shell: testShell(dir)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestATimedOutCommandStillReportsItsChange(t *testing.T) {
 // rather than stay silent. Here the command destroys the repository.
 func TestAnUnreadableCheckoutIsReported(t *testing.T) {
 	dir := t.TempDir()
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 10 * time.Second, Shell: HostShell(dir)})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 10 * time.Second, Shell: testShell(dir)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestAHugeDiffIsCapped(t *testing.T) {
 	}
 	mustGit(t, dir, "add", "f.txt")
 	mustGit(t, dir, "-c", "user.email=test@example.invalid", "-c", "user.name=test", "commit", "--quiet", "-m", "start")
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 30 * time.Second, Shell: HostShell(dir)})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 30 * time.Second, Shell: testShell(dir)})
 	if err != nil {
 		t.Fatal(err)
 	}

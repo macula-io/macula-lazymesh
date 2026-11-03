@@ -57,7 +57,7 @@ func TestLiveR2FixedPrefixStaysUnderRegressionCeiling(t *testing.T) {
 	}
 	defer client.Close()
 
-	tools, err := buildToolSource(config.Config{}, client, nil)
+	tools, err := buildToolSource(config.Config{}, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestLiveR2ToolSelectionMeshServicesEnabledStillFitsRegressionCeiling(t *tes
 	// See main_live_test.go's own comment on the same pattern: buildToolSource
 	// no longer constructs meshservices.Source internally, so a nil here
 	// would silently drop the very tools this test measures.
-	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client))
+	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client), codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

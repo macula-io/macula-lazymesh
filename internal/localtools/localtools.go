@@ -6,17 +6,11 @@
 // having NO extra tools unless the operator explicitly asks for them.
 //
 // This is honestly as dangerous as it sounds: shell_exec runs whatever
-// command the LLM decides to run, scoped only to WorkingDir as a starting
-// directory, not a real sandbox or container jail. read_file/write_file
-// are confined to WorkingDir by path validation, but shell_exec is not --
-// a command can still `cd` anywhere the operator's own user account can
-// reach. Enabling this means trusting the configured provider/model with
-// real local execution, the same trust an operator running commands
-// themselves would carry.
-//
-// That describes the mesh profile, which passes HostShell. The coding
-// profile passes a confinedshell.Sandbox instead, or no shell at all
-// when the sandbox cannot be proven on this machine (#26).
+// command the LLM decides to run. It therefore never runs on the
+// operator's own account: both profiles give it a confinedshell.Sandbox,
+// and where no sandbox can be prepared there is no shell_exec at all
+// (#94). read_file/write_file are confined to WorkingDir by path
+// validation on top of that.
 //
 // The file tools are read_file, write_file, search and apply_patch. Every
 // one of them reaches the checkout only through s.root, an os.Root over
@@ -93,42 +87,15 @@ type Config struct {
 	Enabled      bool
 	WorkingDir   string        // required if Enabled; shell_exec's cwd, and the sandbox root for read_file/write_file
 	ShellTimeout time.Duration // defaults to 30s if zero
-	// Shell runs shell_exec's commands: HostShell for the mesh profile,
-	// a confinedshell.Sandbox for the coding profile. nil means no
-	// shell: shell_exec is not offered, and a call to it is refused with
-	// NoShellReason.
+	// Shell runs shell_exec's commands: a confinedshell.Sandbox, for either
+	// profile (#94). nil means no shell: shell_exec is not offered, and a
+	// call to it is refused with NoShellReason.
 	Shell         confinedshell.Runner
 	NoShellReason string
 	// OutputDir, when set, keeps a command's whole output in a file once
 	// it is longer than one result, and the result carries the first
 	// page and the file's path (#26: a cut test run reads as a pass).
 	OutputDir string
-}
-
-// HostShell is the mesh profile's shell: sh -c in dir with the
-// operator's own rights, unconfined.
-func HostShell(dir string) confinedshell.Runner {
-	return hostShell{dir: dir}
-}
-
-type hostShell struct{ dir string }
-
-func (h hostShell) Run(ctx context.Context, command string) (confinedshell.Result, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Dir = h.dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
-	res := confinedshell.Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if runErr != nil {
-		exitErr, ok := runErr.(*exec.ExitError)
-		if !ok {
-			return res, runErr
-		}
-		res.ExitCode = exitErr.ExitCode()
-	}
-	return res, nil
 }
 
 // Source implements agent.ToolSource, giving an agent loop shell_exec,

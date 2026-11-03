@@ -231,14 +231,23 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	var shell codingShell
 	var gitTool *gittools.Source
 	if cfg.CodingProfile() {
-		shell = prepareCodingShell(ctx, cfg, configPath)
+		shell = prepareShell(ctx, cfg, configPath, "coding profile", codingAllowlist(cfg))
 		if shell.reason != "" {
 			fmt.Fprintln(os.Stderr, "lazymesh:", shell.reason)
 			agentLog.Printf("[shell] %s", shell.reason)
 		}
 		tools, gitTool, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, shell, logStack.StdFor("git").Printf)
 	} else {
-		tools, err = buildToolSource(cfg, client, meshSvc)
+		// The mesh profile gets the same confined shell, or none at all
+		// (#94): its shell_exec used to be a plain sh -c with the
+		// operator's own rights, which made "fails closed" a property of
+		// the coding profile only.
+		shell = prepareShell(ctx, cfg, configPath, "mesh profile", resolveAllowlist(cfg))
+		if shell.reason != "" {
+			fmt.Fprintln(os.Stderr, "lazymesh:", shell.reason)
+			agentLog.Printf("[shell] %s", shell.reason)
+		}
+		tools, err = buildToolSource(cfg, client, meshSvc, shell)
 	}
 	if err != nil {
 		return fmt.Errorf("build tool source: %w", err)
@@ -253,7 +262,10 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return fmt.Errorf("resolve working directory: %w", err)
 	}
-	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
+	// Only claim shell_exec when there is a shell to run: both profiles now
+	// have none without a sandbox (#94), so an allowlist entry alone is not
+	// enough for the prompt to promise it.
+	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec") && shell.sandbox != nil
 	// The checkout's own notes (macula-io/macula-lazymesh#44): the working
 	// directory's AGENTS.md and CLAUDE.md. In the coding profile they are
 	// the repository's words -- data, unless the operator trusted exactly
@@ -717,7 +729,7 @@ func providerLabel(cfg config.Config) string {
 // Source instance to read via Snapshot, not a second one wrapping the
 // same client. Must be nil exactly when cfg.MeshServicesEnabled is false
 // (the caller's job to keep those in sync -- see run).
-func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source) (agent.ToolSource, error) {
+func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source, meshShell codingShell) (agent.ToolSource, error) {
 	sources := []agent.ToolSource{client}
 	// web_fetch (G12) is always wired but never reachable by default: the
 	// default allowlist excludes it, so it costs nothing until an
@@ -729,7 +741,7 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 		sources = append(sources, meshSvc)
 	}
 	if cfg.LocalTools.Enabled {
-		local, err := meshLocalTools(cfg)
+		local, err := meshLocalTools(cfg, meshShell)
 		if err != nil {
 			return nil, err
 		}
@@ -749,15 +761,17 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 	return agent.NewTerseDescriptionSource(gated), nil
 }
 
-// meshLocalTools is the mesh profile's local tool set. Its shell is
-// unconfined, behind its two opt-ins (local_tools.enabled and the
-// allowlist); only the coding profile confines it (#26).
-func meshLocalTools(cfg config.Config) (*localtools.Source, error) {
+// meshLocalTools is the mesh profile's local tool set. Its shell is the same
+// confined shell the coding profile uses (#94): where no sandbox could be
+// prepared, meshShell.reason says why and shell_exec is refused, never run
+// unconfined.
+func meshLocalTools(cfg config.Config, meshShell codingShell) (*localtools.Source, error) {
 	local, err := localtools.New(localtools.Config{
-		Enabled:      cfg.LocalTools.Enabled,
-		WorkingDir:   cfg.LocalTools.WorkingDir,
-		ShellTimeout: time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
-		Shell:        localtools.HostShell(cfg.LocalTools.WorkingDir),
+		Enabled:       cfg.LocalTools.Enabled,
+		WorkingDir:    cfg.LocalTools.WorkingDir,
+		ShellTimeout:  time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
+		Shell:         meshShell.runner(),
+		NoShellReason: meshShell.reason,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("local tools: %w", err)
@@ -788,7 +802,7 @@ func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches fun
 			NoShellReason: shell.reason,
 		}
 		if shell.sandbox != nil {
-			localCfg.Shell = shell.sandbox
+			localCfg.Shell = shell.runner()
 			localCfg.OutputDir = shell.sandbox.OutputDir()
 		}
 		local, err := localtools.New(localCfg)
@@ -842,25 +856,37 @@ func gitToolConfig(cfg config.Config) (gittools.Config, bool) {
 }
 
 // codingShell is the coding profile's shell: a sandbox that passed its
-// self-test, or the reason there is none. There is no third state.
+// self-test, or the reason there is none. There is no third state. The mesh
+// profile uses it too (#94).
 type codingShell struct {
 	sandbox *confinedshell.Sandbox
 	reason  string
 }
 
-// prepareCodingShell builds and self-tests the confined shell when the
-// operator's allowlist names shell_exec (#26). Any failure leaves the
-// coding profile without a shell, never with an unconfined one.
-func prepareCodingShell(ctx context.Context, cfg config.Config, configPath string) codingShell {
-	if !cfg.LocalTools.Enabled || !allowlistIncludes(codingAllowlist(cfg), "shell_exec") {
-		return codingShell{reason: "shell_exec is not on tool_allowlist, so the coding profile has no shell"}
+// runner is the shell as localtools sees it: nil when there is no sandbox,
+// never a typed-nil *Sandbox inside the interface -- a nil pointer in a
+// non-nil interface is a runner that panics on its first call.
+func (s codingShell) runner() confinedshell.Runner {
+	if s.sandbox == nil {
+		return nil
+	}
+	return s.sandbox
+}
+
+// prepareShell builds and self-tests the confined shell when the profile's
+// allowlist names shell_exec (#26, #94). Any failure leaves that profile
+// without a shell, never with an unconfined one. profile names the profile in
+// the reason, so the message an operator reads says which one has no shell.
+func prepareShell(ctx context.Context, cfg config.Config, configPath, profile string, allowlist []string) codingShell {
+	if !cfg.LocalTools.Enabled || !allowlistIncludes(allowlist, "shell_exec") {
+		return codingShell{reason: "shell_exec is not on tool_allowlist for the " + profile + ", so it has no shell"}
 	}
 	checkout, err := filepath.Abs(cfg.LocalTools.WorkingDir)
 	if err == nil {
 		err = os.MkdirAll(checkout, 0o755)
 	}
 	if err != nil {
-		return codingShell{reason: "no shell in the coding profile: working_dir: " + err.Error()}
+		return codingShell{reason: "no shell in the " + profile + ": working_dir: " + err.Error()}
 	}
 	sb, err := confinedshell.Prepare(ctx, confinedshell.Options{
 		Checkout: checkout,
@@ -868,7 +894,7 @@ func prepareCodingShell(ctx context.Context, cfg config.Config, configPath strin
 		Private:  privatePaths(cfg, configPath),
 	})
 	if err != nil {
-		return codingShell{reason: "no shell in the coding profile: " + err.Error()}
+		return codingShell{reason: "no shell in the " + profile + ": " + err.Error()}
 	}
 	return codingShell{sandbox: sb}
 }
