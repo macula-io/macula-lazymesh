@@ -62,7 +62,7 @@ func TestLiveMeshRingReachableThroughDefaultAllowlistWithTerseSchema(t *testing.
 	// test time.
 	fakeNodeID := strings.Repeat("0", 64)
 
-	loop := agent.NewLoop(p, tools, buildSystemPrompt("", "", false, false, false))
+	loop := agent.NewLoop(p, tools, buildSystemPrompt("", "", false, false, false, "", "ctrl+x"))
 	events := make(chan agent.Event, 64)
 
 	var toolCalls []agent.Event

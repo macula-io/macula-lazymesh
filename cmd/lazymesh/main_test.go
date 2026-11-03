@@ -223,7 +223,7 @@ func TestNextPrompt_DoesNotBlockOnEmptyChannel(t *testing.T) {
 
 func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 	for _, room := range []string{"", "agents.room.deadbeef"} {
-		got := buildSystemPrompt(room, "", false, false, false, "")
+		got := buildSystemPrompt(room, "", false, false, false, "", "ctrl+x")
 		if !strings.Contains(got, "mesh_rooms") {
 			t.Fatalf("room=%q: expected system prompt to instruct calling mesh_rooms, got: %s", room, got)
 		}
@@ -234,14 +234,14 @@ func TestBuildSystemPrompt_AlwaysInstructsDiscoveringRoomsLive(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyRoomHasNoPriorityHint(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(got, "prioritize this room") {
 		t.Fatalf("expected no room-specific priority hint when room is empty, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false, "")
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false, "", "ctrl+x")
 	if !strings.Contains(got, "prioritize this room: agents.room.deadbeef") {
 		t.Fatalf("expected the given room to appear as a priority hint, got: %s", got)
 	}
@@ -255,18 +255,18 @@ func TestBuildSystemPrompt_NonEmptyRoomAddsPriorityHintWithoutNarrowingScope(t *
 }
 
 func TestBuildSystemPrompt_IncludesGoalWhenSet(t *testing.T) {
-	got := buildSystemPrompt("", "find the best pun on the mesh", false, false, false, "")
+	got := buildSystemPrompt("", "find the best pun on the mesh", false, false, false, "", "ctrl+x")
 	if !strings.Contains(got, "Additional objective: find the best pun on the mesh") {
 		t.Fatalf("expected goal text to appear verbatim, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_LocalToolsReachableAddsShellExecLine(t *testing.T) {
-	without := buildSystemPrompt("", "", false, false, false, "")
+	without := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(without, "shell_exec") {
 		t.Fatalf("expected no mention of shell_exec when local tools aren't reachable, got: %s", without)
 	}
-	with := buildSystemPrompt("", "", true, false, false, "")
+	with := buildSystemPrompt("", "", true, false, false, "", "ctrl+x")
 	if !strings.Contains(with, "shell_exec") {
 		t.Fatalf("expected shell_exec to be mentioned when local tools are reachable, got: %s", with)
 	}
@@ -283,7 +283,7 @@ func TestAgentInitialPromptCallsMeshRooms(t *testing.T) {
 // rather than assuming it will remember joining from earlier in the
 // conversation -- history gets trimmed, so that memory isn't reliable.
 func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if !strings.Contains(got, "joined list") {
 		t.Fatalf("expected system prompt to reference mesh_rooms's joined list, got: %s", got)
 	}
@@ -293,7 +293,7 @@ func TestBuildSystemPrompt_InstructsCheckingJoinedListBeforeRejoining(t *testing
 }
 
 func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
-	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false, "")
+	got := buildSystemPrompt("agents.room.deadbeef", "", false, false, false, "", "ctrl+x")
 	if !strings.Contains(got, "check mesh_rooms's own joined list first") {
 		t.Fatalf("expected the priority-room hint to check the joined list before joining, got: %s", got)
 	}
@@ -304,14 +304,14 @@ func TestBuildSystemPrompt_RoomHintAlsoChecksJoinedListFirst(t *testing.T) {
 // permission to use emoji/expressive tone in room conversation -- never a
 // hardcoded persona forced on every operator.
 func TestBuildSystemPrompt_ExpressiveStyleOffByDefault(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(got, "emoji") {
 		t.Fatalf("expected no emoji guidance when expressiveStyle is false, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
-	got := buildSystemPrompt("", "", false, true, false, "")
+	got := buildSystemPrompt("", "", false, true, false, "", "ctrl+x")
 	if !strings.Contains(got, "emoji") {
 		t.Fatalf("expected emoji guidance when expressiveStyle is true, got: %s", got)
 	}
@@ -326,14 +326,14 @@ func TestBuildSystemPrompt_ExpressiveStyleAddsEmojiGuidance(t *testing.T) {
 // wastes tokens on a capability the model doesn't have and risks a
 // hallucinated call.
 func TestBuildSystemPrompt_MeshServicesOffByDefault(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(got, "mesh_service_") {
 		t.Fatalf("expected no mesh_service_* mention when meshServicesEnabled is false, got: %s", got)
 	}
 }
 
 func TestBuildSystemPrompt_MeshServicesEnabledMentionsMeshServiceTools(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, true, "")
+	got := buildSystemPrompt("", "", false, false, true, "", "ctrl+x")
 	if !strings.Contains(got, "mesh_service_") {
 		t.Fatalf("expected a mesh_service_* mention when meshServicesEnabled is true, got: %s", got)
 	}
@@ -381,7 +381,7 @@ func TestSayGoodbye_ToleratesFailureWithoutPropagatingIt(t *testing.T) {
 // itself, and explain what happens instead. Unconditional now (no more
 // spike-vs-baseline split) -- this is the only behavior.
 func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(got, "call mesh_say with a long") {
 		t.Fatalf("expected the model-driven long-wait instruction to be gone, got: %s", got)
 	}
@@ -395,7 +395,7 @@ func TestBuildSystemPrompt_DropsModelDrivenLongWait(t *testing.T) {
 // room_topic" ring-check mandate is gone, replaced by internal/
 // ringwaiter waking the model only when a ring genuinely exists.
 func TestBuildSystemPrompt_DropsBlanketRingCheckMandate(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(got, "every single time you are prompted") {
 		t.Fatalf("expected the blanket per-cycle ring-check mandate to be gone, got: %s", got)
 	}
@@ -645,11 +645,11 @@ func TestCheckStartupBudget_ZeroWindowNeverFails(t *testing.T) {
 // own instruction files land in the system prompt with their marker, and
 // an empty input leaves the prompt untouched.
 func TestBuildSystemPrompt_LocalInstructionsInjected(t *testing.T) {
-	without := buildSystemPrompt("", "", false, false, false, "")
+	without := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if strings.Contains(without, "local instructions") {
 		t.Fatalf("empty instructions still injected a marker: %s", without)
 	}
-	with := buildSystemPrompt("", "", false, false, false, "--- AGENTS.md ---\nstay in your lane")
+	with := buildSystemPrompt("", "", false, false, false, "--- AGENTS.md ---\nstay in your lane", "ctrl+x")
 	if !strings.Contains(with, "local instructions") || !strings.Contains(with, "stay in your lane") {
 		t.Fatalf("instructions missing from the prompt: %s", with)
 	}
@@ -720,7 +720,7 @@ func TestNextEvent_WakeupDeliversPromptVerbatim(t *testing.T) {
 // TestBuildSystemPrompt_TeachesHandoffGrammar pins G11's prompting half:
 // the grammar paragraph names the reply kinds and the in_reply_to rule.
 func TestBuildSystemPrompt_TeachesHandoffGrammar(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	for _, want := range []string{"in_reply_to", "answer_given", "result_reported", "lane_claimed", "lane_released", "claim_confirmed", "task_handed_over"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("grammar missing %q in the system prompt", want)
@@ -764,7 +764,7 @@ func TestResolveAllowlist_ExtendsMergesDefaults(t *testing.T) {
 // live-run fix: the style line forbids preamble and restatement, so a
 // model cannot open with "I'll start by...".
 func TestBuildSystemPrompt_TeachesAntiNarrationStyle(t *testing.T) {
-	got := buildSystemPrompt("", "", false, false, false, "")
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	if !strings.Contains(got, "do not narrate") || !strings.Contains(got, "I'll start by") {
 		t.Fatalf("anti-narration style missing from the prompt")
 	}
@@ -809,5 +809,23 @@ func TestFirstPrompt_IdleStartWaitsForTheFirstEvent(t *testing.T) {
 	}
 	if got, ok := firstPrompt(context.Background(), false, make(chan string), nil, nil, nil, nil, nil); !ok || got != agentInitialPrompt {
 		t.Fatalf("default start: first prompt = %q, %v", got, ok)
+	}
+}
+
+// The agent cannot join a realm -- mesh_join_realm is deliberately not a tool
+// it gets -- so the prompt has to hand it the operator's route instead, or an
+// operator asking "are you in io.macula?" or "why can't you join?" hears only
+// that someone configured the node (#73). The key named is the configured
+// leader (#63), never a hard-coded ctrl+x.
+func TestBuildSystemPrompt_ExplainsHowTheOperatorJoinsARealm(t *testing.T) {
+	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+g")
+
+	for _, want := range []string{"realms view", "ctrl+g r", "it toggles", "Enter on an empty message box", "Esc first if a finished join", "cannot join a realm"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the prompt does not say %q, so the agent cannot explain the operator's own route:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "ctrl+x r") {
+		t.Fatalf("the prompt names ctrl+x although the configured leader is ctrl+g:\n%s", got)
 	}
 }
