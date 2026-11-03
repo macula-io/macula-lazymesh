@@ -415,7 +415,14 @@ type Model struct {
 	chatEntries  []chatEntry
 	sel          selectionState // shift+drag selection over the chat pane
 	chatViewport viewport.Model
-	input        PromptEditor
+	// newBelow is set when output reaches the chat while the reader is
+	// scrolled up, and drops once the view is back at the bottom (#78 gap
+	// 7). chatSeen is the chat as the last sync rendered it, so a
+	// re-render that adds nothing (a resize, a toggle) is not mistaken for
+	// news.
+	newBelow bool
+	chatSeen chatRender
+	input    PromptEditor
 
 	width  int
 	height int
@@ -766,6 +773,17 @@ func (m Model) handleMeshServiceCallResult(msg meshServiceCallResultMsg) (Model,
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.update(msg)
+	// However the reader got back to the bottom -- the bottom key, a page
+	// or a line at a time, the wheel -- what was new below has been seen.
+	if next, ok := updated.(Model); ok && next.newBelow && next.chatViewport.AtBottom() {
+		next.newBelow = false
+		return next, cmd
+	}
+	return updated, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -1032,6 +1050,7 @@ func (m Model) runLeader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, DefaultKeyMap.ScrollBottom):
 		if !m.meshExpanded && !m.realmExpanded {
 			m.chatViewport.GotoBottom()
+			m.newBelow = false
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.LeaderHelp):
@@ -1582,10 +1601,64 @@ func (m *Model) syncViewport() {
 	// so only the already-at-bottom case re-anchors.
 	atBottom := m.chatViewport.AtBottom()
 	lines := renderChatEntries(m.chatEntries, m.detailsExpanded, m.width)
-	m.chatViewport.SetContent(strings.Join(lines, "\n"))
+	content := strings.Join(lines, "\n")
+	m.chatViewport.SetContent(content)
 	if atBottom {
 		m.chatViewport.GotoBottom()
 	}
+	seen := chatRender{content: content, width: m.width, details: m.detailsExpanded}
+	if !atBottom && seen.arrivedSince(m.chatSeen) {
+		m.newBelow = true
+	}
+	m.chatSeen = seen
+}
+
+// chatRender is the chat as one sync rendered it, and the two settings that
+// change a rendering without anything arriving.
+type chatRender struct {
+	content string
+	width   int
+	details bool
+}
+
+// arrivedSince reports whether output reached the chat between two syncs:
+// the text differs under the same width and detail setting. It reads the
+// rendering, not the shape of the entries, so a new entry, a streamed delta
+// and a result folded into an earlier entry all count alike.
+func (r chatRender) arrivedSince(prev chatRender) bool {
+	return r.width == prev.width && r.details == prev.details && r.content != prev.content
+}
+
+// chatBody is the chat pane, with its bottom line given over to the "new
+// below" marker while output waits under a reader scrolled up. The marker
+// names the bottom key through the configured leader, read from the keymap,
+// since the composer always has focus and a bare key only types a letter.
+func (m Model) chatBody() string {
+	body := m.chatViewport.View()
+	if !m.newBelow || m.chatViewport.AtBottom() {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	lines[len(lines)-1] = statusStripStyle.Render(m.newBelowMarker(m.chatViewport.Width))
+	return strings.Join(lines, "\n")
+}
+
+// newBelowMarker is the longest form of the marker that fits width cells.
+// The key goes last, since it is what the reader needs: on a narrow
+// terminal the words go first, then the action's name, then the key.
+func (m Model) newBelowMarker(width int) string {
+	chord := m.leaderLabel() + " " + DefaultKeyMap.ScrollBottom.Help().Key
+	for _, s := range []string{
+		"↓ new below -- " + m.leaderLabel() + " " + keyHint(DefaultKeyMap.ScrollBottom, DefaultKeyMap.ScrollBottom.Help().Desc),
+		"↓ new below -- " + chord,
+		"↓ " + chord,
+		"↓ new below",
+	} {
+		if width < 1 || len([]rune(s)) <= width {
+			return s
+		}
+	}
+	return string([]rune("↓ new below")[:width])
 }
 
 // Colors match the macula brand palette (see chat.go's own comment) --
@@ -1679,7 +1752,7 @@ func (m Model) View() string {
 	case m.realmExpanded:
 		body = m.renderRealmsOverlay()
 	default:
-		body = m.chatViewport.View()
+		body = m.chatBody()
 	}
 	input := m.renderInputLine()
 
