@@ -1735,6 +1735,9 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 	}
 }
 
+// attachUsage is what `lazymesh attach` prints for no argument or -h.
+const attachUsage = "usage: lazymesh attach <session-id|socket-path>  (a session id resolves to its control socket; the TUI detaches on exit and the session keeps running)"
+
 // runAttach opens the single-session TUI on a session that is already
 // running, over its control socket (macula-io/macula-lazymesh#40). The
 // argument is a socket path (anything containing a separator) or a
@@ -1742,8 +1745,12 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 // session used to create it. Closing the TUI detaches; it never stops the
 // session.
 func runAttach(args []string) error {
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Println(attachUsage)
+		return nil
+	}
 	if len(args) != 1 {
-		return fmt.Errorf("usage: lazymesh attach <session-id|socket-path>")
+		return fmt.Errorf("%s", attachUsage)
 	}
 	target := args[0]
 	path := target
