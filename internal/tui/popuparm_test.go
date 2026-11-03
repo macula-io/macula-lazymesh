@@ -277,7 +277,6 @@ func ringPopupModel(t *testing.T, mcp toolCaller) (Model, *fakeClock) {
 	m := New(mcp, Options{UserInputCh: make(chan string, 8)})
 	m = withClock(m, clock)
 	m.width, m.height = 80, 24
-	m.returnTo = ModeNormal
 
 	m.pendingRingPopup = &pendingRing{RingID: "r1", Peer: "peer1", Purpose: "hello"}
 	m.ringArm = popupArm{shownAt: clock.now()}

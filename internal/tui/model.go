@@ -259,10 +259,13 @@ type Model struct {
 	// approvalArm and ringArm are the two pop-ups' arming state (#59): the
 	// answer keys do nothing until a pause has passed, so a key meant for a
 	// message cannot answer a prompt that appeared under the cursor.
-	// returnTo is the mode focus goes back to when a pop-up closes.
 	approvalArm popupArm
 	ringArm     popupArm
-	returnTo    Mode
+	// approvalReturnTo and ringReturnTo are the modes the two pop-ups took
+	// focus from, one each: both can be open at once, and one shared slot
+	// hands focus back to the wrong pop-up (see refocus).
+	approvalReturnTo Mode
+	ringReturnTo     Mode
 
 	// The error pop-up's own state, nil when it is closed. Separate from
 	// lastErr: lastErr is the live condition, this is the reading of it,

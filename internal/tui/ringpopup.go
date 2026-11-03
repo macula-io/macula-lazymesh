@@ -51,7 +51,7 @@ func answerRingCmd(mcp toolCaller, ringID string, answer int, alsoTrust bool, pe
 func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	r := m.pendingRingPopup
 	if r == nil {
-		m.mode = m.returnTo
+		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, nil
 	}
@@ -62,6 +62,9 @@ func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// instant, and every key still restarts the guard.
 	armed := m.ringArm.armedAt(m.clock())
 	m.ringArm.lastKeyAt = m.clock()
+	if msg.Paste {
+		return m, nil // a paste is typing, not an answer
+	}
 	if !armed && !key.Matches(msg, DefaultKeyMap.Normal) {
 		return m, nil
 	}
@@ -71,28 +74,28 @@ func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.ringArm = popupArm{}
-		m.mode = m.returnTo
+		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, false, "")
 	case key.Matches(msg, DefaultKeyMap.Decline):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.ringArm = popupArm{}
-		m.mode = m.returnTo
+		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerDecline, false, "")
 	case key.Matches(msg, DefaultKeyMap.Trust):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.ringArm = popupArm{}
-		m.mode = m.returnTo
+		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, true, r.Peer)
 	case key.Matches(msg, DefaultKeyMap.Normal): // Esc
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.ringArm = popupArm{}
-		m.mode = m.returnTo
+		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, nil
 	}

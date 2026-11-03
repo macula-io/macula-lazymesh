@@ -37,7 +37,7 @@ func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) 
 	if m.pendingApproval != nil && m.pendingApproval.id == msg.ID {
 		m.pendingApproval = nil
 		m.approvalArm = popupArm{}
-		m.mode = m.returnTo
+		m = m.refocus(m.approvalReturnTo)
 		m.resizeComponents()
 		closed = true
 	}
@@ -113,8 +113,7 @@ func (m Model) showApproval(ev ApprovalRequestEvent) (Model, tea.Cmd) {
 // pending prompt clears either way.
 func (m Model) handleApprovalPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.pendingApproval == nil {
-		m.mode = m.returnTo
-		return m, nil
+		return m.refocus(m.approvalReturnTo), nil
 	}
 	// Whether this key may answer is decided from the state BEFORE it, and
 	// then every key that reaches the pop-up counts as typing and restarts
@@ -122,6 +121,11 @@ func (m Model) handleApprovalPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// sentence someone was already writing.
 	armed := m.approvalArm.armedAt(m.clock())
 	m.approvalArm.lastKeyAt = m.clock()
+	// A paste is typing whatever it contains: a y pasted into a message must
+	// not answer, even with the guard already passed.
+	if msg.Paste {
+		return m, nil
+	}
 
 	if m.scrollApproval(msg.String()) {
 		return m, nil
@@ -156,7 +160,7 @@ func (m Model) answerApproval(allow bool) (Model, tea.Cmd) {
 	}
 	m.pendingApproval = nil
 	m.approvalArm = popupArm{}
-	m.mode = m.returnTo
+	m = m.refocus(m.approvalReturnTo)
 	m.resizeComponents()
 	return m, nil
 }
