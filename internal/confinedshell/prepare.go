@@ -47,7 +47,11 @@ func Prepare(ctx context.Context, opts Options) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	scratch, err := makeScratch(opts.CacheDir, checkout)
+	gitRO, err := gitMounts(checkout)
+	if err != nil {
+		return nil, err
+	}
+	scratch, output, err := makeWorkspace(opts.CacheDir, checkout)
 	if err != nil {
 		return nil, err
 	}
@@ -61,8 +65,8 @@ func Prepare(ctx context.Context, opts Options) (*Sandbox, error) {
 		}
 		mounts = append(mounts, clean)
 	}
-	sb := &Sandbox{Bwrap: opts.Bwrap, Checkout: checkout, Scratch: scratch, ReadOnly: mounts, Env: environment(scratch, goEnv)}
-	if err := SelfTest(ctx, sb, Probe{Checkout: checkout, Scratch: scratch, SecretDir: opts.Home}); err != nil {
+	sb := &Sandbox{Bwrap: opts.Bwrap, Checkout: checkout, GitReadOnly: gitRO, Scratch: scratch, Output: output, ReadOnly: mounts, Env: environment(scratch, goEnv)}
+	if err := SelfTest(ctx, sb, Probe{Checkout: checkout, Scratch: scratch, Output: output, SecretDir: opts.Home}); err != nil {
 		return nil, err
 	}
 	return sb, nil
@@ -139,17 +143,83 @@ func within(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// makeScratch is one directory per checkout under the user's cache, kept
-// across sessions so the build cache survives.
-func makeScratch(cacheDir, checkout string) (string, error) {
+// makeWorkspace is one directory per checkout under the user's cache:
+// rw/ (mounted read-write: home/ and the Go build cache) and out/
+// (mounted read-only: long output the host writes). home/ and out/ are
+// emptied at every start, so nothing a command left there carries into
+// the next session; the build cache is kept, and is only ever used
+// inside the sandbox.
+func makeWorkspace(cacheDir, checkout string) (string, string, error) {
 	sum := sha256.Sum256([]byte(checkout))
 	dir := filepath.Join(cacheDir, "lazymesh", "confined", hex.EncodeToString(sum[:8]))
-	for _, sub := range []string{"home", "gocache", "out"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
-			return "", fmt.Errorf("scratch directory: %w", err)
+	rw, out := filepath.Join(dir, "rw"), filepath.Join(dir, "out")
+	for _, stale := range []string{filepath.Join(rw, "home"), out} {
+		if err := os.RemoveAll(stale); err != nil {
+			return "", "", fmt.Errorf("clear %s: %w", stale, err)
 		}
 	}
-	return resolve(dir), nil
+	for _, sub := range []string{filepath.Join(rw, "home"), filepath.Join(rw, "gocache"), out} {
+		if err := os.MkdirAll(sub, 0o700); err != nil {
+			return "", "", fmt.Errorf("scratch directory: %w", err)
+		}
+	}
+	return resolve(rw), resolve(out), nil
+}
+
+// gitMounts is what keeps the checkout's .git read-only inside: the .git
+// directory, or the .git file and the gitdir it names when that lies in
+// the checkout (with its commondir). A checkout with no .git, or with a
+// symlink there, gets no shell: an empty slot or a link is something a
+// command could fill or retarget, and the host's git would follow it.
+func gitMounts(checkout string) ([]string, error) {
+	dotGit := filepath.Join(checkout, ".git")
+	info, err := os.Lstat(dotGit)
+	switch {
+	case os.IsNotExist(err):
+		return nil, fmt.Errorf("the working directory %s has no .git; the coding profile's shell runs only in a git checkout, whose .git it keeps read-only", checkout)
+	case err != nil:
+		return nil, err
+	case info.Mode()&os.ModeSymlink != 0:
+		return nil, fmt.Errorf("%s is a symlink; the coding profile's shell needs a real .git it can keep read-only", dotGit)
+	case info.IsDir():
+		return []string{dotGit}, nil
+	case !info.Mode().IsRegular():
+		return nil, fmt.Errorf("%s is neither a directory nor a file", dotGit)
+	}
+	mounts := []string{dotGit}
+	gitDir := pointedDir(checkout, dotGit, "gitdir:")
+	if gitDir == "" {
+		return mounts, nil
+	}
+	if within(gitDir, checkout) {
+		mounts = append(mounts, gitDir)
+	}
+	if common := pointedDir(gitDir, filepath.Join(gitDir, "commondir"), ""); common != "" && within(common, checkout) {
+		mounts = append(mounts, common)
+	}
+	return mounts, nil
+}
+
+// pointedDir reads a git pointer file (".git" with a "gitdir:" prefix,
+// or "commondir") and returns the existing directory it names, resolved
+// against base, or "" when there is none.
+func pointedDir(base, file, prefix string) string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), prefix))
+	if target == "" {
+		return ""
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, target)
+	}
+	resolved := resolve(target)
+	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+		return ""
+	}
+	return resolved
 }
 
 // goToolchain is what the Go toolchain needs inside: its root and the
@@ -208,5 +278,5 @@ func environment(scratch string, tc goToolchain) []string {
 
 // OutputDir is where long command output is kept for paging.
 func (s *Sandbox) OutputDir() string {
-	return filepath.Join(s.Scratch, "out")
+	return s.Output
 }

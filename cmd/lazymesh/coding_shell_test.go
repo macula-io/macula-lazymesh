@@ -58,6 +58,9 @@ func TestCodingProfileShellIsConfined(t *testing.T) {
 		t.Fatal("bubblewrap is required to prove confinement: install bwrap")
 	}
 	cfg := shellConfig(t)
+	if err := os.Mkdir(filepath.Join(cfg.LocalTools.WorkingDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	shell := prepareCodingShell(context.Background(), cfg, filepath.Join(t.TempDir(), "config.yaml"))
 	if shell.sandbox == nil {
 		t.Fatalf("no sandbox: %s", shell.reason)

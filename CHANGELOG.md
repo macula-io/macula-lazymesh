@@ -32,7 +32,12 @@ goreleaser from a `v*` tag; this file records what each one changes.
   refuses home, its parents and lazymesh's private files. Output longer
   than one result is kept whole in the scratch directory and paged. Every
   refused tool call, in either profile, is recorded in
-  `<session-id>.denials.jsonl`.
+  `<session-id>.denials.jsonl` (mode 0600, full arguments). The shell runs
+  only in a git checkout: `.git`, directory or worktree file, and a gitdir
+  inside the checkout are read-only inside. `read_file` and `write_file`
+  open files through `os.Root`; `write_file` refuses `.git` and any symlink
+  at the final component. Long output goes to a directory the sandbox sees
+  read-only; the sandbox's home and output are emptied at every start.
 
 - **Rings reach a headless controller.** A ring still awaiting an answer is
   sent on the control socket as `{"type":"ring_pending","ring_id",

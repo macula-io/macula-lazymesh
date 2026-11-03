@@ -17,7 +17,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -40,13 +39,19 @@ type Runner interface {
 type Sandbox struct {
 	// Bwrap is the bubblewrap binary.
 	Bwrap string
-	// Checkout is mounted read-write and is the working directory; its
-	// .git directory, when it has one, is mounted read-only over it, so
-	// nothing inside can plant a hook or a config the host's git runs.
+	// Checkout is mounted read-write and is the working directory.
 	Checkout string
-	// Scratch is mounted read-write: HOME, the build cache and long
-	// command output live here.
+	// GitReadOnly is the checkout's .git, directory or file, and a
+	// gitdir it points to inside the checkout, each mounted read-only
+	// over the checkout: nothing inside can plant a hook, a config or a
+	// new gitdir pointer that the host's git later runs.
+	GitReadOnly []string
+	// Scratch is mounted read-write: HOME and the build cache live here.
 	Scratch string
+	// Output is mounted read-only: the host writes long command output
+	// here for the shell to page through, and the shell cannot swap the
+	// directory for a link into the host's files.
+	Output string
 	// ReadOnly is every other path mounted, read-only, at its own path.
 	ReadOnly []string
 	// Env is the whole environment inside, as KEY=value.
@@ -55,6 +60,7 @@ type Sandbox struct {
 	// sandbox and watch the self-test catch it.
 	shareNet   bool
 	extraBinds []string
+	outputRW   bool
 }
 
 // Args is the bubblewrap argument list for command.
@@ -84,9 +90,14 @@ func (s *Sandbox) Args(command string) []string {
 	args = append(args,
 		"--bind", s.Scratch, s.Scratch,
 		"--bind", s.Checkout, s.Checkout)
-	if info, err := os.Lstat(filepath.Join(s.Checkout, ".git")); err == nil && info.IsDir() {
-		gitDir := filepath.Join(s.Checkout, ".git")
-		args = append(args, "--ro-bind", gitDir, gitDir)
+	switch {
+	case s.Output != "" && s.outputRW:
+		args = append(args, "--bind", s.Output, s.Output)
+	case s.Output != "":
+		args = append(args, "--ro-bind", s.Output, s.Output)
+	}
+	for _, p := range s.GitReadOnly {
+		args = append(args, "--ro-bind", p, p)
 	}
 	return append(args, "--chdir", s.Checkout, "--", "/bin/sh", "-c", command)
 }

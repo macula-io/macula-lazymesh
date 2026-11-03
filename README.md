@@ -386,21 +386,45 @@ config, session data, key or identity files is refused, and the shell is
 then not offered. Do not start the coding profile in your home directory:
 the working directory is writable, so that is refused too.
 
+What the sandbox does not cover:
+
+- **What the agent leaves in the working directory is untrusted.** A
+  command may edit a `Makefile`, add an `.envrc` or a `.vscode/tasks.json`,
+  or create a nested `sub/.git` with its own hooks. Those run with your
+  full rights when you later build, `cd` or open an editor there. Review
+  the diff before you run anything in the checkout yourself.
+- **No limit on CPU or memory**: only the time limit
+  (`shell_timeout_seconds`) applies.
+- The coding profile runs its shell only in a git checkout: the working
+  directory needs a real `.git` (a directory, or the file a git worktree
+  has), which the sandbox keeps read-only. `write_file` never writes into
+  `.git` and never writes through a symlink.
+
 Every call lazymesh refuses (you denied it, it was too long to show, the
 tool is not allowed, there is no shell) is written whole, with the reason,
-to `<session-id>.denials.jsonl` next to the session's own log.
+to `<session-id>.denials.jsonl` next to the session's own log. The file is
+readable only by you (mode 0600) and holds each refused call's full
+arguments.
 
 Install bubblewrap from your distribution: `apt install bubblewrap`,
 `dnf install bubblewrap`, `pacman -S bubblewrap`.
 
 On Ubuntu 24.04 and later, AppArmor stops bubblewrap from setting up its
 sandbox unless it has a profile, and lazymesh's start-up check then
-reports `a plain command does not run`. Give bubblewrap one:
+reports `a plain command does not run`. Load Ubuntu's own restricted
+profile for bubblewrap, which lets bubblewrap set up its sandbox and gives
+what runs inside no capabilities and no further namespaces:
 
 ```sh
-printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/bwrap
-sudo apparmor_parser -r /etc/apparmor.d/bwrap
+sudo apt install apparmor-profiles
+sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 ```
+
+Avoid the shortcut some guides give, an unconfined profile with `userns`
+for `/usr/bin/bwrap`: any program on the machine can run bubblewrap, so
+that hands unprivileged user namespaces back to every local program and
+undoes Ubuntu's restriction machine-wide.
 
 ## Driving lazymesh from another program
 

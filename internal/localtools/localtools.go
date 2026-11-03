@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,7 +97,11 @@ func (h hostShell) Run(ctx context.Context, command string) (confinedshell.Resul
 // Source implements agent.ToolSource, giving an agent loop shell_exec,
 // read_file, and write_file, all scoped to Config.WorkingDir.
 type Source struct {
-	workingDir    string
+	workingDir string
+	// root confines every file the host opens for read_file and
+	// write_file to workingDir: os.Root resolves symlinks only inside it,
+	// so a link the shell plants cannot lead a host write outside (#26).
+	root          *os.Root
 	shellTimeout  time.Duration
 	shell         confinedshell.Runner
 	noShellReason string
@@ -128,7 +133,11 @@ func New(cfg Config) (*Source, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Source{workingDir: canonical, shellTimeout: timeout, shell: cfg.Shell, noShellReason: cfg.NoShellReason, outputDir: cfg.OutputDir}, nil
+	root, err := os.OpenRoot(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("localtools: open working_dir %s: %w", canonical, err)
+	}
+	return &Source{workingDir: canonical, root: root, shellTimeout: timeout, shell: cfg.Shell, noShellReason: cfg.NoShellReason, outputDir: cfg.OutputDir}, nil
 }
 
 func (s *Source) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
@@ -235,6 +244,26 @@ func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, er
 	return string(result), nil
 }
 
+// createOutputFile makes a new file in the output directory through
+// os.Root, after refusing an output directory that is a symlink: the
+// coding profile mounts it read-only in the sandbox, and the host still
+// does not trust the path (#26).
+func (s *Source) createOutputFile() (*os.File, error) {
+	info, err := os.Lstat(s.outputDir)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("output directory %s is not a plain directory", s.outputDir)
+	}
+	root, err := os.OpenRoot(s.outputDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.OpenFile(fmt.Sprintf("shell-%d.log", time.Now().UnixNano()), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+}
+
 // shellPageBytes is the most output one shell_exec result carries; it
 // leaves room under the agent's 20 KB result cap for the JSON around it.
 const shellPageBytes = 16_000
@@ -246,7 +275,7 @@ func (s *Source) pagedOutput(res confinedshell.Result) (map[string]any, error) {
 	if res.Stderr != "" {
 		whole += "\n--- stderr ---\n" + res.Stderr
 	}
-	file, err := os.CreateTemp(s.outputDir, "shell-*.log")
+	file, err := s.createOutputFile()
 	if err != nil {
 		return nil, fmt.Errorf("shell_exec: keep long output: %w", err)
 	}
@@ -261,7 +290,7 @@ func (s *Source) pagedOutput(res confinedshell.Result) (map[string]any, error) {
 	return map[string]any{
 		"exit_code":    res.ExitCode,
 		"first_page":   whole[:cut],
-		"output_file":  file.Name(),
+		"output_file":  filepath.Join(s.outputDir, filepath.Base(file.Name())),
 		"output_bytes": len(whole),
 		"lines":        strings.Count(whole, "\n") + 1,
 		"note":         "The output is longer than one result. All of it is in output_file; read further pages with shell_exec, for example sed -n '200,400p' on that file.",
@@ -286,66 +315,26 @@ func (s *Source) resolveInSandbox(relPath string) (string, error) {
 	return cleaned, nil
 }
 
-// resolveExisting is resolveInSandbox plus symlink resolution (G10): the
-// lexical containment check cannot see a symlink sitting INSIDE the
-// sandbox that points back out, so the final path is resolved through
-// symlinks and re-checked. read_file uses this; the target must exist.
-func (s *Source) resolveExisting(relPath string) (string, error) {
+// relative is resolveInSandbox as a path relative to the working
+// directory, the form os.Root takes.
+func (s *Source) relative(relPath string) (string, error) {
 	cleaned, err := s.resolveInSandbox(relPath)
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(cleaned)
-	if err != nil {
-		return "", err
-	}
-	if err := s.checkContained(resolved); err != nil {
-		return "", fmt.Errorf("path %q escapes the working directory through a symlink", relPath)
-	}
-	return resolved, nil
+	return filepath.Rel(s.workingDir, cleaned)
 }
 
-// resolveForWrite resolves the DEEPEST EXISTING ancestor of a possibly
-// not-yet-existing target through symlinks and re-checks containment,
-// then rejoins the remainder: a write must not follow a symlinked
-// directory out of the sandbox, while the not-yet-created parts
-// legitimately have nothing to resolve yet. When the final component
-// itself exists and is a symlink, it is resolved and re-checked too —
-// os.WriteFile follows it, so it must be treated like the directories.
-func (s *Source) resolveForWrite(relPath string) (string, error) {
-	cleaned, err := s.resolveInSandbox(relPath)
-	if err != nil {
-		return "", err
-	}
-	existing := filepath.Dir(cleaned)
-	for {
-		if _, err := os.Lstat(existing); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return "", err
+// insideGitDir reports whether rel names .git or anything under it, in
+// any letter case: a host write there plants a hook or a config that the
+// operator's own git later runs unconfined (#26).
+func insideGitDir(rel string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(part, ".git") {
+			return true
 		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", fmt.Errorf("write_file: no existing ancestor of %q inside the working directory", relPath)
-		}
-		existing = parent
 	}
-	resolved, err := filepath.EvalSymlinks(existing)
-	if err != nil {
-		return "", err
-	}
-	if err := s.checkContained(resolved); err != nil {
-		return "", fmt.Errorf("path %q escapes the working directory through a symlinked directory", relPath)
-	}
-	remainder := strings.TrimPrefix(cleaned, existing)
-	target := filepath.Join(resolved, remainder)
-	if final, err := filepath.EvalSymlinks(target); err == nil {
-		if err := s.checkContained(final); err != nil {
-			return "", fmt.Errorf("path %q escapes the working directory through a symlink", relPath)
-		}
-		return final, nil
-	}
-	return target, nil
+	return false
 }
 
 // checkContained verifies path stays within the canonical working
@@ -360,35 +349,79 @@ func (s *Source) checkContained(path string) error {
 
 func (s *Source) readFile(args map[string]any) (string, error) {
 	relPath, _ := args["path"].(string)
-	path, err := s.resolveExisting(relPath)
+	rel, err := s.relative(relPath)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	info, err := os.Stat(path)
+	f, err := s.openForRead(rel)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	if info.Size() > maxReadFileBytes {
 		return "", fmt.Errorf("read_file: %s is %d bytes, over the %d byte limit", relPath, info.Size(), maxReadFileBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, maxReadFileBytes))
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	return string(data), nil
 }
 
+// openForRead opens rel through os.Root. A symlink whose absolute target
+// lies inside the working directory (the path is the same inside the
+// sandbox) is resolved, re-checked and opened again through the root;
+// one that leads out is refused.
+func (s *Source) openForRead(rel string) (*os.File, error) {
+	f, err := s.root.Open(rel)
+	if err == nil {
+		return f, nil
+	}
+	resolved, evalErr := filepath.EvalSymlinks(filepath.Join(s.workingDir, rel))
+	if evalErr != nil {
+		return nil, err
+	}
+	if containErr := s.checkContained(resolved); containErr != nil {
+		return nil, fmt.Errorf("%q escapes the working directory through a symlink", rel)
+	}
+	inner, relErr := filepath.Rel(s.workingDir, resolved)
+	if relErr != nil {
+		return nil, err
+	}
+	return s.root.Open(inner)
+}
+
+// writeFile writes inside the working directory only: through os.Root,
+// never into .git, and never through a symlink at the final component,
+// dangling or not, since the sandboxed shell can plant one (#26).
 func (s *Source) writeFile(args map[string]any) (string, error) {
 	relPath, _ := args["path"].(string)
 	content, _ := args["content"].(string)
-	path, err := s.resolveForWrite(relPath)
+	rel, err := s.relative(relPath)
 	if err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("write_file: create parent directory: %w", err)
+	if insideGitDir(rel) {
+		return "", fmt.Errorf("write_file: %q is inside .git; write_file never writes there", relPath)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := s.root.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("write_file: create parent directory: %w", err)
+		}
+	}
+	if info, err := s.root.Lstat(rel); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("write_file: %q is a symlink; write_file does not follow symlinks", relPath)
+	}
+	f, err := s.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("write_file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), relPath), nil

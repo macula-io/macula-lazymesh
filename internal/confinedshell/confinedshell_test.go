@@ -98,7 +98,7 @@ func TestSelfTestCatchesALeakySandbox(t *testing.T) {
 	requireBwrap(t)
 	l := newLayout(t)
 	probe := func(sb *Sandbox) error {
-		return SelfTest(context.Background(), sb, Probe{Checkout: sb.Checkout, Scratch: sb.Scratch, SecretDir: l.home})
+		return SelfTest(context.Background(), sb, Probe{Checkout: sb.Checkout, Scratch: sb.Scratch, Output: sb.Output, SecretDir: l.home})
 	}
 	if hostHasOnlyLoopback(t) {
 		t.Log("host has only loopback; the network leak cannot be shown here")
@@ -258,5 +258,91 @@ func TestConfigDirIsUnreachable(t *testing.T) {
 	}
 	if _, err := Prepare(context.Background(), Options{Checkout: l.checkout, Home: l.home, CacheDir: l.cache, Private: []string{configDir}, ReadOnly: []string{filepath.Dir(configDir)}}); err == nil {
 		t.Error("a read-only mount holding the config directory was accepted")
+	}
+}
+
+// TestGitFileFormIsReadOnly: in a git worktree .git is a file; a command
+// can neither rewrite it to point at a gitdir it made nor write a gitdir
+// that lies inside the checkout.
+func TestGitFileFormIsReadOnly(t *testing.T) {
+	requireBwrap(t)
+	l := newLayout(t)
+	if err := os.Remove(filepath.Join(l.checkout, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(l.checkout, "gitdata")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pointer := []byte("gitdir: gitdata\n")
+	if err := os.WriteFile(filepath.Join(l.checkout, ".git"), pointer, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sb := l.prepare(t)
+	if _, err := sb.Run(context.Background(), "mkdir -p .evil && printf 'gitdir: .evil\\n' > .git; touch gitdata/config; mv .git .git-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(l.checkout, ".git")); string(got) != string(pointer) {
+		t.Errorf("the .git pointer changed from inside: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(inner, "config")); err == nil {
+		t.Error("the gitdir inside the checkout was written from inside")
+	}
+}
+
+// TestPrepareRefusesAMissingOrLinkedGit: no .git, or a symlinked one,
+// means no shell: either is a slot a command could fill.
+func TestPrepareRefusesAMissingOrLinkedGit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux only")
+	}
+	l := newLayout(t)
+	gitDir := filepath.Join(l.checkout, ".git")
+	if err := os.Remove(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Checkout: l.checkout, Home: l.home, CacheDir: l.cache, Bwrap: "/bin/true"}
+	if _, err := Prepare(context.Background(), opts); err == nil || !strings.Contains(err.Error(), ".git") {
+		t.Errorf("no .git: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), gitDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Prepare(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf(".git symlink: %v", err)
+	}
+}
+
+// TestSelfTestCatchesAWritableOutputDir: an output directory the shell
+// can write or replace fails the self-test.
+func TestSelfTestCatchesAWritableOutputDir(t *testing.T) {
+	requireBwrap(t)
+	l := newLayout(t)
+	sb := l.prepare(t)
+	sb.outputRW = true
+	err := SelfTest(context.Background(), sb, Probe{Checkout: sb.Checkout, Scratch: sb.Scratch, Output: sb.Output, SecretDir: l.home})
+	if err == nil || !strings.Contains(err.Error(), "output directory") {
+		t.Fatalf("a writable output directory passed: %v", err)
+	}
+}
+
+// TestEachStartClearsPlantedState: home/ and out/ come back empty at the
+// next start, so nothing a command left there carries over.
+func TestEachStartClearsPlantedState(t *testing.T) {
+	requireBwrap(t)
+	l := newLayout(t)
+	first := l.prepare(t)
+	if _, err := first.Run(context.Background(), "echo planted > \"$HOME/.profile\""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first.Output, "old.log"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := l.prepare(t)
+	if _, err := os.Stat(filepath.Join(second.Scratch, "home", ".profile")); err == nil {
+		t.Error("a planted home file survived the restart")
+	}
+	if _, err := os.Stat(filepath.Join(second.Output, "old.log")); err == nil {
+		t.Error("old output survived the restart")
 	}
 }

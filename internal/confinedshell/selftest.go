@@ -17,6 +17,7 @@ import (
 type Probe struct {
 	Checkout  string
 	Scratch   string
+	Output    string
 	SecretDir string
 }
 
@@ -33,7 +34,7 @@ const canaryEnv = "LAZYMESH_SELFTEST_CANARY"
 // shell; one that fails must not be.
 func SelfTest(ctx context.Context, r Runner, p Probe) error {
 	for _, probe := range []func(context.Context, Runner, Probe) error{
-		probeRuns, probeSecret, probeNetwork, probeEnvironment, probeGitDir, probeTerminal, probeHomeWrite,
+		probeRuns, probeSecret, probeNetwork, probeEnvironment, probeGitDir, probeOutputDir, probeTerminal, probeHomeWrite,
 	} {
 		if err := probe(ctx, r, p); err != nil {
 			return fmt.Errorf("shell self-test: %w", err)
@@ -121,9 +122,26 @@ func probeEnvironment(ctx context.Context, r Runner, p Probe) error {
 	return nil
 }
 
+// probeGitDir writes into the checkout's .git in whichever form it has:
+// a file inside the directory, or a new gitdir pointer over the file.
 func probeGitDir(ctx context.Context, r Runner, p Probe) error {
 	gitDir := filepath.Join(p.Checkout, ".git")
-	if info, err := os.Lstat(gitDir); err != nil || !info.IsDir() {
+	info, err := os.Lstat(gitDir)
+	if err != nil {
+		return fmt.Errorf("the checkout has no .git to protect: %w", err)
+	}
+	if !info.IsDir() {
+		before, err := os.ReadFile(gitDir)
+		if err != nil {
+			return err
+		}
+		if _, err := r.Run(ctx, "printf 'gitdir: .lazymesh-selftest\\n' > "+quote(gitDir)); err != nil {
+			return err
+		}
+		if after, _ := os.ReadFile(gitDir); string(after) != string(before) {
+			_ = os.WriteFile(gitDir, before, info.Mode().Perm())
+			return fmt.Errorf("the checkout's .git file is writable: a new gitdir pointer runs on the host")
+		}
 		return nil
 	}
 	mark := filepath.Join(gitDir, ".lazymesh-selftest-"+token())
@@ -133,6 +151,29 @@ func probeGitDir(ctx context.Context, r Runner, p Probe) error {
 	}
 	if _, err := os.Stat(mark); err == nil {
 		return fmt.Errorf("the checkout's .git is writable: a hook planted there runs on the host")
+	}
+	return nil
+}
+
+// probeOutputDir: the directory the host writes long output into must not
+// be writable, or replaceable, from inside.
+func probeOutputDir(ctx context.Context, r Runner, p Probe) error {
+	if p.Output == "" {
+		return fmt.Errorf("no output directory to protect")
+	}
+	mark := filepath.Join(p.Output, ".lazymesh-selftest-"+token())
+	defer os.Remove(mark)
+	if _, err := r.Run(ctx, "touch "+quote(mark)); err != nil {
+		return err
+	}
+	if _, err := os.Stat(mark); err == nil {
+		return fmt.Errorf("the output directory is writable from inside")
+	}
+	if _, err := r.Run(ctx, "rm -rf "+quote(p.Output)+" && ln -s / "+quote(p.Output)); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(p.Output); err != nil || !info.IsDir() {
+		return fmt.Errorf("the output directory was removed or replaced from inside")
 	}
 	return nil
 }
