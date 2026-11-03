@@ -216,7 +216,7 @@ func startAttached(t *testing.T, socketPath string) *fakeTerminal {
 	// TUI's writes, which would make every case fail for a reason that has
 	// nothing to do with quitting.
 	go term.drain()
-	term.waitFor(painted, 30*time.Second)
+	term.waitFor(t, painted, 30*time.Second)
 
 	// The paint is followed by the terminal's own replies arriving; give the
 	// query's reader the moment it needs to finish rather than racing it.
@@ -265,8 +265,13 @@ func (f *fakeTerminal) screen() string {
 	return f.out.String()
 }
 
-// waitFor blocks until want appears on the screen.
-func (f *fakeTerminal) waitFor(want string, timeout time.Duration) {
+// waitFor blocks until want appears on the screen, and fails the test with
+// what it was waiting for and what it saw if it never does. A wait that
+// times out silently would let the case go on to fail for a reason that is
+// not the one being measured -- a key sent into a blank terminal, say --
+// and the report would name the wrong thing.
+func (f *fakeTerminal) waitFor(t *testing.T, want string, timeout time.Duration) {
+	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if strings.Contains(f.screen(), want) {
@@ -274,6 +279,8 @@ func (f *fakeTerminal) waitFor(want string, timeout time.Duration) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	t.Fatalf("waited %s for %q to appear on the attached TUI's screen and it never did\nscreen:\n%s",
+		timeout, want, f.screen())
 }
 
 // startFakeSession serves one control socket the way a running session
@@ -295,6 +302,19 @@ func startFakeSession(t *testing.T) string {
 	}
 	t.Cleanup(func() { srv.Close() })
 	return socketPath
+}
+
+// TestMain removes the binary this package's tests build, whatever the
+// outcome. The build is shared through buildOnce, so it cannot be removed
+// by the test that happened to trigger it -- a later test would find it
+// gone -- and leaving it behind means every `go test` run drops another
+// temporary directory beside the user's other temp files.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildPath != "" {
+		os.RemoveAll(filepath.Dir(buildPath))
+	}
+	os.Exit(code)
 }
 
 var (
