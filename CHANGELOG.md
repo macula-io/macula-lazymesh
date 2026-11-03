@@ -272,10 +272,23 @@ goreleaser from a `v*` tag; this file records what each one changes.
   the approval popup's bidi and zero-width rendering reads like the chat's.
   Panel cells still take a string, because `bubbles/table` does, so they are
   wrapped at the row and covered by a test that fills every peer-controlled
-  field with the #81 hostile text and renders every panel and popup. A
-  source scan fails the build when a second door appears: a `termText(x)`
-  conversion outside the constructor, or a chat entry whose text is not
-  constructed.
+  field with the #81 hostile text and renders every panel and popup. Source
+  scans fail the build when a second door appears: a `termText(x)`
+  conversion outside the constructor, a chat entry whose text is not
+  constructed, or a string field of a JSON DTO (or of `realmjoin`'s or
+  `frontend`'s own structs) passed to a text sink without the constructor --
+  the rule the Realms panel broke, printing the realm server's message,
+  link, QR, handle and timestamps straight into the panel.
+- **Approval arguments cannot hide a line from the "seen" count (#95 review
+  r=1).** An argument's JSON can hold raw newlines and tabs, and the popup
+  counts what it wrapped: a rune of no width took no cell, so two hundred
+  newlines counted as one line and `y` allowed a command whose tail was
+  never on screen (measured: 206 rows on a 30-row terminal, every line
+  marked seen). A newline now ends a line, a tab is shown as `␉`, and a rune
+  of no width (a combining mark) as `<U+XXXX>`, so a counted line is one
+  screen row and nothing on it is invisible to the count. The notes panel's
+  own whole-note read check wraps through the same function and gets the
+  same fix.
 
 - **One confined shell for both profiles (#94).** The mesh profile's
   `shell_exec` was a plain `sh -c` with the operator's own rights, behind

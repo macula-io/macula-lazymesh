@@ -298,27 +298,52 @@ func (m Model) scrollApproval(key string) bool {
 	return true
 }
 
-// wrapCells hard-wraps s so no line is wider than width terminal cells:
-// arguments are machine text, and a word wrap could move a short tail out
-// of sight just as a cut would. It counts cells, not runes, so a line of
-// wide runes still fits the screen. t came from termTextOf, so every rune
-// takes at least one cell.
+// wrapCells hard-wraps t so no line is wider than width terminal cells and
+// every counted line is exactly one screen row: arguments are machine text,
+// and a word wrap could move a short tail out of sight just as a cut would.
+// A newline ENDS a line here -- termTextOf keeps newlines because chat text
+// needs them, but an argument's newline is a row of its own, and counting
+// one as no cell let two hundred of them pass for one line, so the popup
+// called a tail it had never shown "seen" and y allowed it (Pluto's r=1 on
+// #95). A tab is shown as ␉ and a rune that would take no cell at all (a
+// combining mark) as <U+XXXX>, so nothing on a row is invisible to the
+// count that decides how much has been read.
 func wrapCells(t termText, width int) []string {
-	s := t.String()
 	var lines []string
 	var line strings.Builder
 	cells := 0
-	for _, r := range s {
-		w := runewidth.RuneWidth(r)
+	for _, r := range t {
+		if r == '\n' {
+			lines = append(lines, line.String())
+			line.Reset()
+			cells = 0
+			continue
+		}
+		piece, w := runeCell(r)
 		if cells+w > width && cells > 0 {
 			lines = append(lines, line.String())
 			line.Reset()
 			cells = 0
 		}
-		line.WriteRune(r)
+		line.WriteString(piece)
 		cells += w
 	}
 	return append(lines, line.String())
+}
+
+// runeCell is what one rune of argument text occupies on screen and how
+// many cells that is: a tab as ␉ (a column jump the count cannot see is a
+// hidden row), and a rune of no width as <U+XXXX> (it takes no cell, so a
+// count of cells can never say whether it was shown).
+func runeCell(r rune) (string, int) {
+	switch {
+	case r == '\t':
+		return "␉", 1
+	case runewidth.RuneWidth(r) == 0:
+		shown := fmt.Sprintf("<U+%04X>", r)
+		return shown, runewidth.StringWidth(shown)
+	}
+	return string(r), runewidth.RuneWidth(r)
 }
 
 // ApprovalRequestEvent carries what showApproval needs, decoupled from

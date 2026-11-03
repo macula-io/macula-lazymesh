@@ -1941,7 +1941,7 @@ func (m Model) renderSummaryLine() string {
 	// a glance, in the one place that's always on screen.
 	if self, ok := selfAgent(m.state.agents); ok && !m.attachMode {
 		identity := identityKey(self.NodeID, self.Petname)
-		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
+		name := agentBadgeStyle(identity).Render(termTextOf(displayName(self.NodeID, self.Petname)).String())
 		out = name + summaryStyle.Render(" · ") + out
 	}
 	// The context figure sits beside the model it describes, ahead of the

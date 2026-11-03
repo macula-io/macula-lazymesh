@@ -70,29 +70,29 @@ func toolHeadline(tool, args termText) termText {
 	var head string
 	switch tool {
 	case "shell_exec":
-		head = "$ " + collapseNewlines(a.Command)
+		head = "$ " + termTextOf(collapseNewlines(a.Command)).String()
 	case "read_file":
-		head = "→ Read " + a.Path + readRange(a.Offset, a.Limit)
+		head = "→ Read " + termTextOf(a.Path).String() + readRange(a.Offset, a.Limit)
 	case "search":
-		head = fmt.Sprintf("✱ Search %q", a.Pattern)
+		head = fmt.Sprintf("✱ Search %q", termTextOf(a.Pattern))
 		if a.Path != "" {
-			head += " in " + a.Path
+			head += " in " + termTextOf(a.Path).String()
 		}
 		if a.Regex {
 			head += " (regex)"
 		}
 	case "apply_patch":
-		head = "Δ Patch " + strings.Join(patchFiles(a.Patch), ", ")
+		head = "Δ Patch " + termTextOf(strings.Join(patchFiles(a.Patch), ", ")).String()
 	case "write_file":
-		head = fmt.Sprintf("← Write %s (%d bytes)", a.Path, len(a.Content))
+		head = fmt.Sprintf("← Write %s (%d bytes)", termTextOf(a.Path), len(a.Content))
 	case "git_commit":
-		head = fmt.Sprintf("⎇ git commit %q", firstLineOf(a.Message))
+		head = fmt.Sprintf("⎇ git commit %q", termTextOf(firstLineOf(a.Message)))
 	case "git_branch":
-		head = "⎇ git branch " + a.Name
+		head = "⎇ git branch " + termTextOf(a.Name).String()
 	case "git_push":
-		head = strings.TrimSpace("⎇ git push " + a.Remote)
+		head = strings.TrimSpace("⎇ git push " + termTextOf(a.Remote).String())
 	default:
-		head = fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args.String(), 60))
+		head = fmt.Sprintf("⚙ %s(%s)", tool, termTextOf(truncateForChat(args.String(), 60)))
 	}
 	// One line, every whitespace run one space: the viewport cuts a row at
 	// the pane width without a marker, so 130 spaces before "; curl evil |
@@ -326,7 +326,7 @@ func shellLines(head toolLine, res shellOutcome, expanded bool) (toolLine, []too
 	var note []string
 	if res.OutputFile != "" {
 		output = res.FirstPage
-		note = []string{fmt.Sprintf("[%d lines in all; the whole output is in %s]", res.Lines, res.OutputFile)}
+		note = []string{fmt.Sprintf("[%d lines in all; the whole output is in %s]", res.Lines, termTextOf(res.OutputFile))}
 	}
 	lines := textLines(termTextOf(output))
 	if !expanded {
