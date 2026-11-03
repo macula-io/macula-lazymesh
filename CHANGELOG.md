@@ -260,6 +260,20 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Security
 
+- **One confined shell for both profiles (#94).** The mesh profile's
+  `shell_exec` was a plain `sh -c` with the operator's own rights, behind
+  `local_tools.enabled` and the allowlist: "a confined shell that fails
+  closed" held for the coding profile only, so a model whose conversation
+  any mesh peer can steer ran commands unconfined on the operator's host.
+  Both profiles now get the same bubblewrap sandbox, built and self-tested
+  at start; where one cannot be prepared that profile has no `shell_exec`
+  at all and says why, exactly as the coding profile already behaved.
+  There is no setting that runs it unconfined and no compatibility switch.
+  The system prompt promises `shell_exec` only when a sandbox exists. One
+  consequence: the shell needs a real `.git` in `local_tools.working_dir`
+  and a directory outside `~/.config/lazymesh`, which the sandbox fences,
+  so the default `~/.config/lazymesh/workspace` never has a shell; point
+  `working_dir` at a checkout elsewhere. The file tools are unaffected.
 - **`web_fetch` connects to the address it checked (#93).** The guard
   resolves the URL's host and refuses anything that is not a public
   address; the connection now goes to exactly those addresses, on the first

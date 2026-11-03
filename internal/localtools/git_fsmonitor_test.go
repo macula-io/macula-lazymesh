@@ -61,7 +61,7 @@ func plantFsmonitor(t *testing.T, src *Source, marker string) {
 func TestTheDiffDoesNotRunANestedReposFsmonitor(t *testing.T) {
 	dir := gitlinkCheckout(t)
 	marker := filepath.Join(t.TempDir(), "PWNED_FSMON")
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 10 * time.Second, Shell: HostShell(dir)})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 10 * time.Second, Shell: testShell(dir)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestTheDiffDoesNotRunANestedReposFsmonitor(t *testing.T) {
 func TestAnAppliedPatchDoesNotRunANestedReposFsmonitor(t *testing.T) {
 	dir := gitlinkCheckout(t)
 	marker := filepath.Join(t.TempDir(), "PWNED_FSMON")
-	src, err := New(Config{WorkingDir: dir, ShellTimeout: 10 * time.Second, Shell: HostShell(dir)})
+	src, err := New(Config{WorkingDir: dir, ShellTimeout: 10 * time.Second, Shell: testShell(dir)})
 	if err != nil {
 		t.Fatal(err)
 	}

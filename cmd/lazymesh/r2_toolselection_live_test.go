@@ -62,7 +62,7 @@ func TestLiveR2ToolSelectionStillWorksWithTerseSchemas(t *testing.T) {
 	if err != nil {
 		t.Skipf("buildProvider (likely no deepseek key at %s): %v", keyPath, err)
 	}
-	tools, err := buildToolSource(cfg, client, nil) // real terse-ified tools, exactly what run() builds
+	tools, err := buildToolSource(cfg, client, nil, codingShell{}) // real terse-ified tools, exactly what run() builds
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

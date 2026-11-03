@@ -81,7 +81,7 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 	if err != nil {
 		t.Skipf("buildProvider (likely no deepseek key at %s): %v", keyPath, err)
 	}
-	tools, err := buildToolSource(cfg, client, nil)
+	tools, err := buildToolSource(cfg, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
