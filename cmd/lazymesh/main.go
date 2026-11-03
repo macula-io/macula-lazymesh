@@ -35,6 +35,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/prompthistory"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
@@ -365,6 +366,12 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return fmt.Errorf("open session store: %w", err)
 	}
+	// Prompt recall's history sits beside sessions/, under the same
+	// checkout fingerprint (#78 gap 5); forget_prompts leaves it unused.
+	promptHistoryPath := ""
+	if !cfg.ForgetPrompts {
+		promptHistoryPath = prompthistory.Path(filepath.Dir(dataDir), sessionstore.Fingerprint(wd))
+	}
 	if continueLatest {
 		if resumeRef != "" {
 			return fmt.Errorf("--continue and --resume are the same thing; give one")
@@ -517,6 +524,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	tuiModel := tui.New(client, tui.Options{
 		AgentEvents:        tuiEvents,
 		UserInputCh:        userInputCh,
+		PromptHistoryPath:  promptHistoryPath,
 		InterruptCh:        interruptCh,
 		ApprovalCh:         approvalCh,
 		ApprovalResolvedCh: resolvedCh,
