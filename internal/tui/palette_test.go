@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -211,5 +212,22 @@ func TestPalette_EscClosesWithoutRunning(t *testing.T) {
 	}
 	if m.muted {
 		t.Fatal("esc ran the selected command")
+	}
+}
+
+// TestPalette_PasteCannotDriveTheTerminal: a paste into the search can carry
+// whole escape sequences -- an OSC 52 clipboard write, an OSC 0 title set.
+// None of it may reach the terminal, as with the composer (#81). Terra's
+// r1 probe for PR 88, kept as the regression test.
+func TestPalette_PasteCannotDriveTheTerminal(t *testing.T) {
+	m := openPaletteByLeader(t, modelWithLeader(t, ""))
+	m = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("\x1b]52;c;cm0gLXJmIH4=\x07\x1b]0;pwned\x07"), Paste: true})
+	if v := m.View(); strings.Contains(v, "\x1b]52;") || strings.Contains(v, "\x1b]0;") || strings.Contains(v, "\x07") {
+		t.Fatalf("the palette echoes a pasted control sequence to the terminal (query %q)", m.palette.query)
+	}
+	for _, r := range m.palette.query {
+		if !unicode.IsPrint(r) {
+			t.Fatalf("the search kept a control character %U: %q", r, m.palette.query)
+		}
 	}
 }

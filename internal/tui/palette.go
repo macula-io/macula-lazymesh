@@ -9,6 +9,7 @@ package tui
 import (
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -113,13 +114,26 @@ func (m Model) handlePaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.palette.cursor = 0
 		}
 	case tea.KeyRunes:
-		m.palette.query += string(msg.Runes)
+		m.palette.query += searchable(msg.Runes)
 		m.palette.cursor = 0
 	case tea.KeySpace:
 		m.palette.query += " "
 		m.palette.cursor = 0
 	}
 	return m, nil
+}
+
+// searchable keeps the runes a command name can hold. The search is one
+// line of letters, so a control character -- a paste can carry a whole
+// escape sequence -- has no use in it and is never kept.
+func searchable(runes []rune) string {
+	var b strings.Builder
+	for _, r := range runes {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // paletteKeyPress is the key press that runs b after the leader. Every
@@ -133,7 +147,10 @@ func paletteKeyPress(b key.Binding) tea.KeyMsg {
 func (m Model) renderPalette() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Commands") + "\n")
-	b.WriteString("> " + m.palette.query + "\n")
+	// The query goes out through neutralise like any other text that came
+	// from outside the program (#81): searchable keeps controls out of it,
+	// and this keeps them off the terminal whatever reaches the field.
+	b.WriteString("> " + neutralise(m.palette.query) + "\n")
 	matches := paletteMatches(m.palette.query)
 	if len(matches) == 0 {
 		b.WriteString(dimStyle.Render("no command matches"))
