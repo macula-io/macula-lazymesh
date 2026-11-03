@@ -7,7 +7,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -96,6 +95,13 @@ type Options struct {
 	// own approval timeout then refuses the call).
 	ApprovalCh chan<- ApprovalAnswer
 
+	// Attached is true when this TUI reached the session over its control
+	// socket (lazymesh attach) rather than running it. It is set by the
+	// caller, not inferred from a nil client: a caller with no mesh client
+	// and one with no session are different things, and only the second
+	// should stop showing mesh counts.
+	Attached bool
+
 	// ApprovalResolvedCh reports approvals answered while this TUI is
 	// open — including ones another frontend answered first. nil when
 	// unwired (the in-process TUI is the only frontend that can answer).
@@ -158,6 +164,11 @@ type Options struct {
 type Model struct {
 	mcp          toolCaller
 	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
+	// attachMode is true when this TUI reached the session over its
+	// control socket instead of running it (macula-lazymesh#40). It has no
+	// macula-mcp of its own, so the mesh strip says so rather than
+	// reporting counts it cannot see.
+	attachMode bool
 
 	agentEvents        <-chan agent.Event
 	userInputCh        chan<- string
@@ -293,6 +304,7 @@ func New(client toolCaller, opts Options) Model {
 
 	return Model{
 		mcp:                  client,
+		attachMode:           opts.Attached,
 		meshServices:         opts.MeshServices,
 		maculaMCPVersion:     opts.MaculaMCPVersion,
 		realmIdentityFile:    opts.RealmIdentityFile,
@@ -354,13 +366,12 @@ func (m Model) refreshCmd() tea.Cmd {
 	client := m.mcp
 	if client == nil {
 		// An attached TUI (lazymesh attach) has no macula-mcp of its own:
-		// the session it is watching owns the mesh connection. Report
-		// that rather than dereferencing a nil client; the model already
-		// collapses a repeating refresh failure into one counted entry,
-		// so this is one line, not one per tick.
-		return func() tea.Msg {
-			return refreshMsg{err: errNoMeshWhenAttached}
-		}
+		// the session it watches owns the mesh connection. This is not a
+		// failure, so it is not reported as one — an error pop-up on every
+		// attach would greet the operator with a wall they cannot act on,
+		// and empty counts would read as an idle mesh rather than an
+		// unshown one. renderSummaryLine says what is true instead.
+		return func() tea.Msg { return refreshMsg{state: meshState{}} }
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -369,11 +380,6 @@ func (m Model) refreshCmd() tea.Cmd {
 		return refreshMsg{state: state, err: err}
 	}
 }
-
-// errNoMeshWhenAttached explains an absent mesh panel on an attached TUI.
-// The session owns the mesh connection; the TUI over the socket is only
-// watching the conversation.
-var errNoMeshWhenAttached = errors.New("mesh state is not available over attach: the session owns the mesh connection")
 
 func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
@@ -1272,9 +1278,17 @@ func (m Model) renderHintLines() []string {
 // that instead of setting it apart, so the rest of the line
 // (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
-	counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
-		len(m.state.joined), len(m.state.pending), len(m.state.agents))
-	out := summaryStyle.Render(counts)
+	var out string
+	if m.attachMode {
+		// Counts would be fabricated here: this TUI cannot see the mesh at
+		// all, and zero would read as an idle mesh rather than an unshown
+		// one.
+		out = summaryStyle.Render("attached · mesh not shown here (the session owns it)")
+	} else {
+		counts := fmt.Sprintf("%d rooms · %d pending rings · %d agents seen",
+			len(m.state.joined), len(m.state.pending), len(m.state.agents))
+		out = summaryStyle.Render(counts)
+	}
 
 	if m.agentModel != "" {
 		// Bold (statusStripStyle -- the weight this whole line shared
@@ -1302,7 +1316,7 @@ func (m Model) renderSummaryLine() string {
 	// 8622117) was only visible by comparing raw node_ids or Presence
 	// panel rows across terminals; this makes distinctness confirmable at
 	// a glance, in the one place that's always on screen.
-	if self, ok := selfAgent(m.state.agents); ok {
+	if self, ok := selfAgent(m.state.agents); ok && !m.attachMode {
 		identity := identityKey(self.NodeID, self.Petname)
 		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
 		out = name + summaryStyle.Render(" · ") + out

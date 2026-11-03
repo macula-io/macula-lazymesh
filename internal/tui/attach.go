@@ -30,6 +30,7 @@ func RunAttached(ctx context.Context, ctrl *frontend.Controller, opts Options) e
 	opts.ApprovalCh = bridge.answer
 	opts.ApprovalResolvedCh = bridge.resolved
 	opts.AgentModel = ctrl.Session().Model
+	opts.Attached = true
 
 	m := New(nil, opts)
 	program := tea.NewProgram(m,
