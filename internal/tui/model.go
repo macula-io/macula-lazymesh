@@ -395,7 +395,13 @@ type Model struct {
 	chatEntries  []chatEntry
 	sel          selectionState // shift+drag selection over the chat pane
 	chatViewport viewport.Model
-	input        PromptEditor
+	// newBelow is set when output reaches the chat while the reader is
+	// scrolled up, and drops once the view is back at the bottom (#78 gap
+	// 7). chatSeen is the chat as the last sync left it, so a re-render
+	// that adds nothing (a resize, a toggle) is not mistaken for news.
+	newBelow bool
+	chatSeen chatMark
+	input    PromptEditor
 
 	width  int
 	height int
@@ -744,6 +750,17 @@ func (m Model) handleMeshServiceCallResult(msg meshServiceCallResultMsg) (Model,
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.update(msg)
+	// However the reader got back to the bottom -- the bottom key, a page
+	// or a line at a time, the wheel -- what was new below has been seen.
+	if next, ok := updated.(Model); ok && next.newBelow && next.chatViewport.AtBottom() {
+		next.newBelow = false
+		return next, cmd
+	}
+	return updated, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -1000,6 +1017,7 @@ func (m Model) runLeader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, DefaultKeyMap.ScrollBottom):
 		if !m.meshExpanded && !m.realmExpanded {
 			m.chatViewport.GotoBottom()
+			m.newBelow = false
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.LeaderHelp):
@@ -1533,6 +1551,40 @@ func (m *Model) syncViewport() {
 	if atBottom {
 		m.chatViewport.GotoBottom()
 	}
+	seen := markChat(m.chatEntries)
+	if !atBottom && seen != m.chatSeen {
+		m.newBelow = true
+	}
+	m.chatSeen = seen
+}
+
+// chatMark is how far the chat had got: its entry count and the length of
+// the last entry, which is the one a streaming answer grows.
+type chatMark struct {
+	entries  int
+	lastText int
+}
+
+func markChat(entries []chatEntry) chatMark {
+	if len(entries) == 0 {
+		return chatMark{}
+	}
+	return chatMark{entries: len(entries), lastText: len(entries[len(entries)-1].text)}
+}
+
+// chatBody is the chat pane, with its bottom line given over to the "new
+// below" marker while output waits under a reader scrolled up. The marker
+// names the bottom key through the configured leader, read from the keymap,
+// since the composer always has focus and a bare key only types a letter.
+func (m Model) chatBody() string {
+	body := m.chatViewport.View()
+	if !m.newBelow || m.chatViewport.AtBottom() {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	bottom := m.leaderLabel() + " " + DefaultKeyMap.ScrollBottom.Help().Key
+	lines[len(lines)-1] = statusStripStyle.Render("↓ new below -- " + bottom + ": " + DefaultKeyMap.ScrollBottom.Help().Desc)
+	return strings.Join(lines, "\n")
 }
 
 // Colors match the macula brand palette (see chat.go's own comment) --
@@ -1626,7 +1678,7 @@ func (m Model) View() string {
 	case m.realmExpanded:
 		body = m.renderRealmsOverlay()
 	default:
-		body = m.chatViewport.View()
+		body = m.chatBody()
 	}
 	input := m.renderInputLine()
 

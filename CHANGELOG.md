@@ -7,6 +7,12 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **The chat says when something arrived below (#78, gap 7).** Scrolled up
+  in the history, you keep your place as before, but the bottom line of
+  the chat now reads `↓ new below -- ctrl+x G: chat bottom` once output
+  arrives under you. The key is read from the keymap and the configured
+  leader, so it is always the one that works. The marker goes as soon as
+  you are back at the bottom, by that key, a page key or the wheel.
 - **Read, search and patch inside the checkout (#46, #38 slice D).** Two
   new local tools for the coding profile. `search` finds a literal string
   or a regular expression and returns `path:line:text` per match,
