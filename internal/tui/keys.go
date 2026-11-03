@@ -51,6 +51,7 @@ type KeyMap struct {
 	ScrollTop          key.Binding
 	ScrollBottom       key.Binding
 	LeaderHelp         key.Binding
+	Palette            key.Binding
 
 	// Ring pop-up only, phone metaphor: Answer/Decline/Answer+Trust, esc to
 	// leave it for later.
@@ -92,6 +93,7 @@ var DefaultKeyMap = KeyMap{
 	ScrollTop:          key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "chat top")),
 	ScrollBottom:       key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "chat bottom")),
 	LeaderHelp:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "this list")),
+	Palette:            key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "find a command")),
 
 	Answer:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "answer")),
 	Decline:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "decline")),
@@ -115,27 +117,29 @@ func keyHint(b key.Binding, action string) string {
 	return name + ": " + action
 }
 
-// leaderHelp is the whole keymap behind the leader, in the order the hint row
-// shows it, for the leader then `?`. The same list is what the hint row offers
-// while the leader is pending.
-func leaderHelp() []struct{ Key, Action string } {
-	return []struct{ Key, Action string }{
-		{"m", "mesh view"},
-		{"s", "mesh services"},
-		{"r", "realms"},
-		{"N", "checkout notes"},
-		{"l", "logs in $EDITOR"},
-		{"E", "recent errors"},
-		{"e", "expand tool detail"},
-		{"v", "verbose"},
-		{"b", "mute bell"},
-		{"y", "copy last answer"},
-		{"x", "interrupt the turn"},
-		{"g", "chat top"},
-		{"G", "chat bottom"},
-		{"q", "quit"},
-		{"?", "this list"},
+// leaderCommands is the whole keymap behind the leader, in the order the hint
+// row shows it. The hint row, the list `?` writes into the chat and the
+// palette all read it from here, and each entry's key and name come off its
+// binding, so none of them can name a key the binding does not have (#74).
+func leaderCommands() []key.Binding {
+	k := DefaultKeyMap
+	return []key.Binding{
+		k.ToggleMesh, k.ToggleMeshServices, k.ToggleRealm, k.ToggleNotes,
+		k.ToggleLogs, k.ShowError, k.ToggleDetails, k.ToggleChatter,
+		k.ToggleQuiet, k.CopyChat, k.Interrupt, k.ScrollTop, k.ScrollBottom,
+		k.Palette, k.Quit, k.LeaderHelp,
 	}
+}
+
+// leaderHelp is leaderCommands as key and action, for the leader then `?`.
+// The same list is what the hint row offers while the leader is pending.
+func leaderHelp() []struct{ Key, Action string } {
+	cmds := leaderCommands()
+	out := make([]struct{ Key, Action string }, 0, len(cmds))
+	for _, b := range cmds {
+		out = append(out, struct{ Key, Action string }{b.Help().Key, b.Help().Desc})
+	}
+	return out
 }
 
 // composerKeys are the ctrl combinations the message box itself uses: the

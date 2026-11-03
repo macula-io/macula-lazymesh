@@ -7,6 +7,16 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Find a command by name (#78, gap 6).** The leader then `p` (`ctrl+x p`
+  by default) opens a list of the leader's commands. Type part of a name
+  (`cop`) to narrow it, use the arrows to choose, and press enter to run
+  the command exactly as its key would. Each row shows the key that runs
+  it without the palette. The list is read from the keymap, so a new
+  leader command appears in the palette, the hint row and the `?` list
+  together. It is `<leader> p` rather than `ctrl+p` because the message
+  box already uses `ctrl+p`. Only local commands are listed; commands
+  that act on the mesh are #75.
+
 - **Read, search and patch inside the checkout (#46, #38 slice D).** Two
   new local tools for the coding profile. `search` finds a literal string
   or a regular expression and returns `path:line:text` per match,
