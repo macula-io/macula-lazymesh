@@ -266,6 +266,13 @@ type LocalTools struct {
 	Enabled             bool   `yaml:"enabled"`
 	WorkingDir          string `yaml:"working_dir,omitempty"`
 	ShellTimeoutSeconds int    `yaml:"shell_timeout_seconds,omitempty"`
+	// ReadOnlyPaths are extra toolchain directories the coding profile's
+	// confined shell mounts read-only (#26), for toolchains outside the
+	// system directories and the Go root and module cache it finds
+	// itself. A path that is the home directory, holds it, or overlaps
+	// lazymesh's config, data, key or identity files is refused, and the
+	// shell is then not offered.
+	ReadOnlyPaths []string `yaml:"read_only_paths,omitempty"`
 }
 
 // Default returns the MVP's default configuration: DeepSeek, its current

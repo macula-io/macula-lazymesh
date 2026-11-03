@@ -40,7 +40,7 @@ func (r *RefuseSource) ListTools(ctx context.Context) ([]mcpclient.Tool, error) 
 func (r *RefuseSource) CallToolRaw(ctx context.Context, name, argumentsJSON string) (string, error) {
 	if r.refuse != nil {
 		if err := r.refuse(name, argumentsJSON); err != nil {
-			return "", fmt.Errorf("the %q call was refused before approval was asked: %w", name, err)
+			return "", Refused(fmt.Errorf("the %q call was refused before approval was asked: %w", name, err))
 		}
 	}
 	return r.inner.CallToolRaw(ctx, name, argumentsJSON)

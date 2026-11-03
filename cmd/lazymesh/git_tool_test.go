@@ -118,7 +118,7 @@ func (g *gitOnceProvider) sent() string {
 // tool's own RefuseBeforeAsking in place, and returns what a driver needs.
 func startGitSession(t *testing.T, cfg config.Config, p provider.Provider) (gen.Node, gen.PID, gen.PID, chan agent.Event) {
 	t.Helper()
-	tools, gitTool, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), nil)
+	tools, gitTool, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestGitToolAbsentOutsideTheCodingProfileAndTheAllowlist(t *testing.T) {
 	if _, ok := gitToolConfig(notNamed); ok {
 		t.Fatal("the git tool was built although the allowlist does not name it")
 	}
-	tools, gitTool, err := buildCodingToolSource(notNamed, &fakeMesh{}, onlyRoom(codingRoom), nil)
+	tools, gitTool, err := buildCodingToolSource(notNamed, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

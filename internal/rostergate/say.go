@@ -47,7 +47,7 @@ func (s *SayOnlyToWatchedRooms) CallToolRaw(ctx context.Context, name, arguments
 	}
 	room, _ := args["room_topic"].(string)
 	if !s.watches(room) {
-		return "", fmt.Errorf("mesh_say is limited to the rooms this coding session watches; %q is not one of them", room)
+		return "", agent.Refused(fmt.Errorf("mesh_say is limited to the rooms this coding session watches; %q is not one of them", room))
 	}
 	delete(args, "wait_reply_seconds")
 	out, err := json.Marshal(args)

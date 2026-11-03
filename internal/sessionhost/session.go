@@ -42,6 +42,10 @@ type SessionArgs struct {
 	// (G8: the control socket's pre_tool hook). It wraps outside the ask
 	// list, so a call it refuses never asks the operator.
 	PreTool agent.Gate
+	// RecordDenial, when set, receives every tool call the chain refused
+	// (#26): operator denials, hook and allowlist refusals, a missing
+	// shell. It wraps outermost, so it sees all of them.
+	RecordDenial func(agent.Denial)
 	// RefuseBeforeAsking, when set, settles a call from its own arguments
 	// before the operator is asked about it (macula-io/macula-lazymesh#45:
 	// a push to main is refused whatever an approval would say, so it is
@@ -283,6 +287,9 @@ func (s *session) Init(args ...any) error {
 	}
 	if sessArgs.RefuseBeforeAsking != nil {
 		tools = agent.NewRefuseSource(tools, sessArgs.RefuseBeforeAsking)
+	}
+	if sessArgs.RecordDenial != nil {
+		tools = agent.NewDenialSource(tools, sessArgs.RecordDenial)
 	}
 	s.loop = agent.NewLoop(sessArgs.Provider, tools, sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})
