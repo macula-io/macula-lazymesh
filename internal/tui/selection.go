@@ -130,11 +130,11 @@ func (m Model) finishSelection() (Model, tea.Cmd) {
 		return m, nil
 	}
 	if err := clipboard.WriteAll(text); err != nil {
-		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not copy selection to clipboard: %v", err)})
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: termTextOf(fmt.Sprintf("could not copy selection to clipboard: %v", err))})
 		m.syncViewport()
 		return m, nil
 	}
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: fmt.Sprintf("copied %d selected line(s) to the clipboard", strings.Count(text, "\n")+1)})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: termTextOf(fmt.Sprintf("copied %d selected line(s) to the clipboard", strings.Count(text, "\n")+1))})
 	m.syncViewport()
 	return m, nil
 }

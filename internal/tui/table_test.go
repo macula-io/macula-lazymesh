@@ -76,7 +76,7 @@ func TestFlattenWideTables_HeaderOnlyTableFlattens(t *testing.T) {
 // TestAssistantEntryRendersFlattenedTable pins the integration: a wide
 // table inside an assistant entry renders flattened, not as border noise.
 func TestAssistantEntryRendersFlattenedTable(t *testing.T) {
-	entry := chatEntry{kind: chatAssistant, at: time.Now(), text: "| k | v |\n| --- | --- |\n| " + strings.Repeat("x", 50) + " | y |"}
+	entry := chatEntry{kind: chatAssistant, at: time.Now(), text: termTextOf("| k | v |\n| --- | --- |\n| " + strings.Repeat("x", 50) + " | y |")}
 	rendered := entry.render(false, 30)
 	// glamour re-renders the flattened "k: v" lines as a bullet list --
 	// readable either way; what must NOT survive is a pipe border.

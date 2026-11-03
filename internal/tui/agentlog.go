@@ -78,7 +78,7 @@ func (m Model) handleLogViewed(msg logViewedMsg) (Model, tea.Cmd) {
 	m.chatEntries = append(m.chatEntries, chatEntry{
 		kind: chatError,
 		at:   time.Now(),
-		text: fmt.Sprintf("could not open %s in %s: %s", m.logPath, editorBinary(), msg.err),
+		text: termTextOf(fmt.Sprintf("could not open %s in %s: %s", m.logPath, editorBinary(), msg.err)),
 	})
 	m.syncViewport()
 	return m, nil

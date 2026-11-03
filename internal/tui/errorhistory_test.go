@@ -210,7 +210,7 @@ func TestErrorHistory_IsBounded(t *testing.T) {
 	if len(m.errorHistory) != errorHistoryMax {
 		t.Fatalf("expected history capped at %d, got %d", errorHistoryMax, len(m.errorHistory))
 	}
-	if oldest := m.errorHistory[0].text; oldest != errorText(10) {
+	if oldest := m.errorHistory[0].text.String(); oldest != string(errorText(10)) {
 		t.Fatalf("expected the oldest entries dropped first, oldest is %q", oldest)
 	}
 }
