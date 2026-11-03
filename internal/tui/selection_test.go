@@ -85,6 +85,11 @@ func TestSelectedVisibleTextRefusesOutOfPane(t *testing.T) {
 // selection reverses the rows inside the pane and leaves others alone.
 // The test forces an ANSI color profile because without a TTY lipgloss's
 // default profile strips every escape — the real TUI always has one.
+//
+// Scoped to the chat pane: the composer's own cursor is a reverse-video
+// block and, since #62, the composer is focused (and showing it) by default,
+// so "no reverse anywhere else on screen" would be asserting the old
+// blurred-chatbox state rather than anything about the selection.
 func TestSelectionOverlayReversesOnlyPaneRows(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
@@ -97,12 +102,13 @@ func TestSelectionOverlayReversesOnlyPaneRows(t *testing.T) {
 	screen := m.View()
 	lines := strings.Split(screen, "\n")
 	paneTop := m.chatPaneTop()
+	paneBottom := paneTop + m.chatViewport.Height
 	reverseEscape := "\x1b[7m"
-	for row, line := range lines {
+	for row := paneTop; row < paneBottom && row < len(lines); row++ {
 		inSelection := row >= paneTop+1 && row <= paneTop+2
-		has := strings.Contains(line, reverseEscape)
+		has := strings.Contains(lines[row], reverseEscape)
 		if inSelection != has {
-			t.Fatalf("row %d: selection=%v but reverse=%v: %q", row, inSelection, has, line)
+			t.Fatalf("row %d: selection=%v but reverse=%v: %q", row, inSelection, has, lines[row])
 		}
 	}
 }

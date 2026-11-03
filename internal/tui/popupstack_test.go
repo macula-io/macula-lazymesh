@@ -34,11 +34,14 @@ func TestRingOverApprovalDoesNotReturnItArmed(t *testing.T) {
 	m, clock, approvalCh := typingApprovalModel(t)
 	m.width, m.height = 80, 24
 
-	m = send(t, m, runeKey('i'))
 	m = typeText(t, m, "ok so")
 	m = send(t, m, agentEventMsg(agent.Event{
 		Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "p1", Text: `{"cmd":"rm -rf build"}`,
 	}))
+	// The prompt waits for the person to stop typing (#62), then takes the
+	// screen -- the stack below is what #59's arming guards have to survive.
+	clock.advance(popupIdleDelay)
+	m, _ = m.maybeShowDeferredApproval()
 	if m.mode != ModeApprovalPopup {
 		t.Fatalf("the approval pop-up did not take the screen: mode %v", m.mode)
 	}
@@ -86,7 +89,7 @@ func TestRingOverApprovalDoesNotReturnItArmed(t *testing.T) {
 	default:
 		t.Fatal("y after a pause did not answer the approval")
 	}
-	if m.mode != ModeInsert {
+	if m.mode != ModeCompose {
 		t.Fatalf("focus did not go back to the composer: mode %v", m.mode)
 	}
 }
@@ -98,11 +101,15 @@ func TestRingOverApprovalDoesNotReturnItArmed(t *testing.T) {
 func TestClosingBothPopupsIsNeverStranded(t *testing.T) {
 	m, clock, _ := typingApprovalModel(t)
 	m.width, m.height = 80, 24
-	m = send(t, m, runeKey('i'))
 	m = typeText(t, m, "ok so")
 	m = send(t, m, agentEventMsg(agent.Event{
 		Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "p1", Text: `{"cmd":"ls"}`,
 	}))
+	clock.advance(popupIdleDelay)
+	m, _ = m.maybeShowDeferredApproval()
+	if m.mode != ModeApprovalPopup {
+		t.Fatalf("the approval pop-up did not take the screen: mode %v", m.mode)
+	}
 
 	clock.advance(50 * time.Millisecond)
 	m.state.pending = []pendingRing{{RingID: "r1", Peer: "stranger", Purpose: "hi"}}
@@ -120,7 +127,7 @@ func TestClosingBothPopupsIsNeverStranded(t *testing.T) {
 	if m.mode == ModeApprovalPopup || m.mode == ModeRingPopup {
 		t.Fatalf("focus is stranded in a pop-up with nothing pending: mode %v", m.mode)
 	}
-	if m.mode != ModeInsert {
+	if m.mode != ModeCompose {
 		t.Fatalf("focus did not go back to the composer: mode %v", m.mode)
 	}
 	m = typeText(t, m, "!")

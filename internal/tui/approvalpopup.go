@@ -93,7 +93,20 @@ var (
 // showApproval surfaces one approval prompt (G9): it takes over the
 // screen exactly like a ring popup does — the tool call waits, nothing
 // else proceeds until a decision lands.
+// showApproval surfaces one approval prompt (G9) unless the person is in the
+// middle of something: a prompt that appears mid-word is the situation #59
+// exists to survive, and the better answer is not to appear. It is held, in
+// order, and shown on the first tick or keypress that finds the composer idle.
 func (m Model) showApproval(ev ApprovalRequestEvent) (Model, tea.Cmd) {
+	if !m.personIdle() {
+		m.deferredApprovals = append(m.deferredApprovals, ev)
+		return m, nil
+	}
+	return m.showApprovalNow(ev)
+}
+
+// showApprovalNow puts the prompt on screen.
+func (m Model) showApprovalNow(ev ApprovalRequestEvent) (Model, tea.Cmd) {
 	m = m.rememberFocus(ModeApprovalPopup)
 	m.pendingApproval = &pendingApproval{tool: ev.Tool, id: ev.ID, args: ev.Args}
 	// The call may arrive while the person is mid-word: the pop-up takes the

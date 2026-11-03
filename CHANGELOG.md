@@ -68,6 +68,24 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Changed
 
+- **One keymap: the message box is always focused, commands behind `ctrl+x`
+  (#62).** There is no normal/insert mode any more: a bare key is a letter in
+  your message and `Enter` sends, so nothing has to be entered before typing
+  and no word is lost to a stray command key. Every command moved behind the
+  leader `ctrl+x` — `m` mesh view, `s` mesh services, `r` realms, `N` checkout
+  notes, `l` the agent log, `E` recent errors, `e` tool detail, `v` verbose,
+  `b` mute, `y` copy the last answer, `x` interrupt, `g`/`G` chat top and
+  bottom, `q` quit, `?` the whole list. The hint row offers them all while the
+  leader is armed, and a key pressed after `ctrl+x` is a command or a cancel,
+  never a letter in the draft. `↑`/`↓` belong to the message box now: the chat
+  scrolls with `shift+↑`/`shift+↓` a line and `pgup`/`pgdn` a page. `esc`
+  closes what is open, cancels a pending leader or interrupts a running turn,
+  and with nothing open does nothing at all. Inside a panel `enter` acts,
+  replacing `i`. A ring, an approval request or a first error opens its prompt
+  only after two seconds without a keystroke, so a prompt never takes the
+  screen mid-word; the #59 guard that keeps a letter meant for a message from
+  answering it is unchanged.
+
 - **The macula-mcp floor is 0.48.0, the wire 1.0 release.** 0.48.0 is the
   first macula-mcp built on `@macula-io/ts` 0.31.0, which speaks wire 1.0
   and nothing older; the fleet has spoken wire 1.0 since the flag day of

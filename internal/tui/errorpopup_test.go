@@ -117,11 +117,10 @@ func TestShowError_DoesNothingWithoutAnError(t *testing.T) {
 	m := newTestModel(t)
 	m.lastErr = nil
 
-	updated, _ := m.handleKey(keyPress("E"))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("E"))
 
-	if m.mode != ModeNormal {
-		t.Fatalf("expected to stay in ModeNormal with no error, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected to stay in ModeCompose with no error, got %v", m.mode)
 	}
 	if m.errorPopup != nil {
 		t.Fatal("expected no pop-up when there is no error to show")
@@ -136,8 +135,8 @@ func TestErrorPopup_EscClosesButKeepsLastErr(t *testing.T) {
 	updated, _ := m.handleKey(keyPress("esc"))
 	m = updated.(Model)
 
-	if m.mode != ModeNormal {
-		t.Fatalf("expected ModeNormal after esc, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected ModeCompose after esc, got %v", m.mode)
 	}
 	if m.errorPopup != nil {
 		t.Fatal("expected the pop-up to be closed")
@@ -152,13 +151,13 @@ func TestErrorPopup_EscClosesButKeepsLastErr(t *testing.T) {
 // lost, on the very error it exists to rescue.
 func TestSummaryError_MarkerComesBeforeTheMessage(t *testing.T) {
 	line := formatSummaryError(errors.New(realRefreshError))
-	markerAt := strings.Index(line, "[E]")
+	markerAt := strings.Index(line, "ctrl+x E")
 	msgAt := strings.Index(line, "mesh_list_realms")
 	if markerAt < 0 {
-		t.Fatalf("expected an [E] affordance in the status line, got %q", line)
+		t.Fatalf("expected a ctrl+x E affordance in the status line, got %q", line)
 	}
 	if msgAt < 0 || markerAt > msgAt {
-		t.Fatalf("[E] must precede the message so clipping cannot eat it, got %q", line)
+		t.Fatalf("the ctrl+x E hint must precede the message so clipping cannot eat it, got %q", line)
 	}
 }
 

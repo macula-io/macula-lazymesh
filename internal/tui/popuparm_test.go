@@ -67,19 +67,17 @@ func typeText(t *testing.T, m Model, s string) Model {
 func TestApprovalTypedIntoAMessageDoesNotAnswer(t *testing.T) {
 	m, clock, approvalCh := typingApprovalModel(t)
 
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
 	m = typeText(t, m, "ok so")
-	if m.mode != ModeInsert {
+	if m.mode != ModeCompose {
 		t.Fatalf("compose did not take: mode %v", m.mode)
 	}
 
-	updated, _ = m.Update(agentEventMsg(agent.Event{
+	updated, _ := m.Update(agentEventMsg(agent.Event{
 		Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "p1", Text: `{"cmd":"rm -rf build"}`,
 	}))
 	m = updated.(Model)
-	if m.pendingApproval == nil {
-		t.Fatal("the approval prompt did not appear")
+	if m.pendingApproval != nil {
+		t.Fatal("the approval took the screen in the middle of a word")
 	}
 
 	// The rest of the word, a keystroke at a time, at typing speed.
@@ -93,8 +91,16 @@ func TestApprovalTypedIntoAMessageDoesNotAnswer(t *testing.T) {
 		t.Fatalf("typing \" yes\" answered the prompt: %+v", answer)
 	default:
 	}
+	if m.pendingApproval != nil {
+		t.Fatal("the prompt appeared while the person was still typing")
+	}
+
+	// The person stops typing: the prompt appears now, and the sentence
+	// already in the draft answers nothing.
+	clock.advance(popupIdleDelay)
+	m, _ = m.maybeShowDeferredApproval()
 	if m.pendingApproval == nil {
-		t.Fatal("the prompt closed on keys that were meant for the message")
+		t.Fatal("the approval prompt never appeared after the composer went idle")
 	}
 
 	// The pause does not answer either: waiting is not consent.
@@ -225,11 +231,9 @@ func TestApprovalDenyNAfterTheGuardIsAlsoDelayed(t *testing.T) {
 // the composer is focused again, so the next key is the next letter.
 func TestApprovalKeepsTheDraftAndGivesFocusBack(t *testing.T) {
 	m, clock, _ := typingApprovalModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
 	m = typeText(t, m, "ok so")
 
-	updated, _ = m.Update(agentEventMsg(agent.Event{
+	updated, _ := m.Update(agentEventMsg(agent.Event{
 		Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "p1", Text: `{"cmd":"true"}`,
 	}))
 	m = updated.(Model)
@@ -237,9 +241,18 @@ func TestApprovalKeepsTheDraftAndGivesFocusBack(t *testing.T) {
 		t.Fatalf("the draft did not survive the prompt appearing: %q", m.input.Value())
 	}
 
+	clock.advance(popupIdleDelay)
+	m, _ = m.maybeShowDeferredApproval()
+	if m.pendingApproval == nil {
+		t.Fatal("the prompt did not appear once the composer went idle")
+	}
+	if m.input.Value() != "ok so" {
+		t.Fatalf("the draft did not survive the prompt appearing: %q", m.input.Value())
+	}
+
 	clock.advance(time.Second)
 	m = typeText(t, m, "n")
-	if m.mode != ModeInsert {
+	if m.mode != ModeCompose {
 		t.Fatalf("focus did not come back to the composer: mode %v", m.mode)
 	}
 	if m.input.Value() != "ok so" {
@@ -321,7 +334,7 @@ func TestRingAnswerAfterAPauseStillWorks(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a after the guard answered nothing")
 	}
-	if m.mode != ModeNormal {
+	if m.mode != ModeCompose {
 		t.Fatalf("focus did not go back: mode %v", m.mode)
 	}
 }
@@ -339,7 +352,7 @@ func TestRingEscLeavesAtOnce(t *testing.T) {
 	if cmd != nil || len(fake.calls) != 0 {
 		t.Fatal("esc answered a ring instead of leaving it for later")
 	}
-	if m.mode != ModeNormal {
+	if m.mode != ModeCompose {
 		t.Fatalf("focus did not go back: mode %v", m.mode)
 	}
 }

@@ -147,6 +147,11 @@ func (e *PromptEditor) Reset() {
 func (e *PromptEditor) Focus() tea.Cmd { return e.ta.Focus() }
 func (e *PromptEditor) Blur()          { e.ta.Blur() }
 
+// Focused reports whether keys reach the box, so a caller (and a test) can
+// tell "the composer owns the keyboard" from "a panel does" without reading
+// the textarea.
+func (e PromptEditor) Focused() bool { return e.ta.Focused() }
+
 // CursorEnd moves the cursor to the end of the composed text.
 func (e *PromptEditor) CursorEnd() { e.ta.CursorEnd() }
 

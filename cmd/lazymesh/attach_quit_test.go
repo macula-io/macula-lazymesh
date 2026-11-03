@@ -37,8 +37,9 @@ import (
 //
 // The three cases were chosen from the live run on 2026-11-03 in a tmux
 // pane (a real terminal, not a piped pty): `q` and ctrl+c quit, and esc
-// does not — correctly, since in normal mode esc is the no-op "leave
-// insert mode" key and #49 keeps key routing out of scope.
+// does not — correctly, since with nothing open esc has nothing to close
+// and #49 keeps key routing out of scope. Since #62 the quit key is
+// `ctrl+x q` (a bare `q` types a q), so that is what this case sends.
 func TestAttachedTUIQuitsUnderAPty(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -48,9 +49,11 @@ func TestAttachedTUIQuitsUnderAPty(t *testing.T) {
 		why string
 	}{
 		{
-			name: "q",
-			key:  []byte("q"),
-			why:  "normal mode's quit key, and the one a user reaches for first",
+			// 0x18 is ctrl+x, then the leader's q: every command moved
+			// behind the leader in #62, and a bare q is now just a letter.
+			name: "ctrl-x-q",
+			key:  []byte{0x18, 'q'},
+			why:  "the leader's quit key, and the one a user reaches for first",
 		},
 		{
 			name: "ctrl-c",
@@ -189,8 +192,8 @@ const (
 	oscBackgroundReport = "\x1b]11;rgb:0000/0000/0000\x1b\\"
 	dsrCursorReport     = "\x1b[1;1R"
 
-	// painted is rendered only once the TUI is up and in normal mode: the
-	// strip attached mode shows in place of the mesh counters.
+	// painted is rendered only once the TUI is up: the strip attached mode
+	// shows in place of the mesh counters.
 	painted = "mesh not shown here"
 )
 

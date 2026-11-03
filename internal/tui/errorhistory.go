@@ -58,10 +58,7 @@ func (m *Model) recordError(err error, now time.Time) (isNew bool) {
 // Composing loses typing; an open overlay is something they asked to
 // look at. Both are worth waiting for.
 func (m Model) operatorIsFree() bool {
-	return m.mode == ModeNormal &&
-		!m.meshExpanded &&
-		!m.meshServicesExpanded &&
-		!m.realmExpanded
+	return m.composerIdle()
 }
 
 // maybeAutoPopError shows a held error the moment the operator is free to

@@ -35,74 +35,69 @@ func newTestModel(t *testing.T) Model {
 
 // These are exactly the modal-state bugs a reviewer would expect to find
 // (cf's own words when delegating this): "q" must never quit while
-// composing a message, and Esc/Enter must actually change mode.
+// composing a message, and every command must be one the person asked for.
+//
+// Since #62 there is no normal/insert switch: a bare key is a character, and
+// a command is ctrl+x and then its letter.
 
-func TestNormalMode_QQuits(t *testing.T) {
+func TestLeader_QQuits(t *testing.T) {
 	m := newTestModel(t)
-	_, cmd := m.Update(runeKey('q'))
+	_, cmd := leader(t, m, keyPress("q"))
 	if cmd == nil {
-		t.Fatalf("expected a quit command from 'q' in normal mode")
+		t.Fatalf("expected a quit command from ctrl+x q")
 	}
 }
 
-func TestInsertMode_QDoesNotQuit_TypesInstead(t *testing.T) {
+func TestBareQTypesInsteadOfQuitting(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i')) // enter insert mode
-	m = updated.(Model)
-	if m.mode != ModeInsert {
-		t.Fatalf("expected insert mode after 'i', got %v", m.mode)
-	}
 
 	// tea.Cmd values aren't comparable, so the real assertion that 'q'
-	// didn't quit is behavioral: still in insert mode, and the character
-	// landed in the input rather than being consumed as a command.
-	updated, _ = m.Update(runeKey('q'))
-	m = updated.(Model)
-	if m.mode != ModeInsert {
-		t.Fatalf("'q' while composing must not leave insert mode, got %v", m.mode)
+	// didn't quit is behavioural: the character landed in the draft and the
+	// composer still has focus.
+	m = typeText(t, m, "q")
+	if m.mode != ModeCompose {
+		t.Fatalf("a bare 'q' must not leave the composer, got %v", m.mode)
 	}
 	if m.input.Value() != "q" {
 		t.Fatalf("expected 'q' to be typed into the input, got %q", m.input.Value())
 	}
 }
 
-func TestInsertMode_EscReturnsToNormal(t *testing.T) {
+func TestEscWithNothingOpenKeepsTheDraft(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('h'))
-	m = updated.(Model)
-	if m.input.Value() != "h" {
-		t.Fatalf("expected 'h' typed, got %q", m.input.Value())
-	}
+	m = typeText(t, m, "h")
 
-	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	updated, cmd := m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected normal mode after Esc, got %v", m.mode)
+	if cmd != nil {
+		t.Fatalf("esc with nothing open should do nothing, got a command")
+	}
+	if m.mode != ModeCompose {
+		t.Fatalf("expected the composer to keep focus, got %v", m.mode)
+	}
+	if m.input.Value() != "h" {
+		t.Fatalf("esc cost the draft: %q", m.input.Value())
 	}
 }
 
-func TestInsertMode_EnterSubmitsAndReturnsToNormal(t *testing.T) {
+func TestEnterSubmitsAndKeepsTheComposerFocused(t *testing.T) {
 	userInputCh := make(chan string, 8)
 	m := New(nil, Options{UserInputCh: userInputCh, StatusBarPosition: "bottom"})
 	m.width, m.height = 80, 24
 	m.resizeComponents()
 
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
-	for _, r := range "hello agent" {
-		updated, _ = m.Update(runeKey(r))
-		m = updated.(Model)
-	}
+	m = typeText(t, m, "hello agent")
 
 	updated, cmd := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected normal mode after Enter, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected the composer after Enter, got %v", m.mode)
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("expected input to be cleared after submit, got %q", m.input.Value())
+	}
+	if !m.input.Focused() {
+		t.Fatalf("focus must stay in the composer after a send")
 	}
 	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatYou || m.chatEntries[0].text != "hello agent" {
 		t.Fatalf("expected one chatYou entry with the typed text, got %+v", m.chatEntries)
@@ -122,79 +117,69 @@ func TestInsertMode_EnterSubmitsAndReturnsToNormal(t *testing.T) {
 	}
 }
 
-func TestInsertMode_SubmittingEmptyInputDoesNothing(t *testing.T) {
+func TestSubmittingEmptyInputDoesNothing(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
 
-	updated, _ = m.Update(typeKey(tea.KeyEnter))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	if len(m.chatEntries) != 0 {
 		t.Fatalf("expected no chat entry for an empty submit, got %+v", m.chatEntries)
 	}
-	if m.mode != ModeNormal {
-		t.Fatalf("expected normal mode after submitting empty input, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected the composer after submitting empty input, got %v", m.mode)
 	}
 }
 
-func TestNormalMode_MTogglesMeshExpanded(t *testing.T) {
+func TestLeader_MTogglesMeshExpanded(t *testing.T) {
 	m := newTestModel(t)
 	if m.meshExpanded {
 		t.Fatalf("expected mesh view collapsed by default")
 	}
-	updated, _ := m.Update(runeKey('m'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("m"))
 	if !m.meshExpanded {
-		t.Fatalf("expected 'm' to expand the mesh view")
+		t.Fatalf("expected ctrl+x m to expand the mesh view")
 	}
-	updated, _ = m.Update(runeKey('m'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("m"))
 	if m.meshExpanded {
-		t.Fatalf("expected a second 'm' to collapse it again")
+		t.Fatalf("expected a second ctrl+x m to collapse it again")
 	}
 }
 
-func TestInsertMode_MDoesNotToggleMeshView_TypesInstead(t *testing.T) {
+func TestBareMDoesNotToggleTheMeshView_TypesInstead(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
 
-	updated, _ = m.Update(runeKey('m'))
-	m = updated.(Model)
+	m = typeText(t, m, "m")
 	if m.meshExpanded {
-		t.Fatalf("'m' while composing must not toggle the mesh view")
+		t.Fatalf("a bare 'm' must not toggle the mesh view")
 	}
 	if m.input.Value() != "m" {
 		t.Fatalf("expected 'm' to be typed into the input, got %q", m.input.Value())
 	}
 }
 
-func TestNormalMode_STogglesMeshServicesExpanded(t *testing.T) {
+func TestLeader_STakesFocusIntoTheMeshServicesPanel(t *testing.T) {
 	m := newTestModel(t)
 	if m.meshServicesExpanded {
 		t.Fatalf("expected mesh services view collapsed by default")
 	}
-	updated, _ := m.Update(runeKey('s'))
-	m = updated.(Model)
-	if !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to expand the mesh services view")
+	m, _ = leader(t, m, keyPress("s"))
+	if !m.meshServicesExpanded || m.mode != ModeMeshServicesPanel {
+		t.Fatalf("expected ctrl+x s to open the panel and take focus, got expanded=%v mode=%v", m.meshServicesExpanded, m.mode)
 	}
-	updated, _ = m.Update(runeKey('s'))
+
+	updated, _ := m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
-	if m.meshServicesExpanded {
-		t.Fatalf("expected a second 's' to collapse it again")
+	if m.meshServicesExpanded || m.mode != ModeCompose {
+		t.Fatalf("expected esc to close the panel and give focus back, got expanded=%v mode=%v", m.meshServicesExpanded, m.mode)
 	}
 }
 
-func TestInsertMode_SDoesNotToggleMeshServicesView_TypesInstead(t *testing.T) {
+func TestBareSDoesNotToggleTheMeshServicesView_TypesInstead(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
 
-	updated, _ = m.Update(runeKey('s'))
-	m = updated.(Model)
+	m = typeText(t, m, "s")
 	if m.meshServicesExpanded {
-		t.Fatalf("'s' while composing must not toggle the mesh services view")
+		t.Fatalf("a bare 's' must not toggle the mesh services view")
 	}
 	if m.input.Value() != "s" {
 		t.Fatalf("expected 's' to be typed into the input, got %q", m.input.Value())
@@ -206,92 +191,81 @@ func TestInsertMode_SDoesNotToggleMeshServicesView_TypesInstead(t *testing.T) {
 // other, never both stacked at once (see renderOverlay's own doc on
 // why: a second panel stacked on top would halve the already-tight
 // chat margin the pin-to-top layout keeps).
-func TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive(t *testing.T) {
+func TestLeader_MeshViewAndMeshServicesViewAreMutuallyExclusive(t *testing.T) {
 	m := newTestModel(t)
 
-	updated, _ := m.Update(runeKey('m'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("m"))
 	if !m.meshExpanded || m.meshServicesExpanded {
-		t.Fatalf("expected only meshExpanded after 'm', got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+		t.Fatalf("expected only meshExpanded after ctrl+x m, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
 	}
 
-	updated, _ = m.Update(runeKey('s'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("s"))
 	if m.meshExpanded || !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to close the mesh view and open mesh services, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+		t.Fatalf("expected ctrl+x s to close the mesh view and open mesh services, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
 	}
 
-	updated, _ = m.Update(runeKey('m'))
+	updated, _ := m.Update(typeKey(tea.KeyEsc)) // the services panel has focus; esc gives it back
 	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("m"))
 	if !m.meshExpanded || m.meshServicesExpanded {
-		t.Fatalf("expected 'm' to close mesh services and reopen the mesh view, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
+		t.Fatalf("expected ctrl+x m to close mesh services and reopen the mesh view, got meshExpanded=%v meshServicesExpanded=%v", m.meshExpanded, m.meshServicesExpanded)
 	}
 }
 
-func TestNormalMode_RTogglesRealmExpanded(t *testing.T) {
+func TestLeader_RTogglesRealmExpanded(t *testing.T) {
 	m := newTestModel(t)
 	if m.realmExpanded {
 		t.Fatalf("expected realms view collapsed by default")
 	}
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("r"))
 	if !m.realmExpanded {
-		t.Fatalf("expected 'r' to expand the realms view")
+		t.Fatalf("expected ctrl+x r to expand the realms view")
 	}
-	updated, _ = m.Update(runeKey('r'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("r"))
 	if m.realmExpanded {
-		t.Fatalf("expected a second 'r' to collapse it again")
+		t.Fatalf("expected a second ctrl+x r to collapse it again")
 	}
 }
 
 // `r` joins the same mutual-exclusion group as `m`/`s` -- see
-// TestNormalMode_MeshViewAndMeshServicesViewAreMutuallyExclusive above
+// TestLeader_MeshViewAndMeshServicesViewAreMutuallyExclusive above
 // for the pairwise version; this checks the third overlay closes both
 // of the other two, and that opening either of the other two closes it.
-func TestNormalMode_RealmsViewIsMutuallyExclusiveWithTheOtherTwoOverlays(t *testing.T) {
+func TestLeader_RealmsViewIsMutuallyExclusiveWithTheOtherTwoOverlays(t *testing.T) {
 	m := newTestModel(t)
 
-	updated, _ := m.Update(runeKey('m'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('r'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("m"))
+	m, _ = leader(t, m, keyPress("r"))
 	if m.meshExpanded || !m.realmExpanded {
-		t.Fatalf("expected 'r' to close the mesh view, got meshExpanded=%v realmExpanded=%v", m.meshExpanded, m.realmExpanded)
+		t.Fatalf("expected ctrl+x r to close the mesh view, got meshExpanded=%v realmExpanded=%v", m.meshExpanded, m.realmExpanded)
 	}
 
-	updated, _ = m.Update(runeKey('s'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("s"))
 	if m.realmExpanded || !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to close the realms view, got realmExpanded=%v meshServicesExpanded=%v", m.realmExpanded, m.meshServicesExpanded)
+		t.Fatalf("expected ctrl+x s to close the realms view, got realmExpanded=%v meshServicesExpanded=%v", m.realmExpanded, m.meshServicesExpanded)
 	}
 }
 
-func TestInsertMode_RDoesNotToggleRealmsView_TypesInstead(t *testing.T) {
+func TestBareRDoesNotToggleTheRealmsView_TypesInstead(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
 
-	updated, _ = m.Update(runeKey('r'))
-	m = updated.(Model)
+	m = typeText(t, m, "r")
 	if m.realmExpanded {
-		t.Fatalf("'r' while composing must not toggle the realms view")
+		t.Fatalf("a bare 'r' must not toggle the realms view")
 	}
 	if m.input.Value() != "r" {
 		t.Fatalf("expected 'r' to be typed into the input, got %q", m.input.Value())
 	}
 }
 
-// `i` means something different depending on which overlay is showing
-// (handleKey's own Insert case) -- with the realms view open and no
-// join result currently displayed, it must enter ModeRealmJoin, not the
-// normal compose mode.
-func TestNormalMode_IEntersRealmJoinModeWhenRealmsViewIsOpen(t *testing.T) {
+// The realms list is read-only and the composer keeps focus, so enter has to
+// mean both things: with an empty draft it opens the join input, and with a
+// draft it sends. It replaced `i` in #62.
+func TestEnterOpensTheRealmJoinInputWhenTheRealmsViewIsOpen(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("r"))
 
-	updated, _ = m.Update(runeKey('i'))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	if m.mode != ModeRealmJoin {
 		t.Fatalf("expected ModeRealmJoin, got %v", m.mode)
@@ -303,9 +277,8 @@ func TestNormalMode_IEntersRealmJoinModeWhenRealmsViewIsOpen(t *testing.T) {
 
 func TestModeRealmJoin_EscCancelsWithoutStartingAJoin(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('i'))
+	m, _ = leader(t, m, keyPress("r"))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 
 	for _, r := range "io.macula" {
@@ -314,8 +287,8 @@ func TestModeRealmJoin_EscCancelsWithoutStartingAJoin(t *testing.T) {
 	}
 	updated, cmd := m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected Esc to return to Normal mode, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected Esc to give focus back to the composer, got %v", m.mode)
 	}
 	if m.realmJoinInput.Value() != "" {
 		t.Fatalf("expected the draft realm name to be discarded on cancel, got %q", m.realmJoinInput.Value())
@@ -330,15 +303,14 @@ func TestModeRealmJoin_EscCancelsWithoutStartingAJoin(t *testing.T) {
 
 func TestModeRealmJoin_SubmittingEmptyInputDoesNothing(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('i'))
+	m, _ = leader(t, m, keyPress("r"))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 
 	updated, cmd := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected Enter on an empty realm name to return to Normal mode, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected Enter on an empty realm name to give focus back to the composer, got %v", m.mode)
 	}
 	if m.realmJoinEvents != nil || cmd != nil {
 		t.Fatalf("expected no join to have been started for an empty name")
@@ -365,9 +337,8 @@ func TestModeRealmJoin_SubmitCallsRealmJoinFuncWithTheTypedNameAndStartsListenin
 	m := newTestModel(t)
 	m.maculaMCPVersion = "0.27.0"
 	m.realmIdentityFile = "/tmp/identity.seed"
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('i'))
+	m, _ = leader(t, m, keyPress("r"))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	for _, r := range "io.macula" {
 		updated, _ = m.Update(runeKey(r))
@@ -379,8 +350,8 @@ func TestModeRealmJoin_SubmitCallsRealmJoinFuncWithTheTypedNameAndStartsListenin
 	if gotVersion != "0.27.0" || gotIdentity != "/tmp/identity.seed" || gotRealm != "io.macula" {
 		t.Fatalf("expected realmJoinFunc called with (0.27.0, /tmp/identity.seed, io.macula), got (%q, %q, %q)", gotVersion, gotIdentity, gotRealm)
 	}
-	if m.mode != ModeNormal {
-		t.Fatalf("expected Normal mode after submitting, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected the composer after submitting, got %v", m.mode)
 	}
 	if cmd == nil {
 		t.Fatalf("expected a command to start listening for events")
@@ -403,9 +374,8 @@ func TestModeRealmJoin_SubmitSetsRealmJoinLatestImmediately(t *testing.T) {
 	}
 
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('i'))
+	m, _ = leader(t, m, keyPress("r"))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	for _, r := range "io.macula" {
 		updated, _ = m.Update(runeKey(r))
@@ -425,13 +395,13 @@ func TestModeRealmJoin_SubmitSetsRealmJoinLatestImmediately(t *testing.T) {
 	}
 }
 
-// The `i`-guard (handleKey: `i` only starts a new join when
-// m.realmJoinLatest == nil) is only real protection if realmJoinLatest
-// is set the INSTANT a join starts, not once the first event arrives --
-// otherwise a stray second `i` during that gap fires a second concurrent
-// join on top of the first. Directly exercises the race the fix above
-// also closes.
-func TestNormalMode_IWhileAJoinIsStartingDoesNotFireASecondJoin(t *testing.T) {
+// The enter-guard (applyKey: enter only opens the join input when
+// m.realmJoinLatest == nil) is only real protection if realmJoinLatest is
+// set the INSTANT a join starts, not once the first event arrives --
+// otherwise a stray second enter during that gap fires a second concurrent
+// join on top of the first. Directly exercises the race the fix above also
+// closes.
+func TestEnterWhileAJoinIsStartingDoesNotFireASecondJoin(t *testing.T) {
 	original := realmJoinFunc
 	defer func() { realmJoinFunc = original }()
 	calls := 0
@@ -442,9 +412,8 @@ func TestNormalMode_IWhileAJoinIsStartingDoesNotFireASecondJoin(t *testing.T) {
 	}
 
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('i'))
+	m, _ = leader(t, m, keyPress("r"))
+	updated, _ := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	for _, r := range "io.macula" {
 		updated, _ = m.Update(runeKey(r))
@@ -456,15 +425,15 @@ func TestNormalMode_IWhileAJoinIsStartingDoesNotFireASecondJoin(t *testing.T) {
 		t.Fatalf("expected exactly one call after the first submit, got %d", calls)
 	}
 
-	// Before any event has arrived on ch, a stray `i` must be a no-op --
+	// Before any event has arrived on ch, a second enter must be a no-op --
 	// realmJoinLatest is already non-nil (the synthetic starting event).
-	updated, _ = m.Update(runeKey('i'))
+	updated, _ = m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	if m.mode == ModeRealmJoin {
-		t.Fatalf("expected `i` to be a no-op while a join is already in flight, entered ModeRealmJoin instead")
+		t.Fatalf("expected enter to be a no-op while a join is already in flight, entered ModeRealmJoin instead")
 	}
 	if calls != 1 {
-		t.Fatalf("expected still exactly one realmJoinFunc call, a second `i` started another: %d", calls)
+		t.Fatalf("expected still exactly one realmJoinFunc call, a second enter started another: %d", calls)
 	}
 }
 
@@ -504,14 +473,13 @@ func TestHandleRealmJoinEvent_TerminalEventStopsListening(t *testing.T) {
 	}
 }
 
-func TestNormalMode_EscDismissesAFinishedRealmJoinBackToTheList(t *testing.T) {
+func TestEscDismissesAFinishedRealmJoinBackToTheList(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('r'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("r"))
 	ev := realmjoin.Event{Kind: "confirmed", Realm: "io.macula", Handle: "rgfaber"}
 	m.realmJoinLatest = &ev
 
-	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	updated, _ := m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
 	if m.realmJoinLatest != nil {
 		t.Fatalf("expected Esc to dismiss the finished join's status, got %+v", m.realmJoinLatest)
@@ -521,17 +489,34 @@ func TestNormalMode_EscDismissesAFinishedRealmJoinBackToTheList(t *testing.T) {
 	}
 }
 
-func TestForceQuit_WorksInEitherMode(t *testing.T) {
-	m := newTestModel(t)
-	if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
-		t.Fatalf("expected ctrl+c to quit in normal mode")
-	}
-
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
-	if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
-		t.Fatalf("expected ctrl+c to quit even while composing")
-	}
+func TestForceQuit_WorksInEveryState(t *testing.T) {
+	t.Run("with a draft", func(t *testing.T) {
+		m := typeText(t, newTestModel(t), "half a thought")
+		if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
+			t.Fatalf("expected ctrl+c to quit with the composer focused and a draft in it")
+		}
+	})
+	t.Run("with the leader pending", func(t *testing.T) {
+		m := newTestModel(t)
+		updated, _ := m.Update(ctrlX())
+		m = updated.(Model)
+		if !m.leaderPending {
+			t.Fatal("ctrl+x did not arm the leader")
+		}
+		if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
+			t.Fatalf("expected ctrl+c to quit with the leader pending")
+		}
+	})
+	t.Run("with a panel open", func(t *testing.T) {
+		m := newTestModel(t)
+		m, _ = leader(t, m, keyPress("s"))
+		if m.mode != ModeMeshServicesPanel {
+			t.Fatalf("expected the mesh services panel open, got %v", m.mode)
+		}
+		if _, cmd := m.Update(typeKey(tea.KeyCtrlC)); cmd == nil {
+			t.Fatalf("expected ctrl+c to quit with a panel open")
+		}
+	})
 }
 
 // Regression guard added alongside the ring pop-up: adding a third mode
@@ -547,15 +532,14 @@ func TestForceQuit_WorksDuringRingPopup(t *testing.T) {
 	}
 }
 
-func TestNormalMode_ToggleMute(t *testing.T) {
+func TestLeader_ToggleMute(t *testing.T) {
 	m := newTestModel(t)
 	if m.muted {
 		t.Fatalf("expected bell enabled by default")
 	}
-	updated, _ := m.Update(runeKey('b'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("b"))
 	if !m.muted {
-		t.Fatalf("expected 'b' to mute")
+		t.Fatalf("expected ctrl+x b to mute")
 	}
 }
 
@@ -595,53 +579,80 @@ func TestHandleAgentEvent_AppendsChatEntryAndReArms(t *testing.T) {
 	}
 }
 
-// Issue #2: mode indicator, vim's own "-- MODE --" convention.
-func TestRenderStatusStrip_ShowsModeIndicator(t *testing.T) {
+// The hint row IS the mode indicator now (#62): there are no modes to
+// announce, so the row names the leader and, while it is armed, everything
+// the next key can be.
+func TestRenderHintRow_ShowsTheLeaderAndItsCommandsWhilePending(t *testing.T) {
 	m := newTestModel(t)
-	if !strings.Contains(m.renderStatusStrip(), "-- NORMAL --") {
-		t.Fatalf("expected a NORMAL mode indicator, got %q", m.renderStatusStrip())
+	if !strings.Contains(m.renderStatusStrip(), "ctrl+x") {
+		t.Fatalf("expected the idle hint row to name the leader, got %q", m.renderStatusStrip())
 	}
-	updated, _ := m.Update(runeKey('i'))
+
+	updated, _ := m.Update(ctrlX())
 	m = updated.(Model)
-	if !strings.Contains(m.renderStatusStrip(), "-- INSERT --") {
-		t.Fatalf("expected an INSERT mode indicator after 'i', got %q", m.renderStatusStrip())
+	combined := strings.Join(m.renderHintLines(), " ")
+	for _, want := range []string{"ctrl+x …", "m:", "s:", "r:", "N:", "E:", "q:"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("expected %q on the armed leader row, got %q", want, combined)
+		}
+	}
+
+	// esc cancels it and the row goes back to the short one.
+	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	if m.leaderPending {
+		t.Fatal("esc did not cancel the leader")
+	}
+	if strings.Contains(strings.Join(m.renderHintLines(), " "), "ctrl+x …") {
+		t.Fatalf("the leader row is still showing after esc: %q", m.renderHintLines())
 	}
 }
 
 // Briefly split across 2 lines in Normal mode (2026-09-07, a narrow
 // terminal clipped the combined line); reverted to 1 line 2026-09-08
 // (Raf's own call: the vertical space matters more day to day than the
-// clipping risk). Every mode gets exactly 1 hint line; the ring pop-up
-// shows its own hints (renderRingPopup) so needs none here beyond the
-// mode indicator itself.
+// clipping risk). Every state still gets exactly 1 hint line; the ring
+// pop-up shows its own hints (renderRingPopup) so needs none here beyond
+// the mode indicator itself.
 func TestRenderHintLines_AlwaysOneLine(t *testing.T) {
-	m := newTestModel(t)
-	if got := len(m.renderHintLines()); got != 1 {
-		t.Fatalf("expected 1 hint line in Normal mode, got %d: %v", got, m.renderHintLines())
+	states := []struct {
+		name string
+		m    Model
+	}{
+		{"composer", newTestModel(t)},
+		{"leader pending", func() Model {
+			m := newTestModel(t)
+			updated, _ := m.Update(ctrlX())
+			return updated.(Model)
+		}()},
+		{"services panel focused", func() Model {
+			m := newTestModel(t)
+			m, _ = leader(t, m, keyPress("s"))
+			return m
+		}()},
+		{"ring pop-up", func() Model {
+			m := newTestModel(t)
+			ring := pendingRing{RingID: "r1", Peer: "peer1"}
+			m.pendingRingPopup = &ring
+			m.mode = ModeRingPopup
+			return m
+		}()},
 	}
-
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
-	if got := len(m.renderHintLines()); got != 1 {
-		t.Fatalf("expected 1 hint line in Insert mode, got %d: %v", got, m.renderHintLines())
-	}
-
-	m2 := newTestModel(t)
-	ring := pendingRing{RingID: "r1", Peer: "peer1"}
-	m2.pendingRingPopup = &ring
-	m2.mode = ModeRingPopup
-	if got := len(m2.renderHintLines()); got != 1 {
-		t.Fatalf("expected 1 hint line during a ring pop-up, got %d: %v", got, m2.renderHintLines())
+	for _, st := range states {
+		if got := len(st.m.renderHintLines()); got != 1 {
+			t.Fatalf("%s: expected 1 hint line, got %d: %v", st.name, got, st.m.renderHintLines())
+		}
 	}
 }
 
-// Every shortcut must still appear on the combined line.
-func TestRenderHintLines_NormalModeStillListsEveryShortcut(t *testing.T) {
+// The idle row has to name every key a person can reach without the leader,
+// because those are the ones they will try first.
+func TestRenderHintLines_NamesTheKeysThatNeedNoLeader(t *testing.T) {
 	m := newTestModel(t)
 	combined := strings.Join(m.renderHintLines(), " ")
-	for _, want := range []string{"m:", "s:", "r:", "i:", "ctrl+e:", "v:", "e:", "b:", "q:"} {
+	for _, want := range []string{"enter: send", "shift+↑↓: scroll", "ctrl+e", "ctrl+x"} {
 		if !strings.Contains(combined, want) {
-			t.Fatalf("expected shortcut %q somewhere in the hint lines, got %q", want, combined)
+			t.Fatalf("expected %q somewhere in the hint row, got %q", want, combined)
 		}
 	}
 }
@@ -688,23 +699,37 @@ func TestRenderSummaryLine_ModelIsBoldUnlikeTheRestOfTheLine(t *testing.T) {
 	}
 }
 
-// Issue #4: the compose line stays visible (and keeps its draft) after
-// Esc back to Normal mode, instead of being replaced by a static hint.
-func TestRenderInputLine_AlwaysVisibleWithRetainedDraft(t *testing.T) {
-	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
-	for _, r := range "draft" {
-		updated, _ = m.Update(runeKey(r))
-		m = updated.(Model)
+// Issue #4: the compose line and its draft survive everything that takes
+// focus or the screen away -- a panel, and a pop-up (#62).
+func TestRenderInputLine_KeepsTheDraftThroughAPanelAndAPopUp(t *testing.T) {
+	clock := &fakeClock{at: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}
+	m := withClock(newTestModel(t), clock)
+	m = typeText(t, m, "draft")
+
+	m, _ = leader(t, m, keyPress("s")) // the panel takes focus
+	if !strings.Contains(m.renderInputLine(), "draft") {
+		t.Fatalf("the panel hid the draft: %q", m.renderInputLine())
 	}
-	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	updated, _ := m.Update(typeKey(tea.KeyEsc)) // esc closes it and gives focus back
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected normal mode after Esc, got %v", m.mode)
+	if m.mode != ModeCompose || !m.input.Focused() {
+		t.Fatalf("expected the composer focused again after the panel, got %v", m.mode)
+	}
+
+	clock.advance(popupIdleDelay)
+	updated, _ = m.Update(agentEventMsg(agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "p1", Text: "{}"}))
+	m = updated.(Model)
+	if m.pendingApproval == nil {
+		t.Fatal("expected the approval pop-up open for this test")
 	}
 	if !strings.Contains(m.renderInputLine(), "draft") {
-		t.Fatalf("expected the retained draft still visible in normal mode, got %q", m.renderInputLine())
+		t.Fatalf("the pop-up hid the draft: %q", m.renderInputLine())
+	}
+
+	updated, _ = m.Update(typeKey(tea.KeyEsc)) // esc denies and gives focus back
+	m = updated.(Model)
+	if m.mode != ModeCompose || m.input.Value() != "draft" {
+		t.Fatalf("expected the composer with its draft after the pop-up, got mode %v value %q", m.mode, m.input.Value())
 	}
 }
 
@@ -772,45 +797,40 @@ func TestHandleAgentEvent_ToolCallInlineWhenVerbose(t *testing.T) {
 	}
 }
 
-func TestNormalMode_VTogglesChatter(t *testing.T) {
+func TestLeader_VTogglesChatter(t *testing.T) {
 	m := newTestModel(t)
 	if m.showChatter {
 		t.Fatalf("expected chatter relocated by default")
 	}
-	updated, _ := m.Update(runeKey('v'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("v"))
 	if !m.showChatter {
-		t.Fatalf("expected 'v' to enable verbose chatter")
+		t.Fatalf("expected ctrl+x v to enable verbose chatter")
 	}
 }
 
-func TestInsertMode_VDoesNotToggleChatter_TypesInstead(t *testing.T) {
+func TestBareVDoesNotToggleChatter_TypesInstead(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('i'))
-	m = updated.(Model)
-	updated, _ = m.Update(runeKey('v'))
-	m = updated.(Model)
+
+	m = typeText(t, m, "v")
 	if m.showChatter {
-		t.Fatalf("'v' while composing must not toggle chatter mode")
+		t.Fatalf("a bare 'v' must not toggle chatter mode")
 	}
 	if m.input.Value() != "v" {
 		t.Fatalf("expected 'v' to be typed into the input, got %q", m.input.Value())
 	}
 }
 
-// Issue #2: editor-based composition, from either mode.
-func TestOpenEditor_WorksFromNormalAndInsertMode(t *testing.T) {
-	for _, start := range []Mode{ModeNormal, ModeInsert} {
-		m := newTestModel(t)
-		m.mode = start
-		_, cmd := m.Update(typeKey(tea.KeyCtrlE))
-		if cmd == nil {
-			t.Fatalf("expected ctrl+e to return a command from mode %v", start)
-		}
+// Issue #2: editor-based composition. ctrl+e belongs to the composer -- it is
+// handled before the composer sees the key, so it is not the textarea's own
+// line-end -- and a panel that has focus keeps the keys it needs.
+func TestOpenEditor_WorksFromTheComposer(t *testing.T) {
+	m := newTestModel(t)
+	if _, cmd := m.Update(typeKey(tea.KeyCtrlE)); cmd == nil {
+		t.Fatalf("expected ctrl+e to return a command from the composer")
 	}
 }
 
-func TestHandleEditorFinished_LoadsContentAndEntersInsert(t *testing.T) {
+func TestHandleEditorFinished_LoadsContentIntoTheComposer(t *testing.T) {
 	m := newTestModel(t)
 	f, err := os.CreateTemp("", "lazymesh-test-*.md")
 	if err != nil {
@@ -824,8 +844,8 @@ func TestHandleEditorFinished_LoadsContentAndEntersInsert(t *testing.T) {
 
 	updated, cmd := m.Update(editorFinishedMsg{path: f.Name()})
 	m = updated.(Model)
-	if m.mode != ModeInsert {
-		t.Fatalf("expected insert mode after the editor round-trip, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected the composer after the editor round-trip, got %v", m.mode)
 	}
 	if m.input.Value() != "composed in $EDITOR" {
 		t.Fatalf("expected the edited content loaded into input, got %q", m.input.Value())
@@ -848,32 +868,54 @@ func TestHandleEditorFinished_ErrorSurfacesAsChatEntry(t *testing.T) {
 }
 
 // statusLines()'s own line count must always match what renderStatusStrip
-// actually prints, in every mode -- resizeComponents' reserved-height
-// math (len(m.statusLines()) + 2) depends on this exactly, and the hint
-// row's line count now varies by mode (2 in Normal, 1 in Insert/Ring,
-// found live 2026-09-07 when the shortcuts row was split across 2
-// lines). Also guards the original 2026-09-06 finding at the unit level
-// it actually belongs at now that the chatter status line is gone: no
-// status line may contain a raw embedded newline (see
-// collapseNewlines/truncateForChat in chat_test.go for that fix itself;
-// this just confirms nothing here can reintroduce the symptom).
+// actually prints, in every state -- resizeComponents' reserved-height
+// math (len(m.statusLines()) + 1 + the chatbox) depends on this exactly,
+// and the hint row's content changes with the leader, the panels and the
+// pop-ups (found live 2026-09-07 when the shortcuts row was split across 2
+// lines). Also guards the original 2026-09-06 finding at the unit level it
+// actually belongs at now that the chatter status line is gone: no status
+// line may contain a raw embedded newline (see collapseNewlines/
+// truncateForChat in chat_test.go for that fix itself; this just confirms
+// nothing here can reintroduce the symptom).
 func TestStatusLines_LineCountMatchesActualRenderedRows(t *testing.T) {
-	for _, mode := range []Mode{ModeNormal, ModeInsert, ModeRingPopup} {
-		m := newTestModel(t)
-		m.mode = mode
-		if mode == ModeRingPopup {
+	states := []struct {
+		name string
+		m    Model
+	}{
+		{"composer", newTestModel(t)},
+		{"leader pending", func() Model {
+			m := newTestModel(t)
+			updated, _ := m.Update(ctrlX())
+			return updated.(Model)
+		}()},
+		{"services panel focused", func() Model {
+			m := newTestModel(t)
+			m, _ = leader(t, m, keyPress("s"))
+			return m
+		}()},
+		{"ring pop-up", func() Model {
+			m := newTestModel(t)
 			ring := pendingRing{RingID: "r1", Peer: "peer1"}
 			m.pendingRingPopup = &ring
-		}
+			m.mode = ModeRingPopup
+			return m
+		}()},
+		{"error pop-up", func() Model {
+			m := newTestModel(t)
+			return failingRefresh(t, m, realRefreshError)
+		}()},
+	}
+	for _, st := range states {
+		m := st.m
 		m.resizeComponents()
 
 		for i, line := range m.statusLines() {
 			if strings.Contains(line, "\n") {
-				t.Fatalf("mode %v: statusLines()[%d] contains an embedded newline, breaking the one-element-one-row assumption: %q", mode, i, line)
+				t.Fatalf("%s: statusLines()[%d] contains an embedded newline, breaking the one-element-one-row assumption: %q", st.name, i, line)
 			}
 		}
 		if got, want := len(strings.Split(m.renderStatusStrip(), "\n")), len(m.statusLines()); got != want {
-			t.Fatalf("mode %v: renderStatusStrip rendered as %d rows, but resizeComponents would count %d via statusLines()", mode, got, want)
+			t.Fatalf("%s: renderStatusStrip rendered as %d rows, but resizeComponents would count %d via statusLines()", st.name, got, want)
 		}
 	}
 }
@@ -1077,11 +1119,11 @@ func TestHandleAgentEvent_BackoffQueuesTripleBell(t *testing.T) {
 // exists for.
 func TestMeshServicesPanel_CursorMovesWithinBoundsOnly(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('s')) // open the panel
-	m = updated.(Model)
-	if !m.meshServicesExpanded {
-		t.Fatalf("expected 's' to expand the mesh services panel")
+	m, _ = leader(t, m, keyPress("s")) // open the panel
+	if !m.meshServicesExpanded || m.mode != ModeMeshServicesPanel {
+		t.Fatalf("expected ctrl+x s to open the focused mesh services panel, got expanded=%v mode=%v", m.meshServicesExpanded, m.mode)
 	}
+	var updated tea.Model
 	entries, _ := m.meshServiceEntries()
 	if len(entries) < 2 {
 		t.Fatalf("need at least 2 curated entries for this test to mean anything, got %d", len(entries))
@@ -1114,32 +1156,45 @@ func TestMeshServicesPanel_CursorMovesWithinBoundsOnly(t *testing.T) {
 
 	// Closing and reopening starts back at the top, not wherever it was
 	// left -- same convention as realmJoinLatest clearing on ToggleRealm.
-	updated, _ = m.Update(runeKey('s')) // close
+	updated, _ = m.Update(typeKey(tea.KeyEsc)) // esc closes the panel
 	m = updated.(Model)
-	updated, _ = m.Update(runeKey('s')) // reopen
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("s")) // reopen
 	if m.meshServicesCursor != 0 {
 		t.Fatalf("expected cursor reset to 0 on reopen, got %d", m.meshServicesCursor)
 	}
 }
 
-// Up/Down must still scroll chat as before when no overlay panel is
-// expanded -- the mesh-services cursor logic must not have accidentally
-// swallowed the pre-existing behavior for every OTHER mode.
-func TestUpDown_StillScrollsChatWhenNoPanelExpanded(t *testing.T) {
+// The arrows belong to the composer now (#62): up/down move inside a
+// multi-line draft, and the chat scrolls on shift+up/shift+down. The point
+// of the test is that a plain down neither scrolls the chat nor touches the
+// mesh-services cursor.
+func TestArrowsMoveTheDraftAndShiftArrowsScrollTheChat(t *testing.T) {
 	m := newTestModel(t)
 	if m.meshServicesExpanded || m.meshExpanded || m.realmExpanded {
 		t.Fatalf("expected no panel expanded in a fresh model")
 	}
-	// Not asserting on chatViewport's internal scroll position directly
-	// (bubbles' own viewport has no simple public read for it) -- just
-	// confirming this path is still reached without panicking and without
-	// mutating meshServicesCursor, which is the one thing this change
-	// could plausibly have broken.
+	m.width, m.height = 80, 12
+	m.resizeComponents()
+	for i := 0; i < 40; i++ {
+		m.chatEntries = append(m.chatEntries, youChatEntry(fmt.Sprintf("line %d", i)))
+	}
+	m.syncViewport()
+	m.chatViewport.GotoTop()
+	before := m.chatViewport.YOffset
+
 	updated, _ := m.Update(typeKey(tea.KeyDown))
 	m = updated.(Model)
+	if m.chatViewport.YOffset != before {
+		t.Fatalf("a plain down scrolled the chat: %d -> %d", before, m.chatViewport.YOffset)
+	}
 	if m.meshServicesCursor != 0 {
 		t.Fatalf("expected meshServicesCursor untouched when no panel is expanded, got %d", m.meshServicesCursor)
+	}
+
+	updated, _ = m.Update(typeKey(tea.KeyShiftDown))
+	m = updated.(Model)
+	if m.chatViewport.YOffset <= before {
+		t.Fatalf("shift+down did not scroll the chat: %d -> %d", before, m.chatViewport.YOffset)
 	}
 }
 
@@ -1229,8 +1284,8 @@ func TestModeMeshServiceCall_SubmitWithNoProcedureCapturedDoesNothing(t *testing
 
 	updated, cmd := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected Submit to return to Normal mode regardless, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected Submit to give focus back to the composer regardless, got %v", m.mode)
 	}
 	if cmd != nil {
 		t.Fatalf("expected no command when no procedure/source was ever set")
@@ -1248,8 +1303,8 @@ func TestModeMeshServiceCall_EscCancelsAndClearsTheDraft(t *testing.T) {
 
 	updated, cmd := m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
-	if m.mode != ModeNormal {
-		t.Fatalf("expected Esc to return to Normal mode, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected Esc to give focus back to the composer, got %v", m.mode)
 	}
 	if m.meshServiceCallInput.Value() != "" {
 		t.Fatalf("expected the draft arguments discarded on cancel, got %q", m.meshServiceCallInput.Value())
@@ -1262,22 +1317,28 @@ func TestModeMeshServiceCall_EscCancelsAndClearsTheDraft(t *testing.T) {
 	}
 }
 
-// The `i`-guard: mesh_services_enabled: false means m.meshServices is nil
-// (see Options.MeshServices' own doc comment) -- `i` on the `s` panel must
-// fall through to ordinary compose-a-message, never enter
-// ModeMeshServiceCall with nothing real behind it.
-func TestNormalMode_IDoesNotEnterMeshServiceCallModeWhenServicesDisabled(t *testing.T) {
+// The enter-guard: mesh_services_enabled: false means m.meshServices is nil
+// (see Options.MeshServices' own doc comment) -- enter on the `s` panel must
+// not enter ModeMeshServiceCall with nothing real behind it. The panel still
+// opens, because the curated catalog is the one place that says why nothing
+// is live; enter there simply does nothing.
+func TestEnterOnThePanelDoesNotOpenACallWhenServicesAreDisabled(t *testing.T) {
 	m := newTestModel(t) // m.meshServices is nil here -- Options never sets it
-	updated, _ := m.Update(runeKey('s'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("s"))
 	if m.meshServices != nil {
 		t.Fatalf("test assumption broken: expected meshServices nil in a fresh test model")
 	}
+	if m.mode != ModeMeshServicesPanel {
+		t.Fatalf("expected the panel to open even when services are disabled, got %v", m.mode)
+	}
 
-	updated, _ = m.Update(runeKey('i'))
+	updated, cmd := m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
-	if m.mode != ModeInsert {
-		t.Fatalf("expected 'i' to fall through to ordinary compose (ModeInsert) when services are disabled, got %v", m.mode)
+	if m.mode != ModeMeshServicesPanel {
+		t.Fatalf("expected enter to leave the panel showing, got %v", m.mode)
+	}
+	if cmd != nil || m.meshServiceCallInFlight {
+		t.Fatalf("expected no call to start with no procedure to call, got cmd=%v inFlight=%v", cmd != nil, m.meshServiceCallInFlight)
 	}
 }
 
@@ -1295,24 +1356,23 @@ func (fakeMCPCaller) CallTool(context.Context, string, map[string]any) (string, 
 	return "", fmt.Errorf("not used by this test")
 }
 
-// The actual capture-and-enter wiring: `i` on the `s` panel, with services
+// The actual capture-and-enter wiring: enter on the `s` panel, with services
 // enabled, must freeze the CURSOR ROW's procedure name into
 // meshServiceCallProcedure and enter ModeMeshServiceCall -- not the first
 // row, not a placeholder, the one actually highlighted.
-func TestNormalMode_IEntersMeshServiceCallModeAndCapturesSelectedProcedure(t *testing.T) {
+func TestEnterOnThePanelCapturesTheSelectedProcedure(t *testing.T) {
 	m := newTestModel(t)
 	m.meshServices = meshservices.New(fakeMCPCaller{})
 
-	updated, _ := m.Update(runeKey('s'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("s"))
 	entries, _ := m.meshServiceEntries()
 	if len(entries) < 2 {
 		t.Fatalf("need at least 2 curated entries for this test to mean anything, got %d", len(entries))
 	}
-	updated, _ = m.Update(typeKey(tea.KeyDown)) // select row 1, not row 0 -- proves this isn't hardcoded
+	updated, _ := m.Update(typeKey(tea.KeyDown)) // select row 1, not row 0 -- proves this isn't hardcoded
 	m = updated.(Model)
 
-	updated, _ = m.Update(runeKey('i'))
+	updated, _ = m.Update(typeKey(tea.KeyEnter))
 	m = updated.(Model)
 	if m.mode != ModeMeshServiceCall {
 		t.Fatalf("expected ModeMeshServiceCall, got %v", m.mode)
@@ -1364,23 +1424,65 @@ func TestAssistantEntryRendersMarkdown(t *testing.T) {
 	}
 }
 
-// TestInterruptKeySignalsInterruptCh pins the TUI half of Phase 3: `x` in
-// normal mode sends on InterruptCh (non-blocking) and drops a system chat
-// line so the operator sees the request land.
+// TestInterruptKeySignalsInterruptCh pins the TUI half of Phase 3: ctrl+x x
+// sends on InterruptCh (non-blocking) and drops a system chat line so the
+// operator sees the request land.
 func TestInterruptKeySignalsInterruptCh(t *testing.T) {
 	interruptCh := make(chan struct{}, 4)
 	m := New(nil, Options{UserInputCh: make(chan string, 8), InterruptCh: interruptCh})
-	m.mode = ModeNormal
-	updated, _ := m.Update(tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'x'}}))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("x"))
 
 	select {
 	case <-interruptCh:
 	default:
-		t.Fatal("x did not signal InterruptCh")
+		t.Fatal("ctrl+x x did not signal InterruptCh")
 	}
 	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
 		t.Fatalf("expected one system chat entry confirming the interrupt, got %+v", m.chatEntries)
+	}
+}
+
+// A bare x is a letter (#62). The other half of the interrupt decision: esc
+// stops a running turn, because during one the operator's esc means "stop"
+// and there is nothing else open for it to close.
+func TestBareXTypesAndEscInterruptsARunningTurn(t *testing.T) {
+	interruptCh := make(chan struct{}, 4)
+	m := New(nil, Options{UserInputCh: make(chan string, 8), InterruptCh: interruptCh})
+
+	m = typeText(t, m, "x")
+	if m.input.Value() != "x" {
+		t.Fatalf("a bare x must be typed, got %q", m.input.Value())
+	}
+	select {
+	case <-interruptCh:
+		t.Fatal("a bare x interrupted the turn")
+	default:
+	}
+
+	// A sent message with no listening beat since is a turn in flight.
+	m.lastInputAt = time.Now()
+	updated, _ := m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	select {
+	case <-interruptCh:
+	default:
+		t.Fatal("esc did not interrupt the running turn")
+	}
+	if m.input.Value() != "x" {
+		t.Fatalf("esc cost the draft: %q", m.input.Value())
+	}
+
+	// With the agent parked again, the same esc does nothing.
+	m.lastListeningAt = time.Now().Add(time.Second)
+	updated, _ = m.Update(typeKey(tea.KeyEsc))
+	m = updated.(Model)
+	select {
+	case <-interruptCh:
+		t.Fatal("esc interrupted an idle agent")
+	default:
+	}
+	if m.input.Value() != "x" {
+		t.Fatalf("the idle esc cost the draft: %q", m.input.Value())
 	}
 }
 
@@ -1408,7 +1510,7 @@ func TestApprovalPopupAnswersOnCh(t *testing.T) {
 	default:
 		t.Fatal("y did not send an approval answer")
 	}
-	if m.mode != ModeNormal || m.pendingApproval != nil {
+	if m.mode != ModeCompose || m.pendingApproval != nil {
 		t.Fatalf("popup did not close: mode %v pending %+v", m.mode, m.pendingApproval)
 	}
 }
@@ -1602,16 +1704,18 @@ func TestLastAssistantTextPicksNewestFinishedAnswer(t *testing.T) {
 	}
 }
 
-// TestCopyChatKeyReportsWithoutAnswer pins the feedback contract: `y`
+// TestCopyChatKeyReportsWithoutAnswer pins the feedback contract: ctrl+x y
 // with nothing to copy says so in the chat instead of silently doing
 // nothing (the actual clipboard call is one line mirroring the error
-// popup's, whose failure reporting has its own test).
+// popup's, whose failure reporting has its own test). A bare y types.
 func TestCopyChatKeyReportsWithoutAnswer(t *testing.T) {
 	m := newTestModel(t)
-	updated, _ := m.Update(runeKey('y'))
-	m = updated.(Model)
+	m, _ = leader(t, m, keyPress("y"))
 	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatSystem {
 		t.Fatalf("expected a system note about nothing to copy, got %+v", m.chatEntries)
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("ctrl+x y leaked into the draft: %q", m.input.Value())
 	}
 }
 
@@ -1624,12 +1728,11 @@ func TestComposeIsMultiline(t *testing.T) {
 	m.width, m.height = 80, 24
 	m.resizeComponents()
 
-	// Into insert mode and type two lines.
+	// Type two lines with the composer focused.
 	update := func(msg tea.Msg) {
 		next, _ := m.Update(msg)
 		m = next.(Model)
 	}
-	update(runeKey('i'))
 	update(runeKey('a'))
 	update(typeKey(tea.KeyCtrlJ)) // shift+enter's byte form: newline
 	update(runeKey('b'))
@@ -1654,4 +1757,31 @@ func TestComposeIsMultiline(t *testing.T) {
 	default:
 		t.Fatal("enter did not submit the composed message")
 	}
+}
+
+// ctrlX is the leader key itself.
+func ctrlX() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyCtrlX} }
+
+// leader runs one command the way a person does: ctrl+x, then the key that
+// names it. Every test that exercises a command goes through here, so the
+// leader path is what is being tested rather than a handler called directly.
+func leader(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
+	t.Helper()
+	updated, _ := m.handleKey(ctrlX())
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("ctrl+x returned %T, not a Model", updated)
+	}
+	if !next.leaderPending {
+		t.Fatal("ctrl+x did not arm the leader")
+	}
+	updated, cmd := next.handleKey(k)
+	next, ok = updated.(Model)
+	if !ok {
+		t.Fatalf("the leader command returned %T, not a Model", updated)
+	}
+	if next.leaderPending {
+		t.Fatal("the leader is still pending after a command")
+	}
+	return next, cmd
 }
