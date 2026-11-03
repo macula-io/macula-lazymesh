@@ -49,6 +49,12 @@ type chatEntry struct {
 	// operator straight away (#46) -- a change they did not see is not a
 	// review, and hunting for it behind a toggle is how it gets missed.
 	alwaysDetail bool
+	// raw is a tool result's text as the tool answered it; detail may hold
+	// only the diff decoded from it (#46).
+	raw string
+	// outcome is a tool call's result or error, folded into the call's
+	// entry when it arrives so the two read as one (#78 gap 1).
+	outcome *chatEntry
 }
 
 // workingTreeDiffOf returns the diff a shell_exec result carries, and
@@ -77,7 +83,7 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	case agent.EventToolCall:
 		return chatEntry{kind: chatToolCall, at: now, tool: ev.ToolName, text: fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 	case agent.EventToolResult:
-		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text, raw: ev.Text}
 		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
 		// A command that changed the checkout carries its diff (#46): the
 		// operator is shown the diff itself, decoded, not the result JSON
@@ -161,11 +167,12 @@ var (
 // rendering in md.
 func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
+	if e.kind == chatToolCall {
+		return e.renderToolCall(ts, detailsExpanded)
+	}
 	text := e.text
 	if (detailsExpanded || e.alwaysDetail) && e.detail != "" && e.detail != e.text {
 		switch e.kind {
-		case chatToolCall:
-			text = fmt.Sprintf("→ %s(%s)", e.tool, e.detail)
 		case chatToolResult:
 			text = fmt.Sprintf("← %s: %s", e.tool, e.detail)
 		case chatError:
@@ -178,10 +185,10 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
 	case chatAssistant:
 		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
-	case chatToolCall, chatToolResult:
-		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
+	case chatToolResult:
+		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(neutralise(text)))
 	case chatError:
-		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(text))
+		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(neutralise(text)))
 	case chatSystem:
 		return fmt.Sprintf("%s %s", ts, chatSystemStyle.Render(text))
 	default:
