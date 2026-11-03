@@ -31,7 +31,7 @@ func shellConfig(t *testing.T) config.Config {
 // refusal that names the reason.
 func TestCodingProfileWithoutASandboxHasNoShell(t *testing.T) {
 	cfg := shellConfig(t)
-	tools, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "bubblewrap is not installed"})
+	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "bubblewrap is not installed"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestCodingProfileShellIsConfined(t *testing.T) {
 	if shell.sandbox == nil {
 		t.Fatalf("no sandbox: %s", shell.reason)
 	}
-	tools, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), shell)
+	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), shell, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

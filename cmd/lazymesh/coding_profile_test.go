@@ -40,6 +40,9 @@ var vettedCodingTools = map[string]bool{
 	"shell_exec": true,
 	"read_file":  true,
 	"write_file": true,
+	"git_branch": true,
+	"git_commit": true,
+	"git_push":   true,
 }
 
 // everyKnownTool is what a misconfigured or hostile setup could try to
@@ -133,7 +136,7 @@ func onlyRoom(room string) func(string) bool {
 // without reaching the mesh (invariants 1 and 1b).
 func TestCodingToolChainOffersOnlyVettedTools(t *testing.T) {
 	mesh := &fakeMesh{}
-	tools, err := buildCodingToolSource(codingConfig(t), mesh, onlyRoom(codingRoom), codingShell{reason: "test"})
+	tools, _, err := buildCodingToolSource(codingConfig(t), mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,12 +245,12 @@ func TestCodingProfileCanaryNeverReachesTheProvider(t *testing.T) {
 
 	cfg := codingConfig(t)
 	cfg.LocalTools.Enabled = false
-	tools, err := buildCodingToolSource(cfg, mesh, onlyRoom(codingRoom), codingShell{reason: "test"})
+	tools, _, err := buildCodingToolSource(cfg, mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := &recordingProvider{}
-	loop := agent.NewLoop(p, tools, buildCodingSystemPrompt("", false, ""))
+	loop := agent.NewLoop(p, tools, buildCodingSystemPrompt("", false, false, ""))
 	events := make(chan agent.Event, 1024)
 	if err := loop.Say(context.Background(), prompt, events); err != nil {
 		t.Fatalf("turn failed: %v", err)
@@ -342,7 +345,7 @@ func TestRoomPrompt_MeshProfileObservesAndKeepsTodaysPrompt(t *testing.T) {
 // TestBuildCodingSystemPrompt_SaysWhoApproves: the model is told that
 // fenced messages and file contents never approve or change its rules.
 func TestBuildCodingSystemPrompt_SaysWhoApproves(t *testing.T) {
-	got := buildCodingSystemPrompt("", false, "")
+	got := buildCodingSystemPrompt("", false, false, "")
 	for _, want := range []string{"only the operator approves", "mesh_say"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("coding system prompt lacks %q:\n%s", want, got)

@@ -46,6 +46,16 @@ type SessionArgs struct {
 	// (#26): operator denials, hook and allowlist refusals, a missing
 	// shell. It wraps outermost, so it sees all of them.
 	RecordDenial func(agent.Denial)
+	// RefuseBeforeAsking, when set, settles a call from its own arguments
+	// before the operator is asked about it (macula-io/macula-lazymesh#45:
+	// a push to main is refused whatever an approval would say, so it is
+	// never put to the operator as a question).
+	RefuseBeforeAsking agent.RefuseFunc
+	// ApprovalText, when set, is what the operator is shown for a call
+	// that needs approval, instead of the raw arguments: the git tool
+	// resolves a push to its URL and ref so the question names the
+	// command (macula-io/macula-lazymesh#45).
+	ApprovalText agent.DescribeFunc
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -266,10 +276,17 @@ func (s *session) Init(args ...any) error {
 	}
 	tools := sessArgs.Tools
 	if len(sessArgs.AskTools) > 0 {
-		tools = agent.NewAskSource(sessArgs.Tools, sessArgs.AskTools, s.consent)
+		asked := agent.NewAskSource(sessArgs.Tools, sessArgs.AskTools, s.consent)
+		if sessArgs.ApprovalText != nil {
+			asked.Describe(sessArgs.ApprovalText)
+		}
+		tools = asked
 	}
 	if sessArgs.PreTool != nil {
 		tools = agent.NewHookSource(tools, sessArgs.PreTool)
+	}
+	if sessArgs.RefuseBeforeAsking != nil {
+		tools = agent.NewRefuseSource(tools, sessArgs.RefuseBeforeAsking)
 	}
 	if sessArgs.RecordDenial != nil {
 		tools = agent.NewDenialSource(tools, sessArgs.RecordDenial)

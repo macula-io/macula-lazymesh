@@ -7,6 +7,24 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Git tool for the coding profile (#45, slice E of #38).** `git_branch`,
+  `git_commit` and `git_push`, offered only in the coding profile and only
+  when `tool_allowlist` names them, working in `local_tools.working_dir`.
+  A push goes only to the checkout's own configured remote, read once at
+  start, and never to `main`, `master` or a tag, never by force, with no
+  refspec and no URL: those calls are refused on their arguments alone,
+  before the operator is asked, whatever an approval would answer. Every
+  call asks by construction, and the approval shows the remote, its URL and
+  the exact ref, not an empty argument object. The push URL is the one
+  resolved at start; a config that rewrites it, adds push refs, sets a
+  mirror, or names a filter, a gpg program, an ssh or askpass command, a
+  remote `receivepack`/`uploadpack` or an include is refused, and every git
+  invocation pins `core.hooksPath`, `core.fsmonitor`, `commit.gpgSign`,
+  `core.sshCommand`, `credential.helper`, `core.askPass` and
+  `protocol.ext.allow` on its own command line, drops the environment's
+  `GIT_*` variables, and refuses a `.git` that is a symlink or that changed
+  since start. Every refusal is logged with its arguments and reason.
+
 - **Coding profile with a roster gate (#38, slice A).** `profile: coding`
   plus `roster:` (node ids): lazymesh reads each room arrival itself and
   passes the model only messages the station attests came from a roster
@@ -39,6 +57,17 @@ goreleaser from a `v*` tag; this file records what each one changes.
   at the final component. Long output goes to a directory the sandbox sees
   read-only; the sandbox's home and output are emptied at every start.
 
+- **A checkout cannot give orders (#38, slice B).** In the coding profile
+  the working directory's `AGENTS.md` and `CLAUDE.md` are delivered as the
+  repository's notes — inside a `<checkout_notes>` fence, escaped so they
+  cannot end it, after the rules — never as standing orders, and nothing in
+  them changes the tools, the profile or what needs approval. `N` opens a
+  panel listing them; `t` trusts the selected file, recording its path and
+  the SHA-256 of the exact bytes shown in `trusted_checkout_notes.json`
+  beside `config.yaml` (never in the checkout, and only that key writes
+  it). Only a matching hash ranks as the operator's own instruction; a file
+  that changes afterwards drops back to data at the next start, and the TUI
+  says why. The mesh-only profile is unchanged.
 - **Rings reach a headless controller.** A ring still awaiting an answer is
   sent on the control socket as `{"type":"ring_pending","ring_id",
   "from","purpose"}` the moment it arrives, not when the agent next idles.
@@ -64,6 +93,19 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Fixed
 
+- **`lazymesh attach` can be interrupted (#49).** An attached TUI whose stdin
+  is not a terminal — `timeout 5 lazymesh attach … < /dev/null`, a service
+  stop, a supervisor — sometimes ignored SIGINT and SIGTERM and had to be
+  SIGKILLed: bubbletea installs its own signal handler, and when attach's
+  own shutdown won the race to end the event loop, bubbletea's handler was
+  left blocked on an unbuffered channel that nothing read, with `Run`'s
+  shutdown waiting for it. Attach now takes signal handling for itself and
+  tells bubbletea not to, and it releases that handler the moment the first
+  signal arrives: a second ctrl+c is then the terminal's own default action,
+  so it ends a shutdown that will not finish instead of being swallowed by a
+  handler whose reader has already returned. Quitting with `q` or ctrl+c from
+  a real terminal was measured working, and is pinned by a new pty test
+  alongside the signal case.
 - **The approval prompt shows the whole call (#39).** It used to show the
   first 200 characters, so a long command could hide its tail. The prompt
   now wraps the full arguments, shows control characters as text, and

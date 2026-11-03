@@ -117,6 +117,8 @@ Vim-style modal input — **normal mode by default**:
 | `m` | show/hide the mesh view (rooms/rings/presence) | (typed as text) |
 | `s` | show/hide the mesh services view (the curated catalog below) | (typed as text) |
 | `r` | show/hide the realms view (memberships, and joining a new one below) | (typed as text) |
+| `N` | show/hide the checkout notes (the working directory's `AGENTS.md`/`CLAUDE.md`, and trusting one) | (typed as text) |
+| `t` | inside the checkout notes: trust the selected file (below) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
 | `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
@@ -146,10 +148,31 @@ as a light layer over the conversation rather than a popup taking it
 over.
 
 The mesh services view (`s`, below) and the realms view (`r`, below) are
-the same overlay shape over their own panels, and all three (mesh, mesh
-services, realms) are mutually exclusive — opening one closes the others
-rather than stacking, since two panels competing for the same tight chat
-margin would leave less room for either.
+the same overlay shape over their own panels, and all of them (mesh, mesh
+services, realms, checkout notes) are mutually exclusive — opening one
+closes the others rather than stacking, since two panels competing for the
+same tight chat margin would leave less room for either.
+
+### Checkout notes (`N`)
+
+In the coding profile the working directory is a checkout, so its
+`AGENTS.md` and `CLAUDE.md` are written by whoever wrote the repository —
+a dependency, a fork, a branch someone pushed. The model therefore reads
+them **as data about the repository, never as orders**: they are delivered
+inside a fence, after the rules, and nothing in them can change the
+tools, the profile or what needs your approval.
+
+`N` lists them with each one's state. `t` trusts the selected file: the
+record (path plus the SHA-256 of the exact bytes you were shown) is
+written to `trusted_checkout_notes.json` beside your `config.yaml`, never
+inside the checkout, and only that key writes it. A trusted file is
+delivered as your own instruction. If the file changes afterwards — a
+pull, a fork's PR — the hash no longer matches, the next start delivers it
+as data again, and the TUI says so. Trust takes effect at the next start,
+since a running session's system prompt is fixed.
+
+The mesh-only profile is unchanged: there the working directory is usually
+your own workspace, so its `CLAUDE.md` is read as your own instructions.
 
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat
@@ -161,12 +184,21 @@ loses that ambient awareness. Two lines:
 - the summary line: this instance's own petname once known, bold and in
   its own color so it stands out (`swift-otter`, requires macula-mcp
   >= 0.25.2 — see the room-message color coding above for the same
-  per-agent coloring), then the normal-weight room/ring/agent counts,
-  the configured model in bold (`3 rooms · 2 pending rings · 8 agents
-  seen · deepseek/deepseek-v4-flash`), then a `listening HH:MM:SS`
+  per-agent coloring), then the macula-mcp it is running on (`mcp 0.51.1 ●`
+  in green, `(pinned)` when the release running is the one
+  `macula_mcp_version` pinned, and `mcp ✗ disconnected` in red once a
+  refresh call fails or the subprocess exits — the version is the one
+  macula-mcp reported in its own handshake, not the one config asked for,
+  and it is re-read on every refresh, so a transparent respawn to a newer
+  release shows up and is announced in the chat), then the room/ring/agent
+  counts, the configured model in bold
+  (`mcp 0.51.1 ● · 3 rooms · 2 pending rings · 8 agents seen ·
+  deepseek/deepseek-v4-flash`), then a `listening HH:MM:SS`
   heartbeat once the agent loop's had its first idle cycle — an
   advancing clock is what makes a frozen process distinguishable from a
-  correctly-idle one.
+  correctly-idle one. The line is cut to the terminal's width rather than
+  wrapped, so it always stays one row; the mcp segment leads it so the cut
+  never takes it.
   Routine tool-call "chatter" (`mesh_call`, `mesh_say`, ...) is dropped
   from here entirely by default; `v` shows it inline in the chat pane
   instead for anyone who wants the full detail.
@@ -335,7 +367,30 @@ What changes in this profile:
   invisible characters (bidi overrides, zero-width marks) written out as
   `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
-  asking.
+  asking. The prompt can arrive while you are mid-word, so its answer keys
+  stay asleep for 0.6 s after it appears and after the last key that
+  reached it — a letter meant for your message cannot answer it, and the
+  prompt says so while the keys sleep. `esc` denies at once: the safe
+  answer is never delayed.
+- **Handing work out is a separate, narrower tool.** Name `git_branch`,
+  `git_commit` and `git_push` on `tool_allowlist` and the model can create
+  or switch a branch, commit, and push that branch to your checkout's own
+  configured remote (the one in `local_tools.working_dir`). It can never
+  push `main`, `master` or a tag (in any letter case), never follow a tag,
+  never force, and never reach a different remote — not even when an
+  approval says yes: those calls are refused before you are asked, and
+  every refusal is written to `agent.log` with its arguments and reason.
+  What you approve is the resolved command — the remote, its URL and the
+  ref `refs/heads/<branch>` — not an empty argument object.
+  The push URL is the one read when lazymesh started; if the checkout's
+  config rewrites it, adds push refs, sets a mirror, or names a filter, a
+  gpg program, an ssh or askpass command, a remote `receivepack`/
+  `uploadpack` or an include, the call is refused. Every git command pins
+  hooks, fsmonitor, commit signing, the ssh command, the credential helper,
+  askpass and `ext:` remotes on its own command line, the environment's
+  `GIT_*` variables are dropped, and a `.git` that is a symlink or that
+  changed after start is refused outright: a swapped `.git` is a whole
+  attacker-chosen config. It never prompts for credentials.
 - The roster lives only in your config file. Nothing the model does changes
   it, and it is separate from the ring pop-up's "Answer + Trust" list.
 

@@ -24,11 +24,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/confinedshell"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/counters"
 	"github.com/macula-io/macula-lazymesh/internal/frontend"
+	"github.com/macula-io/macula-lazymesh/internal/gittools"
 	"github.com/macula-io/macula-lazymesh/internal/localtools"
 	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
@@ -217,13 +219,14 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	defer waiterMgr.StopAll()
 	var tools agent.ToolSource
 	var shell codingShell
+	var gitTool *gittools.Source
 	if cfg.CodingProfile() {
 		shell = prepareCodingShell(ctx, cfg, configPath)
 		if shell.reason != "" {
 			fmt.Fprintln(os.Stderr, "lazymesh:", shell.reason)
 			agentLog.Printf("[shell] %s", shell.reason)
 		}
-		tools, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, shell)
+		tools, gitTool, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, shell, logStack.StdFor("git").Printf)
 	} else {
 		tools, err = buildToolSource(cfg, client, meshSvc)
 	}
@@ -241,9 +244,39 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return fmt.Errorf("resolve working directory: %w", err)
 	}
 	localToolsReachable := allowlistIncludes(resolveAllowlist(cfg), "shell_exec")
-	systemPrompt := buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(wd))
+	// The checkout's own notes (macula-io/macula-lazymesh#44): the working
+	// directory's AGENTS.md and CLAUDE.md. In the coding profile they are
+	// the repository's words -- data, unless the operator trusted exactly
+	// that content. The mesh profile keeps reading them as the operator's
+	// own instructions (G8): there the working directory is usually the
+	// operator's own workspace.
+	//
+	// Both profiles go through checkoutnotes.Read, so both get the same
+	// answer to what the checkout may point these two names at: a regular
+	// file inside the tree, no larger than the cap. Anything else is
+	// reported rather than delivered, in either profile.
+	var (
+		systemPrompt  string
+		checkoutNotes checkoutnotes.Reading
+	)
+	gitReachable := allowlistIncludes(resolveAllowlist(cfg), gittools.ToolPush)
 	if cfg.CodingProfile() {
-		systemPrompt = buildCodingSystemPrompt(goalText, shell.sandbox != nil, localInstructions(wd))
+		var notesErr error
+		checkoutNotes, notesErr = checkoutnotes.ReadWithTrust(wd, checkoutnotes.RecordPath(cfg.Dir))
+		if notesErr != nil {
+			// Fail closed and say so: a trust record that cannot be read --
+			// or that lives inside the checkout, where the repository
+			// writes it -- admits nothing, and silence would look like the
+			// operator never trusted anything.
+			agentLog.Printf("[checkoutnotes] %s: every checkout note is delivered as data", notesErr)
+		}
+		systemPrompt = buildCodingSystemPrompt(goalText, shell.sandbox != nil, gitReachable, checkoutnotes.Prompt(checkoutNotes.Notes))
+	} else {
+		checkoutNotes = checkoutnotes.Read(wd)
+		systemPrompt = buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(checkoutNotes.Notes))
+	}
+	for _, r := range checkoutNotes.Refused {
+		agentLog.Printf("[checkoutnotes] %s not delivered: %s", r.Name, r.Reason)
 	}
 	if err := checkStartupBudget(ctx, systemPrompt, tools, p, agentLog); err != nil {
 		return err
@@ -351,7 +384,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		preTool = preToolHook.Decide
 	}
 
-	sessPid, err := sessionhost.StartSession(node, rootPid, withAsklist(cfg, sessionhost.SessionArgs{
+	sessPid, err := sessionhost.StartSession(node, rootPid, codingSessionArgs(cfg, sessionhost.SessionArgs{
 		Provider:     p,
 		Tools:        tools,
 		SystemPrompt: systemPrompt,
@@ -359,7 +392,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		SessionID:    resolvedSessionID,
 		PreTool:      preTool,
 		RecordDenial: denialRecorder(filepath.Join(sessionStore.Dir, resolvedSessionID+".denials.jsonl"), agentLog),
-	}))
+	}, gitTool))
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -498,6 +531,21 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		// agent is actually presenting on the mesh.
 		MaculaMCPVersion:  cfg.MaculaMCPVersion,
 		RealmIdentityFile: client.IdentityFile(),
+		// The release macula-mcp said it was in its own handshake -- what
+		// is actually running, which the summary line shows and the start
+		// line records (macula-lazymesh#61). Read from the client rather
+		// than cfg, so an unpinned floating build shows the release npx
+		// resolved, and a respawn shows the one it brought up.
+		MaculaMCPReportedVersion: client.ServerVersion(),
+		// The checkout's notes as they stood at start, with each one's
+		// trust state, so the `N` panel shows exactly what the model was
+		// given and `t` records the bytes the operator read. The record
+		// itself lives beside the operator's config, never in the checkout
+		// (macula-io/macula-lazymesh#44).
+		CheckoutNotes:     checkoutNotes.Notes,
+		CheckoutRefused:   checkoutNotes.Refused,
+		CheckoutDir:       wd,
+		CheckoutTrustPath: checkoutnotes.RecordPath(cfg.Dir),
 	})
 
 	if headless {
@@ -698,12 +746,17 @@ func meshLocalTools(cfg config.Config) (*localtools.Source, error) {
 // buildCodingToolSource is buildToolSource for the coding profile
 // (macula-io/macula-lazymesh#38): the mesh contributes only
 // rostergate.CodingMeshTools, mesh_say is limited to the rooms the
-// session watches, and the local tools are reachable only as far as the
-// operator's own allowlist names them. No web_fetch and no mesh services:
-// both return text from outside the roster. The operator's allowlist
-// cannot add a mesh tool here, by construction, because the coding
-// profile's safety does not rest on that list being right.
-func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches func(room string) bool, shell codingShell) (agent.ToolSource, error) {
+// session watches, and the local and git tools are reachable only as far
+// as the operator's own allowlist names them. No web_fetch and no mesh
+// services: both return text from outside the roster. The operator's
+// allowlist cannot add a mesh tool here, by construction, because the
+// coding profile's safety does not rest on that list being right.
+//
+// The returned *gittools.Source is nil unless the allowlist names a git
+// tool; when it is not nil, run hands its RefuseBeforeAsking to the
+// session so a push this tool would refuse never becomes an approval
+// prompt (macula-io/macula-lazymesh#45).
+func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches func(room string) bool, shell codingShell, logf gittools.Logf) (agent.ToolSource, *gittools.Source, error) {
 	sources := []agent.ToolSource{mesh}
 	if cfg.LocalTools.Enabled {
 		localCfg := localtools.Config{
@@ -718,7 +771,7 @@ func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches fun
 		}
 		local, err := localtools.New(localCfg)
 		if err != nil {
-			return nil, fmt.Errorf("local tools: %w", err)
+			return nil, nil, fmt.Errorf("local tools: %w", err)
 		}
 		sources = append(sources, local)
 	}
@@ -726,10 +779,44 @@ func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches fun
 	if shell.sandbox == nil {
 		allowed = withoutTool(allowed, "shell_exec")
 	}
+	var gitTool *gittools.Source
+	if gcfg, ok := gitToolConfig(cfg); ok {
+		gcfg.Logf = logf
+		var err error
+		gitTool, err = gittools.New(gcfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("git tool: %w", err)
+		}
+		sources = append(sources, gitTool)
+	}
 	var gated agent.ToolSource = agent.NewAllowlistSource(agent.NewMultiSource(sources...), allowed)
 	gated = rostergate.NewSayOnlyToWatchedRooms(gated, watches)
 	gated = agent.NewHandoffSource(gated)
-	return agent.NewTerseDescriptionSource(gated), nil
+	return agent.NewTerseDescriptionSource(gated), gitTool, nil
+}
+
+// gitAllowlisted reports whether the operator named a git tool, which is
+// the only way it is offered: an allowlist entry is a conscious choice on
+// their own machine, never a side effect of another flag.
+func gitAllowlisted(cfg config.Config) bool {
+	for _, name := range gittools.ToolNames() {
+		if allowlistIncludes(cfg.ToolAllowlist, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitToolConfig is the one place the git tool's absence is decided: the
+// mesh profile never gets it, and the coding profile gets it only when the
+// operator's own allowlist names a git tool. It keeps its own command
+// timeout (gittools' default) rather than borrowing shell_exec's: a push
+// over a slow link is not a hung shell command.
+func gitToolConfig(cfg config.Config) (gittools.Config, bool) {
+	if !cfg.CodingProfile() || !gitAllowlisted(cfg) {
+		return gittools.Config{}, false
+	}
+	return gittools.Config{Checkout: cfg.LocalTools.WorkingDir}, true
 }
 
 // codingShell is the coding profile's shell: a sandbox that passed its
@@ -826,15 +913,22 @@ func denialRecorder(path string, agentLog *log.Logger) func(agent.Denial) {
 }
 
 // codingAllowlist is the coding profile's allowlist: the vetted mesh
-// tools, plus whichever local tools the operator's tool_allowlist names.
+// tools, plus whichever local and git tools the operator's tool_allowlist
+// names.
 func codingAllowlist(cfg config.Config) []string {
 	names := append([]string{}, rostergate.CodingMeshTools...)
-	for _, local := range localtools.ToolNames() {
-		if allowlistIncludes(cfg.ToolAllowlist, local) {
-			names = append(names, local)
+	for _, tool := range hostToolNames() {
+		if allowlistIncludes(cfg.ToolAllowlist, tool) {
+			names = append(names, tool)
 		}
 	}
 	return names
+}
+
+// hostToolNames is every tool that runs on the operator's own machine
+// rather than on the mesh: the shell/file tools and the git tool.
+func hostToolNames() []string {
+	return append(localtools.ToolNames(), gittools.ToolNames()...)
 }
 
 // withAsklist sets the session's ask list from cfg: the one place run
@@ -844,19 +938,35 @@ func withAsklist(cfg config.Config, args sessionhost.SessionArgs) sessionhost.Se
 	return args
 }
 
+// codingSessionArgs finishes a session's arguments for the coding
+// profile: the ask list, the git tool's own structural refusal, so a call
+// it will refuse is settled before the operator is asked about it, and its
+// approval text, so a push is approved as the URL and ref it resolves to
+// (macula-io/macula-lazymesh#45). run and its tests both go through here,
+// so no test can pass on wiring that run does not have.
+func codingSessionArgs(cfg config.Config, args sessionhost.SessionArgs, gitTool *gittools.Source) sessionhost.SessionArgs {
+	args = withAsklist(cfg, args)
+	if gitTool != nil {
+		args.RefuseBeforeAsking = gitTool.RefuseBeforeAsking
+		args.ApprovalText = gitTool.ApprovalText
+	}
+	return args
+}
+
 // resolveAsklist is the list of tools that wait for the operator's
-// approval on every call. In the coding profile it is every local tool
-// the allowlist lets in, whatever tool_asklist says: a peer's assignment
-// leads to these calls, and write_file to ~/.bashrc or .git/hooks runs
-// code just as shell_exec does, so none of them runs unasked
-// (macula-io/macula-lazymesh#38, threat model invariant 4).
+// approval on every call. In the coding profile it is every local or git
+// tool the allowlist lets in, whatever tool_asklist says: a peer's
+// assignment leads to these calls, and write_file to ~/.bashrc or a push
+// to the checkout's remote are as consequential as shell_exec, so none of
+// them runs unasked (macula-io/macula-lazymesh#38, threat model
+// invariant 4; #45 for the git tool).
 func resolveAsklist(cfg config.Config) []string {
 	if !cfg.CodingProfile() {
 		return cfg.ToolAsklist
 	}
 	names := append([]string{}, cfg.ToolAsklist...)
 	for _, name := range codingAllowlist(cfg) {
-		if allowlistIncludes(localtools.ToolNames(), name) {
+		if allowlistIncludes(hostToolNames(), name) {
 			names = appendUnique(names, name)
 		}
 	}
@@ -1010,31 +1120,20 @@ func agentLogPath() (string, error) {
 	return filepath.Join(dir, "agent.log"), nil
 }
 
-// maxLocalInstructionsBytes caps how much of the operator's own
-// instruction files ever reaches the model (G8): the convention files
-// can be huge (a workspace CLAUDE.md is tens of KB), and the startup
-// budget check exists to refuse genuinely oversized prefixes — the cap
-// here keeps one accidentally gigantic file from doing that refusal on
-// its own.
-const maxLocalInstructionsBytes = 100_000
-
-// localInstructions reads the operator's own standing instructions for
-// the working directory (G8): AGENTS.md and CLAUDE.md, the two
-// conventions this ecosystem already uses for agent guidance. Missing
-// files are simply absent; the order is AGENTS.md first, and content
-// past the cap is truncated with a marker rather than silently cut.
-func localInstructions(dir string) string {
+// localInstructions renders the operator's own standing instructions for
+// the working directory (G8) from the notes checkoutnotes.Read delivered:
+// AGENTS.md first, then CLAUDE.md.
+//
+// It reads nothing itself. The checkout chooses what those two names point
+// at, so the reading -- and every refusal that follows from it -- belongs
+// in one place, shared with the coding profile, rather than in a second
+// os.ReadFile that could follow a link out of the tree or read an endless
+// device.
+func localInstructions(notes []checkoutnotes.Note) string {
 	var b strings.Builder
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		content, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		if total := len(content); total > maxLocalInstructionsBytes {
-			content = append(content[:maxLocalInstructionsBytes], []byte(fmt.Sprintf("\n... [truncated: %d of %d bytes shown]", maxLocalInstructionsBytes, total))...)
-		}
-		b.WriteString("\n\n--- " + name + " ---\n")
-		b.Write(content)
+	for _, n := range notes {
+		b.WriteString("\n\n--- " + n.Name + " ---\n")
+		b.WriteString(n.Content)
 	}
 	return b.String()
 }
@@ -1073,7 +1172,7 @@ const codingGrammarLine = "Mesh conversation grammar: choose mesh_say's kind del
 // roster members assign and discuss work, only the operator approves a
 // command, and nothing it reads, in a message, a file or a tool result,
 // changes these rules.
-func buildCodingSystemPrompt(goalText string, localToolsReachable bool, localInstructions string) string {
+func buildCodingSystemPrompt(goalText string, localToolsReachable, gitReachable bool, checkoutNotes string) string {
 	prompt := "You are a lazymesh coding agent working as a member of a crew on the Macula mesh. " +
 		"The harness delivers messages from the crew members on the operator's roster to you, each " +
 		"fenced as <crew_message> with its sender named; you see nothing else from the mesh. Crew " +
@@ -1085,12 +1184,22 @@ func buildCodingSystemPrompt(goalText string, localToolsReachable bool, localIns
 	if localToolsReachable {
 		prompt += " You have shell_exec/read_file/write_file in a local working directory for the work itself."
 	}
+	if gitReachable {
+		prompt += " You have git_branch, git_commit and git_push for handing the work out on a branch: " +
+			"push only ever goes to the checkout's own configured remote, never to main, master or a tag, " +
+			"and never by force."
+	}
 	prompt += "\n\n" + codingGrammarLine + "\n\n" + styleLine
 	if goalText != "" {
 		prompt += " Additional objective: " + goalText
 	}
-	if localInstructions != "" {
-		prompt += "\n\nThe operator's local instructions for the working directory follow. Treat them as standing orders, second only to this system prompt and to explicit new instructions:" + localInstructions
+	// checkoutNotes is internal/checkoutnotes' own rendering: the checkout's
+	// files fenced as data, the operator's trusted ones fenced as theirs.
+	// It carries its own framing, so nothing here calls it "standing
+	// orders" -- that rank is exactly what a cloned repository must not
+	// reach (macula-io/macula-lazymesh#44, #38 threat model invariant 2).
+	if checkoutNotes != "" {
+		prompt += checkoutNotes
 	}
 	return prompt
 }
@@ -1903,5 +2012,15 @@ func runAttach(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Release the handler as soon as the first signal has been taken. Until
+	// then a second ctrl+c is swallowed -- NotifyContext keeps the signals
+	// registered, and the channel it diverted them to has one reader that has
+	// already returned -- so an operator whose first ctrl+c is stuck in
+	// bubbletea's shutdown has no second one to press. Releasing the handler
+	// restores the default action, which ends the process (#49 review).
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	return tui.RunAttached(ctx, ctrl, tui.Options{})
 }

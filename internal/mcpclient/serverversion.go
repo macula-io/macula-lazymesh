@@ -67,3 +67,23 @@ func parts(v string) ([3]int, bool) {
 	}
 	return out, true
 }
+
+// ServerVersion is the version macula-mcp reported in its MCP handshake, the
+// one checkServerVersion held to MinMaculaMCPVersion at spawn: the release
+// actually running, not whatever config or npm would say. Read from the
+// CURRENT session, so after a respawn it names the release that respawn
+// brought up -- which can differ from the first one, since an unpinned
+// macula-mcp floats to npm's latest on every spawn. Empty when the server
+// reported none, which checkServerVersion already refuses at spawn; an
+// attached TUI has no macula-mcp of its own and so never asks.
+func (c *Client) ServerVersion() string {
+	session := c.currentSession()
+	if session == nil {
+		return ""
+	}
+	res := session.InitializeResult()
+	if res == nil || res.ServerInfo == nil {
+		return ""
+	}
+	return res.ServerInfo.Version
+}

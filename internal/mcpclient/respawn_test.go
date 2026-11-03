@@ -45,6 +45,7 @@ type fakeSession struct {
 
 	callToolFunc  func(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error)
 	listToolsFunc func(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
+	initResult    *mcp.InitializeResult
 	closed        bool
 }
 
@@ -54,6 +55,13 @@ func (f *fakeSession) CallTool(ctx context.Context, params *mcp.CallToolParams) 
 
 func (f *fakeSession) ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
 	return f.listToolsFunc(ctx, params)
+}
+
+// InitializeResult is the handshake this fake was given, nil unless a test
+// set one -- ServerVersion then reports no version, as it does for a build
+// that reported none.
+func (f *fakeSession) InitializeResult() *mcp.InitializeResult {
+	return f.initResult
 }
 
 func (f *fakeSession) Close() error {

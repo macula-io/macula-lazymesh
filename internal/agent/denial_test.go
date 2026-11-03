@@ -55,3 +55,31 @@ func (failingTools) ListTools(context.Context) ([]mcpclient.Tool, error) {
 func (failingTools) CallToolRaw(context.Context, string, string) (string, error) {
 	return "", errors.New("exit status 1")
 }
+
+// TestDenialSourceRecordsPolicyRefusals (#26 C8, #45): a call settled
+// before asking (a push to main) and one whose approval text cannot be
+// built are refusals too, so both are recorded.
+func TestDenialSourceRecordsPolicyRefusals(t *testing.T) {
+	var got []Denial
+	allow := func(context.Context, string, string) (bool, error) { return true, nil }
+	describe := func(string, string) (string, error) { return "", errors.New("no remote named origin") }
+	refuse := func(tool, _ string) error {
+		if tool == "git_push" {
+			return errors.New("a push to main is never offered")
+		}
+		return nil
+	}
+	ask := NewAskSource(&fakeToolSource{}, []string{"git_push", "git_commit"}, allow).Describe(func(tool, args string) (string, error) {
+		if tool == "git_commit" {
+			return describe(tool, args)
+		}
+		return args, nil
+	})
+	tools := NewDenialSource(NewRefuseSource(ask, refuse), func(d Denial) { got = append(got, d) })
+	ctx := context.Background()
+	_, _ = tools.CallToolRaw(ctx, "git_push", `{"ref":"main"}`)
+	_, _ = tools.CallToolRaw(ctx, "git_commit", `{}`)
+	if len(got) != 2 || got[0].Tool != "git_push" || got[1].Tool != "git_commit" {
+		t.Fatalf("denials = %+v, want the push refusal and the describe refusal", got)
+	}
+}

@@ -210,6 +210,16 @@ type Config struct {
 	// this file sets it; no model tool and no ring answer changes it.
 	Roster []string `yaml:"roster,omitempty"`
 
+	// Dir is the directory the config file was loaded from: the operator's
+	// own config directory (~/.config/lazymesh, or the directory of the
+	// path --config named). Set by Load, never read from YAML, and
+	// deliberately never the working directory: it is where lazymesh keeps
+	// records that belong to this operator beside their own config, such as
+	// the checkout-notes trust record (macula-io/macula-lazymesh#44). A
+	// cloned repository ships its own config.yaml, so none of these may
+	// ever be resolved against the checkout.
+	Dir string `yaml:"-"`
+
 	// MetricsListen, if set, serves Prometheus metrics (the runtime
 	// counters plus token and round totals) at http://<addr>/metrics,
 	// e.g. "127.0.0.1:9464". Empty, the default, listens on nothing. The
@@ -322,6 +332,9 @@ func Load(path string) (Config, error) {
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
+	// The operator's own config directory, for every record that lives
+	// beside this file rather than in the checkout (see Dir's own doc).
+	cfg.Dir = filepath.Dir(path)
 	cfg.ContactPolicyFile = filepath.Join(filepath.Dir(path), "contact_policy.json")
 	data, err := os.ReadFile(path)
 	if err != nil {

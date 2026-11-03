@@ -44,7 +44,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	cfg.ToolAsklist = nil
 	target := filepath.Join(cfg.LocalTools.WorkingDir, ".bashrc")
 
-	tools, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"})
+	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -64,6 +64,11 @@ type Tool struct {
 type mcpSession interface {
 	CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error)
 	ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
+	// InitializeResult is the handshake this session completed, carrying the
+	// version checkServerVersion holds to the floor and ServerVersion shows
+	// to a person. *mcp.ClientSession has it; a fake may return nil, and
+	// ServerVersion then reports no version.
+	InitializeResult() *mcp.InitializeResult
 	Close() error
 }
 
