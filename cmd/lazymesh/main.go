@@ -1186,9 +1186,10 @@ const codingGrammarLine = "Mesh conversation grammar: choose mesh_say's kind del
 // the operator with nothing to do about it (#73). The key is the configured
 // leader (#63), never a hard-coded ctrl+x.
 func realmJoinLine(leader string) string {
-	return " Realms are joined by the operator, never by you: " + leader + " r opens the realms view, " +
-		"Enter on an empty message box opens the join input, and the realm name is typed there. " +
-		"You cannot join a realm. When asked whether you are in one, or why you cannot join it, " +
+	return " Realms are joined by the operator, never by you: " + leader + " r shows the realms view (it " +
+		"toggles, so r closes it again if it is already open), then Enter on an empty message box opens " +
+		"the join input (Esc first if a finished join's status is showing), and the realm name is typed " +
+		"there. You cannot join a realm. When asked whether you are in one, or why you cannot join it, " +
 		"say that and name that key."
 }
 

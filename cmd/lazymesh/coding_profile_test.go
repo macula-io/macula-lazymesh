@@ -453,7 +453,7 @@ func TestReportGateFailures_ReachesTheOperator(t *testing.T) {
 func TestBuildCodingSystemPrompt_ExplainsHowTheOperatorJoinsARealm(t *testing.T) {
 	got := buildCodingSystemPrompt("", true, false, "", "ctrl+g")
 
-	for _, want := range []string{"realms view", "ctrl+g r", "Enter on an empty message box", "cannot join a realm"} {
+	for _, want := range []string{"realms view", "ctrl+g r", "it toggles", "Enter on an empty message box", "Esc first if a finished join", "cannot join a realm"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the coding prompt does not say %q:\n%s", want, got)
 		}

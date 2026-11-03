@@ -820,7 +820,7 @@ func TestFirstPrompt_IdleStartWaitsForTheFirstEvent(t *testing.T) {
 func TestBuildSystemPrompt_ExplainsHowTheOperatorJoinsARealm(t *testing.T) {
 	got := buildSystemPrompt("", "", false, false, false, "", "ctrl+g")
 
-	for _, want := range []string{"realms view", "ctrl+g r", "Enter on an empty message box", "cannot join a realm"} {
+	for _, want := range []string{"realms view", "ctrl+g r", "it toggles", "Enter on an empty message box", "Esc first if a finished join", "cannot join a realm"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the prompt does not say %q, so the agent cannot explain the operator's own route:\n%s", want, got)
 		}
