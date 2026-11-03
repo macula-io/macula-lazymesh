@@ -121,3 +121,22 @@ func TestNoHistoryPathRemembersNothing(t *testing.T) {
 		t.Fatalf("with history off up gave %q", got)
 	}
 }
+
+// A recalled prompt is text, not terminal control: an escape sequence in
+// the history file (a hand edit, a pasted ANSI log) does not reach the
+// composer as one.
+func TestARecalledPromptCarriesNoControlRunes(t *testing.T) {
+	path := prompthistory.Path(filepath.Join(t.TempDir(), "lazymesh"), "fp")
+	if err := prompthistory.Append(path, "red \x1b[31mtext\x07 here"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got := pressKey(t, promptHistoryModel(t, path), upKey).input.Value()
+	for _, r := range got {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+			t.Fatalf("recalled prompt carries control rune %U: %q", r, got)
+		}
+	}
+	if got == "" {
+		t.Fatal("nothing was recalled")
+	}
+}

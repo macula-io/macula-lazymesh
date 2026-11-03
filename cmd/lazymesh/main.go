@@ -881,8 +881,11 @@ func privatePaths(cfg config.Config, configPath string) []string {
 		configPath, _ = config.DefaultPath()
 	}
 	paths := []string{filepath.Dir(configPath), filepath.Dir(cfg.ContactPolicyFile)}
+	// The whole lazymesh data directory, not only sessions/: the prompt
+	// history sits beside it (#78 gap 5), and anything added there later
+	// is fenced without having to remember this list.
 	if dataDir, err := sessionstore.DefaultDataDir(); err == nil {
-		paths = append(paths, dataDir)
+		paths = append(paths, filepath.Dir(dataDir))
 	}
 	if cfg.APIKeyFile != "" {
 		paths = append(paths, filepath.Dir(cfg.APIKeyFile))
