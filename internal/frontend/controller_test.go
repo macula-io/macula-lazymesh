@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -410,5 +411,43 @@ func TestControllerLearnsTheSessionsLeader(t *testing.T) {
 
 	if got := c.Session().Leader; got != "ctrl+g" {
 		t.Fatalf("the controller read leader %q, want ctrl+g", got)
+	}
+}
+
+// #98: an attached TUI that falls behind a flood of deltas still gets the
+// approval request that follows them, after all of their text.
+func TestController_ApprovalAfterADeltaFloodReachesTheAttachedTUI(t *testing.T) {
+	events := make(chan agent.Event, 4096)
+	_, path := startControllerServer(t, make(chan string, 4), events, nil)
+	c, err := Dial(path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	var want strings.Builder
+	for i := 0; i < 500; i++ {
+		text := fmt.Sprintf("[%d]", i)
+		want.WriteString(text)
+		events <- agent.Event{Kind: agent.EventAssistantDelta, Text: text}
+	}
+	events <- agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "risky", Text: "{}"}
+	time.Sleep(300 * time.Millisecond) // the TUI is busy: nothing read yet
+
+	var got strings.Builder
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-c.Events():
+			if ev.Kind == agent.EventApprovalRequested {
+				if got.String() != want.String() {
+					t.Fatalf("delta text before the approval:\n got %q\nwant %q", got.String(), want.String())
+				}
+				return
+			}
+			got.WriteString(ev.Text)
+		case <-timeout:
+			t.Fatal("the approval request never reached the attached TUI after a flood of deltas")
+		}
 	}
 }

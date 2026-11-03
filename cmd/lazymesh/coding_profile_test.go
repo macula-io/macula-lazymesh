@@ -432,7 +432,7 @@ func TestReportGateFailures_ReachesTheOperator(t *testing.T) {
 	roster, _ := rostergate.ParseRoster([]string{codingSupervisor})
 	gate := rostergate.New(brokenInbox{}, roster, rostergate.Enforce, nil)
 	tui, socket := make(chan agent.Event, 1), make(chan agent.Event, 1)
-	reportGateFailures(gate, tui, socket)
+	reportGateFailures(context.Background(), gate, tui, socket)
 	if _, ok := roomPrompt(context.Background(), gate, codingRoom); ok {
 		t.Fatal("a failed read started a turn")
 	}
