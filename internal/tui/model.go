@@ -1730,7 +1730,18 @@ var (
 // The border and padding cost four cells, so below five columns a box is
 // wider than the screen and the terminal wraps it -- the class #86 closed for
 // the status strip and #112 for the ring pop-up (#113).
+//
+// Every content line is fitted to the panel's inner width as the last word,
+// the way clipStatusLine does it for the status strip: a rune two cells wide
+// cannot be broken across a one-cell line, and a box one cell wider than the
+// terminal is a screen that scrolls (Pluto's r=1 on #113).
 func (m Model) panelFrame(content string) string {
+	inner := m.panelInnerWidth()
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = fitCells(line, inner)
+	}
+	content = strings.Join(lines, "\n")
 	if m.width > 0 && m.width <= 4 {
 		return content
 	}
@@ -2149,7 +2160,15 @@ func sameRelease(a, b string) bool {
 // differs between modes is whether keystrokes route into it at all,
 // handled entirely in handleKey; there's nothing mode-specific to do here.
 func (m Model) renderInputLine() string {
-	return m.input.View()
+	// The chatbox is the last word on its own width when the terminal is
+	// too narrow for it: its border and padding need six cells, and below
+	// seven the textarea keeps its default width. Cutting is what stops the
+	// screen gaining the rows the terminal wraps (Pluto's r=1 on #113).
+	lines := strings.Split(m.input.View(), "\n")
+	for i, line := range lines {
+		lines[i] = fitCells(line, m.width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderExpandedMesh() string {
