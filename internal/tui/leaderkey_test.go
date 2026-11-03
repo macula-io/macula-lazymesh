@@ -160,6 +160,19 @@ func TestLeaderKeyRefusals(t *testing.T) {
 		}
 	})
 
+	// The terminal sends HT, and bubbletea names it "tab": a leader on
+	// ctrl+i would be a key no keystroke can ever arm, with a hint row
+	// naming it (Jupiter, r=1 on #63).
+	t.Run("ctrl+i", func(t *testing.T) {
+		_, err := LeaderBinding("ctrl+i")
+		if err == nil {
+			t.Fatal("ctrl+i was accepted as the leader, but the terminal sends it as tab")
+		}
+		if !strings.Contains(err.Error(), "tab") {
+			t.Fatalf("the refusal of ctrl+i does not say the terminal sends it as tab: %v", err)
+		}
+	})
+
 	for _, k := range []string{"g", "x", "alt+g", "ctrl+shift+x", "ctrl+1", "ctrl+G", ""} {
 		if k == "" {
 			continue // empty means "unset", which is the default, not a refusal
@@ -182,6 +195,19 @@ func TestLeaderKeyRefusals(t *testing.T) {
 		}
 		if got := b.Keys()[0]; got != "ctrl+x" {
 			t.Fatalf("an unset leader_key resolves to %q, want ctrl+x", got)
+		}
+	})
+
+	// Key names are what the terminal sends, and those are lowercase; a
+	// refusal should say so rather than leave someone guessing why a
+	// perfectly reasonable-looking ctrl+G is not accepted.
+	t.Run("uppercase says lowercase", func(t *testing.T) {
+		_, err := LeaderBinding("ctrl+G")
+		if err == nil {
+			t.Fatal("ctrl+G was accepted as the leader")
+		}
+		if !strings.Contains(err.Error(), "lowercase") {
+			t.Fatalf("the refusal of ctrl+G does not say the name is lowercase: %v", err)
 		}
 	})
 }

@@ -475,7 +475,11 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			PreToolHook: preToolHook,
 			SessionID:   resolvedSessionID,
 			Model:       providerLabel(cfg) + "/" + cfg.Model,
-			Log:         logStack.StdFor("frontend"),
+			// The leader this session answers (#63). An attached TUI arms
+			// this one, not whatever the attaching side's config holds:
+			// the session is what will handle the key.
+			Leader: leader.Help().Key,
+			Log:    logStack.StdFor("frontend"),
 		})
 		if err != nil {
 			return fmt.Errorf("start control plane: %w", err)
@@ -2023,15 +2027,12 @@ func runAttach(args []string) error {
 		return fmt.Errorf("no session to attach to at %s: %w", path, err)
 	}
 
-	// The attached TUI types the same leader the operator configured: it is
-	// the same machine and the same config file, and a hint row naming a
-	// key the session's own config moved away from would be a lie about
-	// what to press (#63).
-	cfg, err := config.Load("")
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	leader, err := tui.LeaderBinding(cfg.LeaderKey)
+	// The attached TUI arms the session's own leader, learned over the
+	// control socket (#63): a session started with --config other.yaml has
+	// a leader this machine's ~/.config need not agree with, and the
+	// session is the thing that will handle the key. It also means attach
+	// reads no config of its own, so a malformed one cannot stop it.
+	leader, err := tui.LeaderBinding(ctrl.Session().Leader)
 	if err != nil {
 		return err
 	}

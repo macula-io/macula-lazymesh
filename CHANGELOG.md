@@ -122,15 +122,19 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 - **The leader key is configurable (#63).** `leader_key` in `config.yaml`
   moves the key that arms the command leader; the default stays `ctrl+x`.
-  Only a ctrl key and one letter is accepted. A key the message box already
-  uses (`ctrl+a/b/d/e/f/h/j/k/m/n/p/t/u/v/w` — the textarea's own editing
-  keys plus `ctrl+e` and `ctrl+j`), `ctrl+c`, and anything that is not ctrl
-  and one letter are refused when lazymesh starts, with an error naming the
-  key and the reason, rather than accepted into a TUI whose leader would
-  swallow a key someone typing needs or the one that quits. The hint row,
-  the list `?` writes into the chat, the held-approval sentence and the
-  error marker all name the configured key, and so does an attached TUI,
-  which reads the same config.
+  Only a ctrl key and one lowercase letter is accepted. A key the message
+  box already uses (`ctrl+a/b/d/e/f/h/j/k/m/n/p/t/u/v/w` — the textarea's
+  own editing keys plus `ctrl+e` and `ctrl+j`), `ctrl+c`, `ctrl+i` (the
+  terminal sends HT as `tab`, so no keystroke could arm it), and anything
+  that is not ctrl and one letter are refused when lazymesh starts, with an
+  error naming the key and the reason, rather than accepted into a TUI
+  whose leader would swallow a key someone typing needs or the one that
+  quits. The hint row, the list `?` writes into the chat, the held-approval
+  sentence and the error marker all name the configured key. An attached
+  TUI takes the leader from the session over the control socket — the
+  session is what answers the key — so a session started with `--config`
+  elsewhere is attached with its own leader, and `lazymesh attach` reads no
+  config of its own.
 - **One keymap: the message box is always focused, commands behind `ctrl+x`
   (#62).** There is no normal/insert mode any more: a bare key is a letter in
   your message and `Enter` sends, so nothing has to be entered before typing

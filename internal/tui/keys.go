@@ -145,10 +145,18 @@ func LeaderBinding(name string) (key.Binding, error) {
 		return DefaultKeyMap.Leader, nil
 	}
 	if !isCtrlLetter(name) {
-		return key.Binding{}, fmt.Errorf("leader_key %q: the leader must be ctrl and one letter, like ctrl+x", name)
+		return key.Binding{}, fmt.Errorf("leader_key %q: the leader must be ctrl and one lowercase letter, like ctrl+x", name)
 	}
 	if name == "ctrl+c" {
 		return key.Binding{}, fmt.Errorf("leader_key %q: ctrl+c quits lazymesh, so it cannot also be the leader", name)
+	}
+	// The terminal names HT itself and bubbletea passes its name through: a
+	// ctrl+i keystroke is reported as "tab", never as "ctrl+i". A leader on
+	// it would be a key the hint row offers and no keystroke can arm.
+	// (ctrl+m is the same class -- CR arrives as "enter" -- and is refused
+	// above as one of the message box's own keys.)
+	if name == "ctrl+i" {
+		return key.Binding{}, fmt.Errorf("leader_key %q: your terminal sends it as tab, so no keystroke could ever arm the leader", name)
 	}
 	if slices.Contains(composerKeys, name) {
 		return key.Binding{}, fmt.Errorf("leader_key %q: the message box uses it to type, edit or open $EDITOR, so the leader would swallow a key you need while writing", name)
