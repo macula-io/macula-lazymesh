@@ -120,6 +120,15 @@ func (m Model) finishSelection() (Model, tea.Cmd) {
 		m.syncViewport()
 		return m, nil
 	}
+	if text == "" {
+		// The drag was inside the pane and landed past the last message, so
+		// there is nothing to copy. Reporting that as "selection is outside
+		// the chat pane" was wrong twice -- the drag was inside it, and
+		// there was nothing to say -- and it appeared in the chat for what
+		// an operator reads as an empty drag (Raf, 2026-11-03).
+		m.syncViewport()
+		return m, nil
+	}
 	if err := clipboard.WriteAll(text); err != nil {
 		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not copy selection to clipboard: %v", err)})
 		m.syncViewport()
@@ -132,7 +141,9 @@ func (m Model) finishSelection() (Model, tea.Cmd) {
 
 // selectedVisibleText maps a screen-row range onto the chat viewport's
 // visible lines and returns them as plain text (ANSI stripped): what the
-// operator selected is what they saw.
+// operator selected is what they saw. The bool reports whether the range
+// overlapped the pane at all: a range inside the pane that holds no chat
+// line (it landed below the last message) is empty text, not a miss.
 func (m Model) selectedVisibleText(topRow, bottomRow int) (string, bool) {
 	paneTop := m.chatPaneTop()
 	topRow -= paneTop
@@ -150,7 +161,9 @@ func (m Model) selectedVisibleText(topRow, bottomRow int) (string, bool) {
 	start := m.chatViewport.YOffset + topRow
 	end := m.chatViewport.YOffset + bottomRow
 	if start >= len(lines) {
-		return "", false
+		// Inside the pane, below the last message: selected, but empty.
+		// finishSelection treats an empty result as nothing to copy.
+		return "", true
 	}
 	if end >= len(lines) {
 		end = len(lines) - 1
