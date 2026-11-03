@@ -1453,6 +1453,7 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	} else if ev.Kind == agent.EventAssistantMessage {
 		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
 			m.chatEntries[n-1].text = ev.Text
+			m.chatEntries[n-1].stop = ev.Stop
 			m.chatEntries[n-1].streaming = false
 			m.syncViewport()
 			return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))

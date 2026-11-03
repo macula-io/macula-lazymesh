@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
 // Controller is the controller side of the control plane: it dials one
@@ -311,13 +312,16 @@ func parseEvent(line []byte) (agent.Event, bool) {
 		ContextTokens int `json:"context_tokens"`
 		ContextWindow int `json:"context_window"`
 		RunTokens     int `json:"run_tokens"`
+
+		Stop       string `json:"stop"`
+		StopDetail string `json:"stop_detail"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return agent.Event{}, false
 	}
 	switch raw.Type {
 	case "assistant":
-		return agent.Event{Kind: agent.EventAssistantMessage, Text: raw.Text}, true
+		return agent.Event{Kind: agent.EventAssistantMessage, Text: raw.Text, Stop: provider.Stop{Reason: provider.StopReason(raw.Stop), Detail: raw.StopDetail}}, true
 	case "delta":
 		return agent.Event{Kind: agent.EventAssistantDelta, Text: raw.Text}, true
 	case "tool_call":
