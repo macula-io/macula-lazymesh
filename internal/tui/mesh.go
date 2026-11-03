@@ -14,6 +14,16 @@ type toolCaller interface {
 	CallTool(ctx context.Context, name string, args map[string]any) (string, error)
 }
 
+// versionReporter is the optional half of a toolCaller that can say which
+// release of macula-mcp it is talking to right now -- mcpclient.Client
+// implements it, and a test's fake may not. It is read on every refresh,
+// never once at start: a respawn is transparent to everything above this
+// package, so the release behind a healthy session can change under it
+// (macula-lazymesh#61 review).
+type versionReporter interface {
+	ServerVersion() string
+}
+
 // The structs below mirror macula-mcp's own mesh_rooms / mesh_read_inbox /
 // mesh_agents JSON response shapes exactly (verified live against a
 // running macula-mcp session, not guessed from the tool descriptions) --

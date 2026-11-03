@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -138,3 +139,109 @@ func TestNew_NoStartLineWithoutAMaculaMCPOfItsOwn(t *testing.T) {
 		}
 	}
 }
+
+// Jupiter's finding 1 (#61 review): the version was read once into
+// Options at start, so a transparent respawn -- which an unpinned
+// macula-mcp takes on every spawn, floating to npm's latest -- left the
+// segment green and naming a release nobody was running any more. The
+// refresh re-reads it, and a change is announced in the chat.
+func TestRefresh_FollowsARespawnToAnotherRelease(t *testing.T) {
+	m := mcpTestModel(t, "")
+	before := len(m.chatEntries)
+
+	m, _ = m.handleRefresh(refreshMsg{state: meshState{}, serverVersion: "0.52.0"})
+	got := m.renderSummaryLine()
+	if !strings.Contains(got, "mcp 0.52.0 ●") {
+		t.Fatalf("expected the segment to follow the respawned release, got %q", got)
+	}
+	if strings.Contains(got, "0.51.1") {
+		t.Fatalf("expected no trace of the release that is no longer running, got %q", got)
+	}
+	if len(m.chatEntries) != before+1 {
+		t.Fatalf("expected one chat line saying the release changed, got %d new entries", len(m.chatEntries)-before)
+	}
+	if last := m.chatEntries[len(m.chatEntries)-1]; !strings.Contains(last.text, "macula-mcp is now 0.52.0 (was 0.51.1)") {
+		t.Fatalf("expected the change to name both releases, got %q", last.text)
+	}
+}
+
+// The same release, every two seconds, must not fill the chat.
+func TestRefresh_DoesNotRepeatAnUnchangedRelease(t *testing.T) {
+	m := mcpTestModel(t, "")
+	before := len(m.chatEntries)
+	for i := 0; i < 3; i++ {
+		m, _ = m.handleRefresh(refreshMsg{state: meshState{}, serverVersion: "0.51.1"})
+	}
+	if len(m.chatEntries) != before {
+		t.Fatalf("expected no chat lines for an unchanged release, got %d", len(m.chatEntries)-before)
+	}
+}
+
+// The refresh itself re-reads the release every tick: what a respawn did
+// during a refresh is already visible in the message it returns.
+func TestRefreshCmd_CarriesTheReleaseTheSessionIsRunningNow(t *testing.T) {
+	client := &versionedToolCaller{
+		fakeToolCaller: &fakeToolCaller{responses: map[string]string{
+			"mesh_rooms":       fixtureMeshRooms,
+			"mesh_read_inbox":  fixtureMeshReadInbox,
+			"mesh_agents":      fixtureMeshAgents,
+			"mesh_list_realms": fixtureMeshListRealms,
+		}},
+		version: "0.52.0",
+	}
+	m := New(client, Options{UserInputCh: make(chan string, 8), StatusBarPosition: "bottom"})
+	m.width, m.height = 80, 24
+	m.resizeComponents()
+
+	msg, ok := m.refreshCmd()().(refreshMsg)
+	if !ok {
+		t.Fatalf("expected a refreshMsg")
+	}
+	if msg.serverVersion != "0.52.0" {
+		t.Fatalf("expected the refresh to carry the running release, got %q", msg.serverVersion)
+	}
+}
+
+// `(pinned)` describes the release that is running, not what config asked
+// for: a pin npm did not honour must not be labelled as if it were.
+func TestSummaryLine_PinnedOnlyWhenTheRunningReleaseIsThePinnedOne(t *testing.T) {
+	m := mcpTestModel(t, "0.50.0")
+	if got := m.renderSummaryLine(); strings.Contains(got, "(pinned)") {
+		t.Fatalf("expected no (pinned) when the running release is not the pinned one, got %q", got)
+	}
+}
+
+func TestSummaryLine_APinWrittenWithAVPrefixStillMatches(t *testing.T) {
+	m := mcpTestModel(t, "v0.51.1")
+	if got := m.renderSummaryLine(); !strings.Contains(got, "(pinned)") {
+		t.Fatalf("expected (pinned) for a v-prefixed pin of the running release, got %q", got)
+	}
+}
+
+// The segment leads the line so a narrow terminal's cut never takes it: at
+// 60 columns with a long petname, "disconnected" is what has to survive.
+func TestSummaryLine_SegmentSurvivesANarrowCut(t *testing.T) {
+	m := mcpTestModel(t, "")
+	m.width = 60
+	m.state = meshState{agents: []agentPresence{
+		{NodeID: strings.Repeat("ab", 32), Petname: "wise_scarlet_dolphin_3829"},
+	}}
+	m, _ = m.handleRefresh(refreshMsg{err: errors.New("mesh_agents: connection refused")})
+
+	got := m.renderSummaryLine()
+	if !strings.Contains(got, "mcp ✗ disconnected") {
+		t.Fatalf("expected the disconnected segment to survive a 60-column cut, got %q", got)
+	}
+	if w := lipgloss.Width(got); w > 60 {
+		t.Fatalf("expected the line to fit 60 columns, got width %d: %q", w, got)
+	}
+}
+
+// versionedToolCaller is fakeToolCaller plus the release a real client
+// reports in its handshake.
+type versionedToolCaller struct {
+	*fakeToolCaller
+	version string
+}
+
+func (v *versionedToolCaller) ServerVersion() string { return v.version }

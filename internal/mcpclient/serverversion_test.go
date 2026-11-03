@@ -1,6 +1,7 @@
 package mcpclient
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -54,5 +55,52 @@ func TestCheckServerVersionRefusesOlderOrUnknown(t *testing.T) {
 	}
 	if err := checkServerVersion(&mcp.InitializeResult{}); err == nil {
 		t.Error("a handshake with no serverInfo was accepted")
+	}
+}
+
+// macula-lazymesh#61 review: the summary line names the release that is
+// running NOW. A respawn is transparent to every caller -- the same Client
+// keeps answering -- and an unpinned macula-mcp floats to npm's latest on
+// every spawn, so ServerVersion has to follow the session or the TUI keeps
+// naming a release nobody is running any more.
+func TestServerVersionFollowsARespawn(t *testing.T) {
+	resetRespawnCooldown(t)
+	first := &fakeSession{initResult: initResult("0.51.1")}
+	second := &fakeSession{initResult: initResult("0.52.0")}
+	c := newTestClient(first, func(context.Context, SpawnOptions) (mcpSession, error) {
+		return second, nil
+	})
+
+	if got := c.ServerVersion(); got != "0.51.1" {
+		t.Fatalf("expected the first session's version, got %q", got)
+	}
+	if !c.tryRespawn(context.Background()) {
+		t.Fatal("expected the respawn to succeed")
+	}
+	if got := c.ServerVersion(); got != "0.52.0" {
+		t.Fatalf("expected the respawned session's version, got %q -- the segment would keep naming a release that is no longer running", got)
+	}
+}
+
+// A build that reports no handshake names no release: the segment then
+// carries nothing rather than a guess.
+func TestServerVersionIsEmptyWithoutAReportedHandshake(t *testing.T) {
+	for name, session := range map[string]*fakeSession{
+		"nil handshake":         {},
+		"no server info":        {initResult: &mcp.InitializeResult{}},
+		"nil server info":       {initResult: &mcp.InitializeResult{ServerInfo: nil}},
+		"empty reported string": {initResult: initResult("")},
+	} {
+		c := newTestClient(session, nil)
+		if got := c.ServerVersion(); got != "" {
+			t.Fatalf("%s: expected no version, got %q", name, got)
+		}
+	}
+}
+
+func TestServerVersionIsEmptyWithNoSession(t *testing.T) {
+	c := newTestClient(nil, nil)
+	if got := c.ServerVersion(); got != "" {
+		t.Fatalf("expected no version without a session, got %q", got)
 	}
 }
