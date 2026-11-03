@@ -16,6 +16,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/rostergate"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // The coding profile's tests pin threat model invariants 1 and 1b
@@ -139,10 +140,11 @@ func onlyRoom(room string) func(string) bool {
 // without reaching the mesh (invariants 1 and 1b).
 func TestCodingToolChainOffersOnlyVettedTools(t *testing.T) {
 	mesh := &fakeMesh{}
-	tools, _, err := buildCodingToolSource(codingConfig(t), mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, _, err := buildCodingToolSource(codingConfig(t), mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	listed, err := tools.ListTools(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -248,10 +250,11 @@ func TestCodingProfileCanaryNeverReachesTheProvider(t *testing.T) {
 
 	cfg := codingConfig(t)
 	cfg.LocalTools.Enabled = false
-	tools, _, err := buildCodingToolSource(cfg, mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, _, err := buildCodingToolSource(cfg, mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	p := &recordingProvider{}
 	loop := agent.NewLoop(p, tools, buildCodingSystemPrompt("", false, false, "", "ctrl+x"))
 	events := make(chan agent.Event, 1024)

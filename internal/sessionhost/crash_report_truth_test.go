@@ -12,6 +12,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // compactThenSayThenCrash answers a history compaction with a summary,
@@ -49,7 +50,7 @@ func TestProbe99_DeniedStepIsNotReportedAsRan(t *testing.T) {
 	n := testNode(t)
 	root := testRoot(t, n)
 	pid := crashedReplacement(t, n, root, SessionArgs{
-		Provider: &sayThenCrashProvider{}, Tools: deniedTools{}, SystemPrompt: "test",
+		Provider: &sayThenCrashProvider{}, Toolchain: toolchain.Policy{Base: deniedTools{}, Allowlist: []string{"mesh_say"}}, SystemPrompt: "test",
 		Store: testStore(t), SessionID: "s1",
 	})
 	report, err := TakeCrashReport(n, pid)
@@ -76,7 +77,7 @@ func TestProbe99_UnreadableLogIsNotReportedAsNothingRan(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := crashedReplacement(t, n, root, SessionArgs{
-		Provider: compactThenSayThenCrash{}, Tools: fakeTools{}, SystemPrompt: "test",
+		Provider: compactThenSayThenCrash{}, Toolchain: fakeToolchain(), SystemPrompt: "test",
 		Store: store, SessionID: "s1",
 	})
 	report, err := TakeCrashReport(n, pid)
@@ -98,7 +99,7 @@ func TestCrashReport_AnUnreadableLogIsReportedAsNoLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := crashedReplacement(t, n, root, SessionArgs{
-		Provider: &sayThenCrashProvider{}, Tools: fakeTools{}, SystemPrompt: "test",
+		Provider: &sayThenCrashProvider{}, Toolchain: fakeToolchain(), SystemPrompt: "test",
 		Store: store, SessionID: "s1",
 	})
 	report, err := TakeCrashReport(n, pid)

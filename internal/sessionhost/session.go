@@ -14,49 +14,35 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // SessionArgs is everything one session actor needs to build its own
-// conversation: the provider, the tool sources, the fixed system
-// prompt, and — when Store and SessionID are both set — the JSONL log
-// the conversation is restored from and appended to (D2). Each session
+// conversation: the provider, the profile's declared tool chain, the fixed
+// system prompt, and — when Store and SessionID are both set — the JSONL
+// log the conversation is restored from and appended to (D2). Each session
 // owns its own agent.Loop; nothing is shared between sessions by
 // construction.
 type SessionArgs struct {
 	Provider     provider.Provider
-	Tools        agent.ToolSource
 	SystemPrompt string
+
+	// Toolchain is the profile's declared guard chain
+	// (macula-io/macula-lazymesh#100): what the guards wrap and which of
+	// them are on. The session supplies the one piece it alone owns -- its
+	// own Consent, which puts the question to this session's subscribers
+	// (TUI popup, control socket) and takes the answer back out of band --
+	// and then builds the chain once, through toolchain.Chain. No other
+	// code path may add a guard of its own: a guard that exists here is in
+	// every profile, and one assembled beside this chain would be invisible
+	// to it.
+	Toolchain toolchain.Policy
 
 	// Store persists the conversation as JSONL under SessionID. A nil
 	// Store (or an empty SessionID) disables persistence: the session
 	// runs in-memory exactly as it did before D2.
 	Store     *sessionstore.Store
 	SessionID string
-
-	// AskTools lists tools gated behind per-action operator approval
-	// (G9): the session wraps its tool source with agent.AskSource using
-	// its own consent — the approval prompt goes out as an event to every
-	// subscriber (TUI popup, control socket), and the answer comes back
-	// through AnswerApproval. Empty means nothing asks.
-	AskTools []string
-	// PreTool, when set, decides every tool call before anything else
-	// (G8: the control socket's pre_tool hook). It wraps outside the ask
-	// list, so a call it refuses never asks the operator.
-	PreTool agent.Gate
-	// RecordDenial, when set, receives every tool call the chain refused
-	// (#26): operator denials, hook and allowlist refusals, a missing
-	// shell. It wraps outermost, so it sees all of them.
-	RecordDenial func(agent.Denial)
-	// RefuseBeforeAsking, when set, settles a call from its own arguments
-	// before the operator is asked about it (macula-io/macula-lazymesh#45:
-	// a push to main is refused whatever an approval would say, so it is
-	// never put to the operator as a question).
-	RefuseBeforeAsking agent.RefuseFunc
-	// ApprovalText, when set, is what the operator is shown for a call
-	// that needs approval, instead of the raw arguments: the git tool
-	// resolves a push to its URL and ref so the question names the
-	// command (macula-io/macula-lazymesh#45).
-	ApprovalText agent.DescribeFunc
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -300,24 +286,13 @@ func (s *session) Init(args ...any) error {
 	if !ok {
 		return fmt.Errorf("sessionhost: expected SessionArgs, got %T", args[0])
 	}
-	tools := sessArgs.Tools
-	if len(sessArgs.AskTools) > 0 {
-		asked := agent.NewAskSource(sessArgs.Tools, sessArgs.AskTools, s.consent)
-		if sessArgs.ApprovalText != nil {
-			asked.Describe(sessArgs.ApprovalText)
-		}
-		tools = asked
-	}
-	if sessArgs.PreTool != nil {
-		tools = agent.NewHookSource(tools, sessArgs.PreTool)
-	}
-	if sessArgs.RefuseBeforeAsking != nil {
-		tools = agent.NewRefuseSource(tools, sessArgs.RefuseBeforeAsking)
-	}
-	if sessArgs.RecordDenial != nil {
-		tools = agent.NewDenialSource(tools, sessArgs.RecordDenial)
-	}
-	s.loop = agent.NewLoop(sessArgs.Provider, tools, sessArgs.SystemPrompt)
+	policy := sessArgs.Toolchain
+	// The session owns the consent half of the ask guard: the question goes
+	// out on the running turn's event stream, the answer comes back through
+	// AnswerApproval. Everything else in the chain is the profile's
+	// declaration, unchanged.
+	policy.Consent = s.consent
+	s.loop = agent.NewLoop(sessArgs.Provider, toolchain.Chain(policy), sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})
 	if sessArgs.Store == nil || sessArgs.SessionID == "" {
 		return nil

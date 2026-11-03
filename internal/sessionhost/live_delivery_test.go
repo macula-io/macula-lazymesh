@@ -126,9 +126,8 @@ func TestLiveDelivery_ApprovalAfterItsOwnTurnsText(t *testing.T) {
 	}}
 	pid := startSessionWith(t, n, root, SessionArgs{
 		Provider:     p,
-		Tools:        fakeTools{},
+		Toolchain:    fakeToolchain("risky"),
 		SystemPrompt: "you are a test agent",
-		AskTools:     []string{"risky"},
 	})
 	events := subscribedCollector(t, n, pid)
 

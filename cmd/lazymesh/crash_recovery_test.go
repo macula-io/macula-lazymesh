@@ -22,6 +22,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // crashAfterSayProvider asks for mesh_say, panics on the round after it,
@@ -121,7 +122,7 @@ func TestCrashRecovery_NoResendAfterACrashFollowingMeshSay(t *testing.T) {
 	p := &crashAfterSayProvider{}
 	tools := &countingMeshTools{}
 	sess, err := sessionhost.StartSession(n, root, sessionhost.SessionArgs{
-		Provider: p, Tools: tools, SystemPrompt: "test", Store: store, SessionID: "s1",
+		Provider: p, Toolchain: toolchain.Policy{Base: tools, Allowlist: []string{"mesh_say"}}, SystemPrompt: "test", Store: store, SessionID: "s1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +195,7 @@ func TestCrashRecovery_AKilledRunIsReportedWhenTheNextOneStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess, err := sessionhost.StartSession(n, root, sessionhost.SessionArgs{
-		Provider: &crashAfterSayProvider{rounds: 2}, Tools: &countingMeshTools{}, SystemPrompt: "test", Store: store, SessionID: "s1",
+		Provider: &crashAfterSayProvider{rounds: 2}, Toolchain: toolchain.Policy{Base: &countingMeshTools{}, Allowlist: []string{"mesh_say"}}, SystemPrompt: "test", Store: store, SessionID: "s1",
 	})
 	if err != nil {
 		t.Fatal(err)
