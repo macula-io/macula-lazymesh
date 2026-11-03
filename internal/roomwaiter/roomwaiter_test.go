@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
 func TestArrived_TimedOutZeroMeansArrived(t *testing.T) {
@@ -371,5 +373,61 @@ func TestManager_WatchesNamesExactlyTheWatchedRooms(t *testing.T) {
 	m.Remove("agents.room.a")
 	if m.Watches("agents.room.a") {
 		t.Error("a removed room is still reported as watched")
+	}
+}
+
+// #97: a membership event is the one way a room joins or leaves the
+// watched set from outside the waiter.
+func TestManager_ApplyFollowsMembershipEvents(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer m.StopAll()
+
+	m.Apply(ctx, agent.Event{Kind: agent.EventRoomJoined, Room: "agents.room.a"})
+	if !m.Watches("agents.room.a") {
+		t.Fatalf("a joined room is not watched")
+	}
+	m.Apply(ctx, agent.Event{Kind: agent.EventToolResult, Room: "agents.room.b"})
+	if m.Watches("agents.room.b") {
+		t.Fatalf("an event that is no membership change started a waiter")
+	}
+	m.Apply(ctx, agent.Event{Kind: agent.EventRoomLeft, Room: "agents.room.a"})
+	if m.Watches("agents.room.a") {
+		t.Fatalf("a room left is still watched")
+	}
+}
+
+// #97 O1: a mesh_rooms listing that started before the operator accepted a
+// ring arrives without the accepted room. It must not stop watching it:
+// a room joined on purpose leaves the watched set only by its own leave,
+// while a room known only from an earlier listing still follows the
+// listing.
+func TestManager_AStaleListingNeverDropsAJoinedRoom(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m.Sync(ctx, []string{"agents.room.listed"})
+	m.Apply(ctx, agent.Event{Kind: agent.EventRoomJoined, Room: "agents.room.accepted"})
+	m.Sync(ctx, nil) // the stale listing: neither room in it
+
+	if !m.Watches("agents.room.accepted") {
+		t.Fatal("a stale mesh_rooms listing stopped watching the room the operator just accepted")
+	}
+	if m.Watches("agents.room.listed") {
+		t.Fatal("a room known only from a listing is still watched after the listing dropped it")
+	}
+	m.Apply(ctx, agent.Event{Kind: agent.EventRoomLeft, Room: "agents.room.accepted"})
+	if m.Watches("agents.room.accepted") {
+		t.Fatal("leaving the accepted room did not stop watching it")
 	}
 }
