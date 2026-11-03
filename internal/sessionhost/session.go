@@ -175,7 +175,7 @@ func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool
 		Kind:     agent.EventApprovalRequested,
 		ToolName: tool,
 		ID:       id,
-		Text:     agent.ApprovalPreview(argumentsJSON, 200),
+		Text:     argumentsJSON, // whole: the operator approves what they read (#39)
 	})
 	timer := time.NewTimer(approvalTimeout)
 	defer timer.Stop()

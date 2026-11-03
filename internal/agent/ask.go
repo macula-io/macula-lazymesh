@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 )
@@ -16,6 +15,12 @@ import (
 // refused either way, but the distinction is what the model's tool
 // result says.
 type Consent func(ctx context.Context, tool, argumentsJSON string) (bool, error)
+
+// MaxApprovableBytes is the longest call an operator is asked about.
+// The prompt shows a call whole, never a cut preview (#39: a 200-byte
+// preview let a long command hide its tail), so a call longer than a
+// person can read through is refused without asking.
+const MaxApprovableBytes = 16 << 10
 
 // AskSource wraps another ToolSource and gates a configured set of tools
 // behind Consent (G9: per-action approval for the sharp tools — the
@@ -51,6 +56,9 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 	if !a.ask[name] || a.consent == nil {
 		return a.inner.CallToolRaw(ctx, name, argumentsJSON)
 	}
+	if len(argumentsJSON) > MaxApprovableBytes {
+		return "", fmt.Errorf("the %q call is %d bytes, more than the %d an approval prompt shows whole; split it into smaller calls", name, len(argumentsJSON), MaxApprovableBytes)
+	}
 	allowed, err := a.consent(ctx, name, argumentsJSON)
 	if err != nil {
 		return "", fmt.Errorf("approval for %q could not be obtained: %w", name, err)
@@ -59,15 +67,4 @@ func (a *AskSource) CallToolRaw(ctx context.Context, name string, argumentsJSON 
 		return "", fmt.Errorf("approval for %q was denied by the operator", name)
 	}
 	return a.inner.CallToolRaw(ctx, name, argumentsJSON)
-}
-
-// ApprovalPreview truncates a tool call's arguments for display in an
-// approval prompt: the operator needs enough to judge the call, never
-// the whole (possibly very large) argument object.
-func ApprovalPreview(argumentsJSON string, limit int) string {
-	args := strings.TrimSpace(argumentsJSON)
-	if limit <= 0 || len(args) <= limit {
-		return args
-	}
-	return args[:limit] + "... [truncated]"
 }

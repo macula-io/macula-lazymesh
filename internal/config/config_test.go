@@ -301,3 +301,42 @@ func TestLoad_MetricsListenIsOffUnlessSet(t *testing.T) {
 		t.Fatalf("metrics_listen = %q (err %v)", cfg.MetricsListen, err)
 	}
 }
+
+func loadYAML(t *testing.T, body string) (Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return Load(path)
+}
+
+// TestDefault_ProfileIsMeshOnly: a config that says nothing about the
+// profile keeps today's mesh-only agent.
+func TestDefault_ProfileIsMeshOnly(t *testing.T) {
+	cfg, err := loadYAML(t, "model: m\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CodingProfile() {
+		t.Fatal("an unset profile resolved to the coding profile")
+	}
+}
+
+func TestLoad_CodingProfileWithRoster(t *testing.T) {
+	cfg, err := loadYAML(t, "profile: coding\nroster:\n  - "+strings.Repeat("ab", 32)+"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CodingProfile() || len(cfg.Roster) != 1 {
+		t.Fatalf("profile %q roster %v", cfg.Profile, cfg.Roster)
+	}
+}
+
+// TestLoad_RefusesAnUnknownProfile: a typo must not fall back to some
+// profile quietly.
+func TestLoad_RefusesAnUnknownProfile(t *testing.T) {
+	if _, err := loadYAML(t, "profile: codign\n"); err == nil {
+		t.Fatal("an unknown profile loaded without error")
+	}
+}

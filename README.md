@@ -298,6 +298,58 @@ Only do this if you actually want an agent whose conversation can be
 steered by any mesh peer to also have local execution — it's a real,
 conscious trade-off, not a default anyone gets by accident.
 
+### Coding profile: only your roster reaches the model (in progress)
+
+`profile: coding` turns lazymesh into a crew member that takes work from
+the people you name, and from no one else (#38). You list their node ids
+under `roster:`:
+
+```yaml
+profile: coding
+roster:
+  - <64-hex node id of the crew member who assigns work>
+  - <64-hex node id of your own other session, if you post from one>
+```
+
+What changes in this profile:
+
+- **lazymesh reads the rooms, not the model.** When something arrives,
+  lazymesh keeps only messages that the station confirms came from a node
+  on your roster, and hands those to the model, each one marked with who
+  sent it and how long ago it arrived. A stranger's message, a message pretending to be from someone
+  on your roster, and a room's own description never reach the model. A
+  room with nothing from your roster costs no model call at all. If
+  lazymesh cannot read a room, the TUI and the control socket say so, so
+  a broken read never passes for a quiet room.
+- **The model can only speak, and only where it already is.** Its one mesh
+  tool is `mesh_say`, limited to the rooms this session watches, and it
+  gets back only the id of what it said. It cannot read an inbox, join a
+  room, ring anyone, answer a ring or serve a procedure, whatever
+  `tool_allowlist` says. Rings are shown to you in the TUI and never to the
+  model.
+- **Only you approve.** A roster member can assign and discuss work. No
+  message can approve a tool call: approvals come only from the TUI or the
+  control socket. Every local tool you allow here (`read_file`,
+  `write_file`, `shell_exec`) asks you before each call, whatever
+  `tool_asklist` says. The approval prompt shows the whole call, with
+  invisible characters (bidi overrides, zero-width marks) written out as
+  `\u{XXXX}`; one taller than the screen must be paged through, every
+  line, before `y` allows it, and a call over 16 KiB is refused without
+  asking.
+- The roster lives only in your config file. Nothing the model does changes
+  it, and it is separate from the ring pop-up's "Answer + Trust" list.
+
+Start it in the room your crew works in: `lazymesh --room <room_topic>`.
+In this profile lazymesh joins that room itself, since the model has no
+way to join one.
+
+`roster:` without `profile: coding` changes nothing the model sees: it only
+logs, in agent.log, which messages a coding agent would have dropped, so
+you can check the filter against your own rooms first.
+
+**Not yet:** the shell is not confined in this profile yet (#26). Until it
+is, do not add `shell_exec` to `tool_allowlist` here either.
+
 ## Driving lazymesh from another program
 
 `lazymesh --headless` runs without the TUI and serves a control socket

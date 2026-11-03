@@ -194,12 +194,39 @@ type Config struct {
 	// needs the control socket (--headless or --unix-socket).
 	PreToolHookRequired bool `yaml:"pre_tool_hook_required,omitempty"`
 
+	// Profile says what this agent is for. "mesh" (what empty resolves
+	// to) is the conversational mesh agent: it reads its own inbox and
+	// talks to anyone in its rooms, with no local tools by default.
+	// "coding" is the crew-member coding agent of
+	// macula-io/macula-lazymesh#38: only attested messages from Roster
+	// senders reach the model, delivered by lazymesh itself, and the model
+	// can speak only into the rooms the session watches. Any other value
+	// fails Load.
+	Profile string `yaml:"profile,omitempty"`
+	// Roster is the operator's list of mesh node ids (64 hex) whose
+	// attested room messages reach the model in the coding profile, and
+	// is required there. In the mesh profile a roster turns on observe
+	// mode: lazymesh logs which messages a coding agent would drop. Only
+	// this file sets it; no model tool and no ring answer changes it.
+	Roster []string `yaml:"roster,omitempty"`
+
 	// MetricsListen, if set, serves Prometheus metrics (the runtime
 	// counters plus token and round totals) at http://<addr>/metrics,
 	// e.g. "127.0.0.1:9464". Empty, the default, listens on nothing. The
 	// endpoint has no authentication: bind it where only your scraper
 	// can reach it.
 	MetricsListen string `yaml:"metrics_listen,omitempty"`
+}
+
+// Profile values Load accepts.
+const (
+	ProfileMesh   = "mesh"
+	ProfileCoding = "coding"
+)
+
+// CodingProfile reports whether c runs the coding profile.
+func (c Config) CodingProfile() bool {
+	return c.Profile == ProfileCoding
 }
 
 // RingPolicyContactPolicyFileValue translates p into the value written
@@ -298,6 +325,11 @@ func Load(path string) (Config, error) {
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	switch cfg.Profile {
+	case "", ProfileMesh, ProfileCoding:
+	default:
+		return Config{}, fmt.Errorf("config %s: profile %q is not one of %q or %q", path, cfg.Profile, ProfileMesh, ProfileCoding)
 	}
 	return cfg, nil
 }

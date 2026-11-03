@@ -7,6 +7,21 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Coding profile with a roster gate (#38, slice A).** `profile: coding`
+  plus `roster:` (node ids): lazymesh reads each room arrival itself and
+  passes the model only messages the station attests came from a roster
+  node, fenced with the sender named. The model's only mesh tool is
+  `mesh_say`, limited to the rooms the session watches, with its reply wait
+  removed and its result reduced to the message id; rings never reach the
+  model. Every allowed local tool asks the operator before each call,
+  whatever `tool_asklist` says. Delivered text is escaped so no spelling
+  of the closing tag ends its fence, and each fence carries the message's
+  age; a failed inbox read is shown in the TUI and on the control socket.
+  The approval prompt writes bidi and zero-width characters out as
+  `\u{XXXX}`, wraps by display width, and allows only after every line of
+  the call has been on screen. A roster without the coding profile only
+  logs what would be dropped.
+
 - **Rings reach a headless controller.** A ring still awaiting an answer is
   sent on the control socket as `{"type":"ring_pending","ring_id",
   "from","purpose"}` the moment it arrives, not when the agent next idles.
@@ -32,6 +47,11 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Fixed
 
+- **The approval prompt shows the whole call (#39).** It used to show the
+  first 200 characters, so a long command could hide its tail. The prompt
+  now wraps the full arguments, shows control characters as text, and
+  allows only once the last line has been on screen; a call over 16 KiB is
+  refused without asking.
 - A controller disconnecting while events streamed could crash lazymesh
   (send on a closed channel): it now leaves the broadcast set before its
   queue closes.
