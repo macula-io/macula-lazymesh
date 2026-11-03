@@ -50,6 +50,7 @@ type messageLine struct {
 	ToolCalls  []toolCallLine `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	Failed     bool           `json:"failed,omitempty"`
 }
 
 // schemaVersion is the log format this lazymesh writes and reads; a log
@@ -62,9 +63,10 @@ var (
 )
 
 // lineKind tells the three kinds of log line apart: the schema header, a
-// turn marker, and a message (which has a role).
+// turn marker, and a message (which has a role). Schema is nil when the
+// line has no schema field: a schema-1 log starts with a message.
 type lineKind struct {
-	Schema int    `json:"schema"`
+	Schema *int   `json:"schema"`
 	Turn   string `json:"turn"`
 	Role   string `json:"role"`
 }
@@ -141,9 +143,19 @@ func (s *Store) Append(sessionID string, msgs []provider.Message) error {
 }
 
 // EndTurn marks the turn whose messages were appended last as ended:
-// whatever follows belongs to the next turn.
-func (s *Store) EndTurn(sessionID string) error {
-	return s.write(sessionID, [][]byte{turnEnded})
+// whatever follows belongs to the next turn. last, if any, are the turn's
+// final messages, written with the marker in one write, so a crash cannot
+// leave them in the log without it.
+func (s *Store) EndTurn(sessionID string, last ...provider.Message) error {
+	lines := make([][]byte, 0, len(last)+1)
+	for _, m := range last {
+		line, err := json.Marshal(toLine(m))
+		if err != nil {
+			return fmt.Errorf("sessionstore: marshal message: %w", err)
+		}
+		lines = append(lines, line)
+	}
+	return s.write(sessionID, append(lines, turnEnded))
 }
 
 // write appends lines to a schema-2 log, starting one (or upgrading a
@@ -158,10 +170,12 @@ func (s *Store) write(sessionID string, lines [][]byte) error {
 		return fmt.Errorf("sessionstore: open %s: %w", path, err)
 	}
 	defer f.Close()
+	var buf []byte
 	for _, line := range lines {
-		if _, err := f.Write(append(line, '\n')); err != nil {
-			return fmt.Errorf("sessionstore: append to %s: %w", path, err)
-		}
+		buf = append(append(buf, line...), '\n')
+	}
+	if _, err := f.Write(buf); err != nil {
+		return fmt.Errorf("sessionstore: append to %s: %w", path, err)
 	}
 	return nil
 }
@@ -190,11 +204,11 @@ func (s *Store) prepare(path string) error {
 	first, _ := bufio.NewReader(f).ReadBytes('\n')
 	var head lineKind
 	_ = json.Unmarshal(first, &head)
-	switch {
-	case head.Schema > schemaVersion:
-		return fmt.Errorf("sessionstore: %s was written by a newer lazymesh (schema %d)", path, head.Schema)
-	case head.Schema == 0:
+	if head.Schema == nil {
 		return upgrade(path)
+	}
+	if err := checkSchema(path, *head.Schema); err != nil {
+		return err
 	}
 	last := make([]byte, 1)
 	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
@@ -269,39 +283,58 @@ func (s *Store) Load(sessionID string) (Conversation, error) {
 	return readLog(f, s.Path(sessionID))
 }
 
+// readLog reads a log line by line with no cap on a line's length: a
+// message is stored whole, and a write_file's arguments can be larger than
+// any fixed buffer. A log it cannot read is an error, never a shorter
+// conversation (#99).
 func readLog(r io.Reader, path string) (Conversation, error) {
 	var msgs []provider.Message
 	schema, ended := 1, 0
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for first := true; scanner.Scan(); first = false {
+	reader := bufio.NewReader(r)
+	for first := true; ; first = false {
+		raw, err := reader.ReadBytes('\n')
+		if err != nil && err != io.EOF {
+			return Conversation{}, fmt.Errorf("sessionstore: read %s: %w", path, err)
+		}
 		var kind lineKind
-		if err := json.Unmarshal(scanner.Bytes(), &kind); err != nil {
-			continue // torn line
-		}
-		switch {
-		case first && kind.Schema > schemaVersion:
-			return Conversation{}, fmt.Errorf("sessionstore: %s was written by a newer lazymesh (schema %d)", path, kind.Schema)
-		case first && kind.Schema > 0:
-			schema = kind.Schema
-		case kind.Turn == "ended":
-			ended = len(msgs)
-		case kind.Role != "":
-			var line messageLine
-			if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-				continue
+		if len(raw) > 0 && json.Unmarshal(raw, &kind) == nil {
+			switch {
+			case first && kind.Schema != nil:
+				if err := checkSchema(path, *kind.Schema); err != nil {
+					return Conversation{}, err
+				}
+				schema = *kind.Schema
+			case kind.Turn == "ended":
+				ended = len(msgs)
+			case kind.Role != "":
+				var line messageLine
+				if json.Unmarshal(raw, &line) == nil {
+					msgs = append(msgs, fromLine(line))
+				}
 			}
-			msgs = append(msgs, fromLine(line))
+		} // else a torn line
+		if err == io.EOF {
+			break
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return Conversation{}, fmt.Errorf("sessionstore: read %s: %w", path, err)
 	}
 	conv := Conversation{Messages: msgs}
 	if schema >= 2 && ended < len(msgs) {
 		conv.Unfinished = msgs[ended:]
 	}
 	return conv, nil
+}
+
+// checkSchema refuses a header naming any schema but this lazymesh's: a
+// higher one comes from a newer lazymesh, and zero or less from no
+// lazymesh at all.
+func checkSchema(path string, schema int) error {
+	switch {
+	case schema > schemaVersion:
+		return fmt.Errorf("sessionstore: %s was written by a newer lazymesh (schema %d)", path, schema)
+	case schema != schemaVersion:
+		return fmt.Errorf("sessionstore: %s has an unknown schema %d", path, schema)
+	}
+	return nil
 }
 
 // Latest returns the id of the most recently modified session log, or
@@ -358,6 +391,7 @@ func toLine(m provider.Message) messageLine {
 		Content:    m.Content,
 		ToolCallID: m.ToolCallID,
 		Name:       m.Name,
+		Failed:     m.Failed,
 	}
 	for _, tc := range m.ToolCalls {
 		line.ToolCalls = append(line.ToolCalls, toolCallLine{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})
@@ -371,6 +405,7 @@ func fromLine(line messageLine) provider.Message {
 		Content:    line.Content,
 		ToolCallID: line.ToolCallID,
 		Name:       line.Name,
+		Failed:     line.Failed,
 	}
 	for _, tc := range line.ToolCalls {
 		m.ToolCalls = append(m.ToolCalls, provider.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})

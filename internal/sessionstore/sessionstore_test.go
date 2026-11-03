@@ -305,3 +305,76 @@ func TestTurns_AnAppendAfterATornLineIsKept(t *testing.T) {
 		t.Fatalf("messages = %+v, want the first and \"after\"", conv.Messages)
 	}
 }
+
+// #99 r=2: a message larger than any fixed line buffer (a big
+// write_file's arguments) loads, rather than failing the whole log.
+func TestLoad_AMessageOverOneMegabyteLoads(t *testing.T) {
+	s := newTestStore(t)
+	big := strings.Repeat("x", 3*1024*1024)
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: big}}
+	if err := s.Append("big", msgs); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.EndTurn("big"); err != nil {
+		t.Fatalf("end turn: %v", err)
+	}
+	conv, err := s.Load("big")
+	if err != nil {
+		t.Fatalf("a log with a 3 MB message did not load: %v", err)
+	}
+	if len(conv.Messages) != 1 || conv.Messages[0].Content != big {
+		t.Fatalf("the large message did not round-trip")
+	}
+}
+
+// #99 r=2: a refused or failed call stays marked as such across a load.
+func TestAppendLoad_AFailedResultKeepsItsMark(t *testing.T) {
+	s := newTestStore(t)
+	msgs := []provider.Message{{Role: provider.RoleTool, ToolCallID: "c1", Name: "mesh_say", Content: "error: denied", Failed: true}}
+	if err := s.Append("f", msgs); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	conv, err := s.Load("f")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(conv.Messages) != 1 || !conv.Messages[0].Failed {
+		t.Fatalf("the failed mark was lost: %+v", conv.Messages)
+	}
+}
+
+// #99 r=2: a header naming schema 0 or less is no log this lazymesh wrote:
+// reading and writing it are both refused.
+func TestTurns_ASchemaOfZeroOrLessIsRefused(t *testing.T) {
+	for _, header := range []string{`{"schema":0}`, `{"schema":-1}`} {
+		s := newTestStore(t)
+		if err := os.WriteFile(s.Path("odd"), []byte(header+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Load("odd"); err == nil {
+			t.Errorf("%s: Load accepted it", header)
+		}
+		if err := s.Append("odd", testMessages()[:1]); err == nil {
+			t.Errorf("%s: Append accepted it", header)
+		}
+	}
+}
+
+// #99 r=2: the turn's last messages and its end marker are one write, so
+// they are in the log together or not at all.
+func TestEndTurn_WritesTheLastMessagesWithTheMarker(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Append("t", testMessages()[:3]); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.EndTurn("t", testMessages()[3]); err != nil {
+		t.Fatalf("end turn: %v", err)
+	}
+	conv, err := s.Load("t")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(conv.Messages) != 4 || len(conv.Unfinished) != 0 {
+		t.Fatalf("got %d messages, %d unfinished; want 4 and 0", len(conv.Messages), len(conv.Unfinished))
+	}
+}

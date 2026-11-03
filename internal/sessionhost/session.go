@@ -322,21 +322,23 @@ func (s *session) Init(args ...any) error {
 	if sessArgs.Store == nil || sessArgs.SessionID == "" {
 		return nil
 	}
-	s.store = sessArgs.Store
-	s.sessionID = sessArgs.SessionID
-	s.crash.Logged = true
 	conv, err := sessArgs.Store.Load(sessArgs.SessionID)
 	if err != nil {
+		// Nothing is persisted for a log that cannot be read, so the
+		// session reports itself as keeping none: an earlier crash in it
+		// cannot be told apart from no crash (#99 r=2).
 		s.Log().Error("sessionhost: restore conversation: %s", err)
 		return nil
 	}
+	s.store = sessArgs.Store
+	s.sessionID = sessArgs.SessionID
+	s.crash.Logged = true
 	msgs := conv.Messages
 	if len(conv.Unfinished) > 0 {
-		steps, results := crashedTurn(conv.Unfinished)
+		steps, closing := crashedTurn(conv.Unfinished)
 		s.crash.Steps = steps
-		msgs = append(msgs, results...)
-		s.persist(results...)
-		s.endTurn()
+		msgs = append(msgs, closing...)
+		s.endTurn(closing...)
 	}
 	s.loop.Restore(msgs)
 	s.loop.OnRecord(func(m provider.Message) { s.persist(m) })
@@ -351,9 +353,9 @@ func (s *session) persist(msgs ...provider.Message) {
 	}
 }
 
-// endTurn marks the turn in the log as ended.
-func (s *session) endTurn() {
-	if err := s.store.EndTurn(s.sessionID); err != nil {
+// endTurn marks the turn in the log as ended, after its last messages.
+func (s *session) endTurn(last ...provider.Message) {
+	if err := s.store.EndTurn(s.sessionID, last...); err != nil {
 		s.Log().Error("sessionhost: persist turn end: %s", err)
 	}
 }

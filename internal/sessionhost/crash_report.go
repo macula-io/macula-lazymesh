@@ -18,9 +18,9 @@ type CrashReport struct {
 	// Logged is false for a session without a log: it cannot know what
 	// a crashed turn did.
 	Logged bool
-	// Steps are the tool calls of the crashed turn that ran, or were
-	// running when it crashed, in order. Empty when no turn was cut short
-	// or none of its steps had started.
+	// Steps are the tool calls of the crashed turn that had an outcome,
+	// or were running when it crashed, in order. Empty when no turn was
+	// cut short or none of its steps had started.
 	Steps []CrashedStep
 }
 
@@ -31,6 +31,12 @@ type CrashedStep struct {
 	// Finished is false for the call that was running when the session
 	// crashed: it may or may not have taken effect.
 	Finished bool
+	// Failed is true for a finished call that returned an error: the
+	// approval gate or a hook refused it, or the tool itself failed.
+	// Result then says why.
+	Failed bool
+	// Result is what the call returned, as the conversation kept it.
+	Result string
 }
 
 // takeCrashReport asks a session for its CrashReport, once.
@@ -50,9 +56,13 @@ func TakeCrashReport(n gen.Node, session gen.PID) (CrashReport, error) {
 	return r, nil
 }
 
-// stepArgumentsShown bounds how much of a step's arguments the notice
-// quotes: enough to recognise the step, not a whole file write.
-const stepArgumentsShown = 200
+// stepArgumentsShown and stepResultShown bound how much of a step the
+// notice quotes: enough to recognise the step and its outcome, not a
+// whole file write.
+const (
+	stepArgumentsShown = 200
+	stepResultShown    = 200
+)
 
 // Notice is the operator's account of a crashed turn: that the prompt was
 // not sent again, which steps ran, and that the turn's text already on
@@ -66,17 +76,24 @@ func (r CrashReport) Notice() string {
 	case len(r.Steps) == 0:
 		b.WriteString("None of its steps had run.")
 	default:
-		b.WriteString("Steps that ran:")
+		b.WriteString("Its steps:")
 		for i, s := range r.Steps {
-			fmt.Fprintf(&b, " %d) %s %s", i+1, s.Tool, shorten(s.Arguments, stepArgumentsShown))
-			if !s.Finished {
-				b.WriteString(" (it was running when the session crashed and may not have finished)")
-			}
-			b.WriteString(";")
+			fmt.Fprintf(&b, " %d) %s %s: %s;", i+1, s.Tool, shorten(s.Arguments, stepArgumentsShown), s.outcome())
 		}
 	}
 	b.WriteString(" Any text shown for this turn came from the crashed turn. Send the prompt again if you want it run.")
 	return b.String()
+}
+
+// outcome says what became of one step, in the operator's words.
+func (s CrashedStep) outcome() string {
+	switch {
+	case !s.Finished:
+		return "it was running when the session crashed and may not have finished"
+	case s.Failed:
+		return "it did not complete, " + shorten(s.Result, stepResultShown)
+	}
+	return "it ran"
 }
 
 func shorten(s string, max int) string {
@@ -88,33 +105,38 @@ func shorten(s string, max int) string {
 }
 
 // crashedTurn reads the messages of a turn a crash cut short. It returns
-// the steps that ran or were running, and a result for every call of the
-// turn that has none, so the conversation stays well formed for the next
-// request: a model is refused a tool call without its result.
+// the steps that had an outcome or were running, and the messages that
+// close the turn so the conversation stays well formed for the next
+// request: a result for every call that has none (a model is refused a
+// tool call without its result), and a reply when the crash came before
+// the model gave one (two user messages in a row would follow otherwise).
 func crashedTurn(unfinished []provider.Message) ([]CrashedStep, []provider.Message) {
-	answered := map[string]bool{}
+	answers := map[string]provider.Message{}
 	for _, m := range unfinished {
 		if m.Role == provider.RoleTool {
-			answered[m.ToolCallID] = true
+			answers[m.ToolCallID] = m
 		}
 	}
 	var steps []CrashedStep
-	var results []provider.Message
+	var closing []provider.Message
 	running := true // the first unanswered call is the one that was running
 	for _, m := range unfinished {
 		for _, tc := range m.ToolCalls {
-			if answered[tc.ID] {
-				steps = append(steps, CrashedStep{Tool: tc.Name, Arguments: tc.Arguments, Finished: true})
+			if answer, ok := answers[tc.ID]; ok {
+				steps = append(steps, CrashedStep{Tool: tc.Name, Arguments: tc.Arguments, Finished: true, Failed: answer.Failed, Result: answer.Content})
 				continue
 			}
 			content := "this call did not run: the session crashed before it"
 			if running {
 				steps = append(steps, CrashedStep{Tool: tc.Name, Arguments: tc.Arguments})
-				content = "it is not known whether this call finished: the session crashed while it was running"
+				content = "it is not known whether this call finished: the session crashed while it was running. Do not repeat it; the operator has been told"
 				running = false
 			}
-			results = append(results, provider.Message{Role: provider.RoleTool, ToolCallID: tc.ID, Name: tc.Name, Content: content})
+			closing = append(closing, provider.Message{Role: provider.RoleTool, ToolCallID: tc.ID, Name: tc.Name, Content: content})
 		}
 	}
-	return steps, results
+	if len(closing) == 0 && len(unfinished) > 0 && unfinished[len(unfinished)-1].Role == provider.RoleUser {
+		closing = append(closing, provider.Message{Role: provider.RoleAssistant, Content: "(the session crashed before replying to this)"})
+	}
+	return steps, closing
 }

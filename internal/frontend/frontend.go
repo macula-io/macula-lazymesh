@@ -64,9 +64,12 @@
 //	                              one older than this line ignores it)
 //	  {"type":"turn_crashed","text":"..."}
 //	                             (the turn crashed and the session was replaced: text
-//	                              names the steps that ran and says nothing was sent
-//	                              again. A turn_complete always follows, so a
-//	                              controller that skips this type still settles)
+//	                              names each step of the turn and its outcome, and says
+//	                              nothing was sent again. A turn_complete follows, so a
+//	                              controller that skips this type still settles. A turn
+//	                              the previous run crashed in arrives once, right after
+//	                              the session line, with no turn_complete: no
+//	                              controller sent that turn)
 //	  {"type":"pre_tool","id":"<hook-id>","tool":"<name>","args":"<full JSON>"}
 //	                             (to the hook's controller only; the call waits for hook_answer)
 //	  {"type":"turn_complete"}   (the settle point: a controller sends one
@@ -127,6 +130,9 @@ type Server struct {
 
 	// connSeq labels connections in accept order (controller-1, ...).
 	connSeq int
+	// announced are the lines of events every controller is told once,
+	// on connect if it was not connected when they happened (Announce).
+	announced [][]byte
 	// answeredBy records, per approval id, the frontend whose answer the
 	// session used. It is bounded by the session's own rule that at most
 	// one approval is outstanding: every new approval request prunes the
@@ -348,10 +354,33 @@ func (s *Server) accept() {
 		s.connSeq++
 		c.label = fmt.Sprintf("controller-%d", s.connSeq)
 		s.conns[conn] = c
+		line, _ := json.Marshal(map[string]any{"type": "session", "session_id": s.session.SessionID, "model": s.session.Model, "leader": s.session.Leader})
+		opening := append(line, '\n')
+		for _, a := range s.announced {
+			opening = append(opening, a...)
+		}
 		s.mu.Unlock()
 
-		line, _ := json.Marshal(map[string]any{"type": "session", "session_id": s.session.SessionID, "model": s.session.Model, "leader": s.session.Leader})
-		go s.serve(conn, c, append(line, '\n'))
+		go s.serve(conn, c, opening)
+	}
+}
+
+// Announce tells every controller of ev once: those connected now at
+// once, and each later one right after its handshake. It is for what the
+// session found before any controller could be listening -- a turn the
+// previous run crashed in (#99) -- and never carries a turn_complete, since
+// no controller sent a turn for it to settle. Registration and the replay
+// copy share s.mu with this, so no controller gets it twice or not at all.
+func (s *Server) Announce(ev agent.Event) {
+	line, err := marshalEvent(ev)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.announced = append(s.announced, line)
+	for _, c := range s.conns {
+		s.deliver(c, ev, line)
 	}
 }
 

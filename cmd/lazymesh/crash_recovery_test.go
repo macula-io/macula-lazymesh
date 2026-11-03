@@ -1,18 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
+	"net"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"ergo.services/ergo/gen"
-
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/counters"
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
@@ -190,32 +193,58 @@ func TestCrashRecovery_AKilledRunIsReportedWhenTheNextOneStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &crashAfterSayProvider{rounds: 2}
-	tools := &countingMeshTools{}
 	sess, err := sessionhost.StartSession(n, root, sessionhost.SessionArgs{
-		Provider: p, Tools: tools, SystemPrompt: "test", Store: store, SessionID: "s1",
+		Provider: &crashAfterSayProvider{rounds: 2}, Tools: &countingMeshTools{}, SystemPrompt: "test", Store: store, SessionID: "s1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	events := make(chan agent.Event, 256)
 	tuiOut := agent.NewOutlet(ctx.Done(), events)
-	frontendOut := agent.NewOutlet(ctx.Done(), nil)
-	agentLog := log.New(io.Discard, "", 0)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runAgent(ctx, n, root, sess, gen.PID{}, roomwaiter.New(nil, ""), ringwaiter.New(nil, ""), agentLog, tuiOut, frontendOut, make(chan string), nil, true, nil, nil)
-	}()
-	t.Cleanup(func() { cancel(); <-done })
+	sockPath := filepath.Join(t.TempDir(), "ctrl.sock")
+	ctrl, err := frontend.Start(frontend.Options{
+		Path: sockPath, Input: make(chan string, 1), Events: make(chan agent.Event, 1), SessionID: "s1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ctrl.Close() })
+
+	reportEarlierCrash(n, sess, tuiOut, ctrl.Announce, log.New(io.Discard, "", 0))
 
 	seen := awaitEvent(t, events, agent.EventTurnCrashed, nil)
 	if len(seen) != 1 || !strings.Contains(seen[0].Text, "mesh_say") {
 		t.Fatalf("the killed run's turn is not reported first: %+v", seen)
 	}
-	awaitEvent(t, events, agent.EventListening, nil)
-	if tools.saysSent() != 0 || len(p.promptsSeen()) != 0 {
-		t.Fatalf("the new run acted on its own: %d mesh_say, prompts %q", tools.saysSent(), p.promptsSeen())
+	// A controller that connects after the start still learns of it, as
+	// turn_crashed with no turn_complete for a turn it never sent.
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	var types []string
+	for {
+		conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		raw, err := r.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		var line struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(raw, &line)
+		types = append(types, line.Type)
+	}
+	if strings.Join(types, ",") != "session,turn_crashed" {
+		t.Fatalf("a controller connecting after the start got %v, want session then turn_crashed", types)
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("the TUI got %v after the earlier crash, want nothing: no turn ran", ev.Kind)
+	default:
 	}
 }

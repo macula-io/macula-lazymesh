@@ -513,6 +513,14 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		defer ctrl.Close()
 	}
 
+	// A turn the previous run crashed in is reported before the driver's
+	// first turn, once the control socket can replay it (#99).
+	var announce func(agent.Event)
+	if ctrl != nil {
+		announce = ctrl.Announce
+	}
+	reportEarlierCrash(node, sessPid, tuiOut, announce, agentLog)
+
 	go func() {
 		// The driver is a plain goroutine, not an Ergo process: a panic
 		// here crashes lazymesh WITHOUT any trace (Go writes the stack to
@@ -1379,7 +1387,6 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 func runAgent(ctx context.Context, n gen.Node, root, sessPid, bridge gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
-	reportEarlierCrash(n, sessPid, tuiEvents, frontendEvents, agentLog)
 	prompt, ok := firstPrompt(ctx, idleStart, userInputCh, waiterMgr, ringMgr, wakeups, gate, initialRooms)
 	if !ok {
 		return

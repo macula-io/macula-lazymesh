@@ -373,6 +373,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 			}
 			if callErr != nil {
 				toolMsg.Content = fmt.Sprintf("error: %s", callErr)
+				toolMsg.Failed = true
 				emit(events, Event{Kind: EventError, ToolName: tc.Name, Err: callErr})
 			} else {
 				// Full result goes to the event (TUI/agent.log keep

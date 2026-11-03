@@ -55,8 +55,11 @@ func reportCrash(tuiEvents, frontendEvents *agent.Outlet, agentLog *log.Logger, 
 
 // reportEarlierCrash tells the operator about a turn the previous run of
 // this session crashed in (a kill, not a restart under supervision): the
-// session found it in its log when it started.
-func reportEarlierCrash(n gen.Node, session gen.PID, tuiEvents, frontendEvents *agent.Outlet, agentLog *log.Logger) {
+// session found it in its log when it started. No turn is running, so
+// there is no listening beat to end one; and a controller may not be
+// connected yet, so announce (the control socket's Announce, nil without
+// one) tells each controller whenever it connects.
+func reportEarlierCrash(n gen.Node, session gen.PID, tuiEvents *agent.Outlet, announce func(agent.Event), agentLog *log.Logger) {
 	report, err := sessionhost.TakeCrashReport(n, session)
 	if err != nil {
 		agentLog.Printf("lazymesh agent: crash report of %s unreadable: %s", session, err)
@@ -65,5 +68,11 @@ func reportEarlierCrash(n gen.Node, session gen.PID, tuiEvents, frontendEvents *
 	if len(report.Steps) == 0 {
 		return
 	}
-	reportCrash(tuiEvents, frontendEvents, agentLog, report)
+	notice := report.Notice()
+	agentLog.Printf("lazymesh agent: %s", notice)
+	ev := agent.Event{Kind: agent.EventTurnCrashed, Text: notice}
+	tuiEvents.Send(ev)
+	if announce != nil {
+		announce(ev)
+	}
 }

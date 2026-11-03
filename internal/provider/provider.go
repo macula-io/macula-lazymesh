@@ -36,6 +36,11 @@ type Message struct {
 	ToolCalls  []ToolCall
 	ToolCallID string
 	Name       string
+	// Failed marks a tool result whose call returned an error: refused
+	// (the approval gate, a hook), or failed in the tool itself. Content
+	// then says why. Backends never see it; the session log keeps it, so
+	// a crash report does not count a refused step as one that ran (#99).
+	Failed bool
 }
 
 // ToolSpec describes one callable tool, in the shape an OpenAI-compatible
