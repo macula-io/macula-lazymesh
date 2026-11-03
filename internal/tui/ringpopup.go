@@ -139,8 +139,9 @@ func (m Model) renderRingPopup() string {
 	if r == nil {
 		return ""
 	}
-	name := displayName(r.Peer, r.PeerPetname)
-	purpose := r.Purpose
+	// Both are the peer's own text (#81): shown, never acted on.
+	name := collapseNewlines(neutralise(displayName(r.Peer, r.PeerPetname)))
+	purpose := neutralise(r.Purpose)
 	if purpose == "" {
 		purpose = "(no purpose given)"
 	}

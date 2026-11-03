@@ -206,6 +206,10 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 			text = fmt.Sprintf("error (%s): %s", e.tool, e.detail)
 		}
 	}
+	// The one door every non-tool entry's text passes to the terminal: an
+	// answer, a peer's ring purpose, a provider's error are none of them
+	// lazymesh's own text (#81). The assistant's goes in markdownBody.
+	text = neutralise(text)
 
 	switch e.kind {
 	case chatYou:
@@ -217,9 +221,9 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 		}
 		return body
 	case chatToolResult:
-		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(neutralise(text)))
+		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
 	case chatError:
-		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(neutralise(text)))
+		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(text))
 	case chatSystem:
 		return fmt.Sprintf("%s %s", ts, chatSystemStyle.Render(text))
 	default:
@@ -334,23 +338,46 @@ func collapseBlankLines(md string) string {
 // rendering keyed by width (the table preprocessor is width-dependent);
 // a streaming entry re-renders as its text grows, and any failure falls
 // back to the raw text — a display concern must never lose content.
+//
+// The text is neutralised before glamour sees it, and always the whole
+// accumulated text, never one delta: a sequence split across two chunks
+// is only whole here (#81). Glamour passes control sequences through.
 func (e *chatEntry) markdownBody(width int) string {
 	if !e.streaming && e.md != "" && e.mdWidth == width {
 		return e.md
 	}
+	text := neutralise(e.text)
 	renderer := markdownRenderer(width)
 	if renderer == nil {
-		return e.text
+		return text
 	}
-	rendered, err := renderer.Render(flattenWideTables(collapseBlankLines(e.text), width-8))
+	rendered, err := renderer.Render(flattenWideTables(collapseBlankLines(text), width-8))
 	if err != nil {
-		return e.text
+		return text
 	}
+	rendered = neutraliseRendered(rendered)
 	if !e.streaming {
 		e.md = rendered
 		e.mdWidth = width
 	}
 	return rendered
+}
+
+// neutraliseRendered passes glamour's own colour codes (SGR) and shows
+// everything else a terminal would act on. Neutralising the input is not
+// enough: glamour decodes HTML entities after it, so "&#27;]52;...&#7;" in
+// an answer would come out as a whole OSC 52 clipboard write (#89 review).
+func neutraliseRendered(rendered string) string {
+	var b strings.Builder
+	b.Grow(len(rendered))
+	prev := 0
+	for _, span := range sgrStripper.FindAllStringIndex(rendered, -1) {
+		b.WriteString(neutralise(rendered[prev:span[0]]))
+		b.WriteString(rendered[span[0]:span[1]])
+		prev = span[1]
+	}
+	b.WriteString(neutralise(rendered[prev:]))
+	return b.String()
 }
 
 // flattenWideTables rewrites pipe tables whose rendered width would

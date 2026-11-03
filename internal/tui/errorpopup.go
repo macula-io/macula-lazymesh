@@ -234,5 +234,5 @@ func errorPopupMarker(leader string) string {
 }
 
 func formatSummaryError(leader string, err error) string {
-	return fmt.Sprintf("%s %s", errorPopupMarker(leader), errStyle.Render(fmt.Sprintf("error: %s", err)))
+	return fmt.Sprintf("%s %s", errorPopupMarker(leader), errStyle.Render("error: "+collapseNewlines(neutralise(err.Error()))))
 }
