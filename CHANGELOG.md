@@ -260,6 +260,20 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Security
 
+- **`web_fetch` connects to the address it checked (#93).** The guard
+  resolves the URL's host and refuses anything that is not a public
+  address; the connection now goes to exactly those addresses, on the first
+  request and on every redirect, instead of resolving the name a second
+  time. A name whose answer changes between the check and the connection
+  can no longer lead a fetch to loopback, the LAN or a metadata address.
+  The server still sees the URL's name as Host and as the TLS server name.
+  What counts as public is now an explicit list of the IANA special-purpose
+  ranges, so shared address space (100.64.0.0/10), benchmarking, reserved
+  and documentation ranges, and IPv6 site-local space are refused too. A
+  NAT64 or 6to4 address is judged by the IPv4 address it carries, and an
+  IPv4-compatible one is refused. Each address gets its own 5-second
+  connect limit, so one that never answers leaves time to try the next.
+
 - **The control socket serves only controllers of the same user.** Each
   connection is checked against the kernel's record of who connected
   (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS); a peer of another uid,
