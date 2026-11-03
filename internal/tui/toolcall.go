@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -241,27 +242,79 @@ var (
 
 // diffLines indents a unified diff and colours each line by what it is: a
 // file header bold, a hunk header cyan, an added line green, a removed one
-// red, context and anything else the body grey (#78 gap 3). It reads only
-// the first characters of lines that are already neutralised, so colour
-// can never carry a control through: a line's text is the same either way.
+// red, context and anything else the body grey (#78 gap 3). Inside a hunk
+// a line is what the hunk says it is, so removing "-- x" is a removed line,
+// not a header: the hunk's old and new line counts say where it ends. It
+// reads only the first characters of lines that are already neutralised,
+// so colour can never carry a control through: a line's text is the same
+// either way.
 func diffLines(lines []string) []toolLine {
 	out := make([]toolLine, 0, len(lines))
+	var h hunk
 	for _, l := range lines {
-		out = append(out, toolLine{text: "  " + l, style: diffLineStyle(l)})
+		out = append(out, toolLine{text: "  " + l, style: h.style(l)})
 	}
 	return out
 }
 
-func diffLineStyle(line string) lipgloss.Style {
+var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@`)
+
+// hunk is how many old and new lines the current hunk has still to show;
+// open is set when its header gave no counts, and it then runs to the next
+// hunk or file.
+type hunk struct {
+	old, new int
+	open     bool
+}
+
+func (h *hunk) style(line string) lipgloss.Style {
 	switch {
-	case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "diff --git "):
+	case strings.HasPrefix(line, "diff --git "):
+		*h = hunk{}
 		return diffFileStyle
 	case strings.HasPrefix(line, "@@"):
+		h.start(line)
 		return diffHunkStyle
+	case h.old > 0 || h.new > 0 || h.open:
+		return h.consume(line)
+	case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+		return diffFileStyle
+	}
+	return chatToolBodyStyle
+}
+
+func (h *hunk) start(line string) {
+	m := hunkHeader.FindStringSubmatch(line)
+	if m == nil {
+		*h = hunk{open: true}
+		return
+	}
+	*h = hunk{old: hunkCount(m[1]), new: hunkCount(m[2])}
+}
+
+// hunkCount is a hunk header's line count, which is 1 when it is left out.
+func hunkCount(s string) int {
+	if s == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (h *hunk) consume(line string) lipgloss.Style {
+	switch {
 	case strings.HasPrefix(line, "+"):
+		h.new--
 		return diffAddedStyle
 	case strings.HasPrefix(line, "-"):
+		h.old--
 		return diffRemovedStyle
+	case strings.HasPrefix(line, " "), line == "":
+		h.old--
+		h.new--
 	}
 	return chatToolBodyStyle
 }

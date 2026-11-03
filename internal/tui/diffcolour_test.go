@@ -93,3 +93,28 @@ func TestDiffColour_ControlsStayVisibleAfterColouring(t *testing.T) {
 		}
 	}
 }
+
+// Inside a hunk every line is classified by the hunk, not by how it looks:
+// removing a "-- x" SQL comment and adding "++ y" render as a removed and
+// an added line, never as file headers. The next file's headers, after the
+// hunk's line counts run out, are headers again, with or without a
+// "diff --git" line before them.
+func TestDiffColour_HunkLinesThatLookLikeHeaders(t *testing.T) {
+	diff := "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n@@ -1,2 +1,2 @@\n--- keep: audit on\n-- drop the audit trigger\n+++ x\n++ y\n" +
+		"--- a/n.sql\n+++ b/n.sql\n@@ -1 +1 @@\n--- old\n+++ new\n"
+	lines := diffLines(textLines(diff))
+	want := []lipgloss.Style{
+		diffFileStyle, diffFileStyle, diffFileStyle, diffHunkStyle,
+		diffRemovedStyle, diffRemovedStyle, diffAddedStyle, diffAddedStyle,
+		diffFileStyle, diffFileStyle, diffHunkStyle, diffRemovedStyle, diffAddedStyle,
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("%d lines, want %d", len(lines), len(want))
+	}
+	for i, l := range lines {
+		if l.style.GetForeground() != want[i].GetForeground() || l.style.GetBold() != want[i].GetBold() {
+			t.Errorf("line %q: foreground %v bold %v, want %v bold %v", l.text,
+				l.style.GetForeground(), l.style.GetBold(), want[i].GetForeground(), want[i].GetBold())
+		}
+	}
+}
