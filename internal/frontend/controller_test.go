@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
 // tempSocket is a socket path inside this test's own temporary directory.
@@ -309,6 +310,10 @@ func TestEveryEventSurvivesTheRoundTrip(t *testing.T) {
 		want agent.Event
 	}{
 		{"assistant", agent.Event{Kind: agent.EventAssistantMessage, Text: "done"}, agent.Event{Kind: agent.EventAssistantMessage, Text: "done"}},
+		// #77: an attached TUI's cut marker comes from these two fields, so
+		// they are part of the round-trip contract like any other field.
+		{"assistant_cut", agent.Event{Kind: agent.EventAssistantMessage, Text: "cut", Stop: provider.Stop{Reason: provider.StopOutputLimit}}, agent.Event{Kind: agent.EventAssistantMessage, Text: "cut", Stop: provider.Stop{Reason: provider.StopOutputLimit}}},
+		{"assistant_cut_detail", agent.Event{Kind: agent.EventAssistantMessage, Text: "cut", Stop: provider.Stop{Reason: provider.StopOther, Detail: "content_filter"}}, agent.Event{Kind: agent.EventAssistantMessage, Text: "cut", Stop: provider.Stop{Reason: provider.StopOther, Detail: "content_filter"}}},
 		{"delta", agent.Event{Kind: agent.EventAssistantDelta, Text: "par"}, agent.Event{Kind: agent.EventAssistantDelta, Text: "par"}},
 		{"tool_call", agent.Event{Kind: agent.EventToolCall, ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}, agent.Event{Kind: agent.EventToolCall, ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}},
 		{"tool_result", agent.Event{Kind: agent.EventToolResult, ToolName: "shell_exec", Text: "ok"}, agent.Event{Kind: agent.EventToolResult, ToolName: "shell_exec", Text: "ok"}},
@@ -329,7 +334,7 @@ func TestEveryEventSurvivesTheRoundTrip(t *testing.T) {
 			if !ok {
 				t.Fatalf("parseEvent rejected %s", line)
 			}
-			if got.Kind != tc.want.Kind || got.Text != tc.want.Text || got.ToolName != tc.want.ToolName || got.ID != tc.want.ID || got.From != tc.want.From {
+			if got.Kind != tc.want.Kind || got.Text != tc.want.Text || got.ToolName != tc.want.ToolName || got.ID != tc.want.ID || got.From != tc.want.From || got.Stop != tc.want.Stop {
 				t.Fatalf("round trip lost data:\n  encoded %s\n  got     %+v\n  want    %+v", line, got, tc.want)
 			}
 		})

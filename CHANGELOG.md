@@ -7,6 +7,24 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Context use and spend on the summary line (#78 gap 4).** After each
+  completion round that reports token usage, the summary line shows what
+  the conversation holds against the model's window and what this run has
+  used, beside the model: `context 12.3k/200k (6%) · 48.1k this run`. A
+  backend that reports no usage shows nothing, one without a known window
+  shows the tokens without a share, and a terminal too narrow for the
+  whole figure shows none of it. The figure travels on the
+  control socket as `{"type":"usage"}`, so `lazymesh attach` shows it too;
+  a controller older than this skips the line.
+
+- **Prompt history (#78 gap 5).** Up in an empty message box gives back
+  the last prompt you sent, further ups walk back through the last 50, and
+  down walks forward again to an empty box. A recalled prompt you edit is
+  your draft, and a draft is never replaced. The list is kept per checkout
+  in `history/<fingerprint>.jsonl` beside the session logs, prompt text
+  only, created `0600` in a `0700` directory; a symlink or a file others
+  can read at that path is refused. `forget_prompts: true` turns it off.
+
 - **Read, search and patch inside the checkout (#46, #38 slice D).** Two
   new local tools for the coding profile. `search` finds a literal string
   or a regular expression and returns `path:line:text` per match,
