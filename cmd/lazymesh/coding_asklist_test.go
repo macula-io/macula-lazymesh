@@ -44,7 +44,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	cfg.ToolAsklist = nil
 	target := filepath.Join(cfg.LocalTools.WorkingDir, ".bashrc")
 
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	}
 	pid, err := sessionhost.StartSession(node, root, withAsklist(cfg, sessionhost.SessionArgs{
 		Provider:     &writeOnceProvider{},
-		Tools:        tools,
+		Toolchain:    policy,
 		SystemPrompt: "coding test",
 	}))
 	if err != nil {

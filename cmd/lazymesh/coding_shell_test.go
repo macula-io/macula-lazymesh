@@ -14,6 +14,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // Slice C of #38 (#26) as the coding profile wires it.
@@ -31,10 +32,11 @@ func shellConfig(t *testing.T) config.Config {
 // refusal that names the reason.
 func TestCodingProfileWithoutASandboxHasNoShell(t *testing.T) {
 	cfg := shellConfig(t)
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "bubblewrap is not installed"}, nil)
+	policy, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "bubblewrap is not installed"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	listed, _ := tools.ListTools(context.Background())
 	for _, tool := range listed {
 		if tool.Name == "shell_exec" {
@@ -65,10 +67,11 @@ func TestCodingProfileShellIsConfined(t *testing.T) {
 	if shell.sandbox == nil {
 		t.Fatalf("no sandbox: %s", shell.reason)
 	}
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), shell, nil)
+	policy, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), shell, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	if _, err := tools.ListTools(context.Background()); err != nil {
 		t.Fatal(err)
 	}

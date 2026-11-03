@@ -15,6 +15,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // TestLiveSustainedRun_MultiCycleRealOperation is macula-io/macula-
@@ -81,11 +82,11 @@ func TestLiveSustainedRun_MultiCycleRealOperation(t *testing.T) {
 	if err != nil {
 		t.Skipf("buildProvider (likely no deepseek key at %s): %v", keyPath, err)
 	}
-	tools, err := buildToolSource(cfg, client, nil, codingShell{})
+	policy, err := buildToolSource(cfg, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
-	tools = agent.NewNoBlockingWaitSource(tools)
+	tools := toolchain.Chain(policy)
 
 	waiterMgr := roomwaiter.New(client, "")
 	defer waiterMgr.StopAll()
