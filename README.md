@@ -316,6 +316,12 @@ uses. A join in progress shows its own session (link/QR code) and status
 inline in the same panel; press `Esc` once it's finished (confirmed,
 expired, or failed) to return to the membership list.
 
+The agent is told this route too, so asking it "are you in io.macula?" or
+"why can't you join a realm?" gets the operator's own next step — this view,
+`Enter` on an empty message box, the realm name — rather than only that
+someone configured the node. It names the leader as configured (#63), and it
+still cannot join a realm itself.
+
 Realm names are dotted-hierarchical (`io.macula`, `net.beam-campus.sales`)
 and must be typed, never picked from a list — a populated list of realms
 to join is spoofable in a way that typing the name yourself isn't, the
