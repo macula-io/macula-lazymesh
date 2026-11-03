@@ -8,8 +8,9 @@ import (
 )
 
 // usageSegment is the summary line's context figure (#78 gap 4): what the
-// conversation holds against the model's window, and what the session has
-// used. Empty until the first usage report, so a backend that reports none
+// conversation holds against the model's window, and what this run has
+// used (a resumed session's earlier rounds are not counted: their usage was
+// never recorded). Empty until the first usage report, so a backend that reports none
 // shows nothing rather than a zero nobody measured. Without a known window
 // it shows the tokens alone, never a share of a window it would have to
 // make up.
@@ -21,15 +22,16 @@ func usageSegment(u agent.UsageReport) string {
 	if u.ContextWindow > 0 {
 		held += "/" + shortTokens(u.ContextWindow) + " (" + contextShare(u.ContextTokens, u.ContextWindow) + ")"
 	}
-	return held + " · " + shortTokens(u.SessionTokens) + " used"
+	return held + " · " + shortTokens(u.RunTokens) + " this run"
 }
 
 // shortTokens is a token count read at a glance: 999, 12.3k, 200k, 2.5M.
+// The k/M boundary is where one decimal of k would round to 1000k.
 func shortTokens(n int) string {
 	switch {
 	case n < 1_000:
 		return fmt.Sprintf("%d", n)
-	case n < 1_000_000:
+	case n < 999_950:
 		return trimPointZero(fmt.Sprintf("%.1f", float64(n)/1_000)) + "k"
 	default:
 		return trimPointZero(fmt.Sprintf("%.1f", float64(n)/1_000_000)) + "M"

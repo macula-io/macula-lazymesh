@@ -1790,12 +1790,6 @@ func (m Model) renderSummaryLine() string {
 		// palette below is reserved for that).
 		out += summaryStyle.Render(" · ") + statusStripStyle.Render(m.agentModel)
 	}
-	if seg := usageSegment(m.usage); seg != "" {
-		// Beside the model it describes, ahead of the tail: the line is
-		// cut tail first, and how full the context is matters more than
-		// the listening heartbeat.
-		out += summaryStyle.Render(" · " + seg)
-	}
 
 	var tail string
 	if m.muted {
@@ -1803,9 +1797,6 @@ func (m Model) renderSummaryLine() string {
 	}
 	if !m.lastListeningAt.IsZero() {
 		tail += " · listening " + m.lastListeningAt.Format("15:04:05")
-	}
-	if tail != "" {
-		out += summaryStyle.Render(tail)
 	}
 
 	// Leads with "who am I" when known -- the dual-instance identity bug
@@ -1817,6 +1808,17 @@ func (m Model) renderSummaryLine() string {
 		identity := identityKey(self.NodeID, self.Petname)
 		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
 		out = name + summaryStyle.Render(" · ") + out
+	}
+	// The context figure sits beside the model it describes, ahead of the
+	// tail, and only when it fits whole in what the width leaves: the cut
+	// below would otherwise end it mid-number, and "context 64" or "(6"
+	// reads as a different figure (#78 gap 4 review).
+	if seg := summaryStyle.Render(" · " + usageSegment(m.usage)); m.usage.ContextTokens > 0 &&
+		(m.width == 0 || lipgloss.Width(out)+lipgloss.Width(seg) <= m.width) {
+		out += seg
+	}
+	if tail != "" {
+		out += summaryStyle.Render(tail)
 	}
 	if m.lastErr != nil {
 		out += "  " + formatSummaryError(m.leaderLabel(), m.lastErr)

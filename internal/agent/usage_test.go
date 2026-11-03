@@ -42,8 +42,8 @@ func TestLoop_Say_ReportsUsageAfterEveryRound(t *testing.T) {
 		}
 	}
 	want := []UsageReport{
-		{ContextTokens: 1050, ContextWindow: 1_000_000, SessionTokens: 1050},
-		{ContextTokens: 1230, ContextWindow: 1_000_000, SessionTokens: 2280},
+		{ContextTokens: 1050, ContextWindow: 1_000_000, RunTokens: 1050},
+		{ContextTokens: 1230, ContextWindow: 1_000_000, RunTokens: 2280},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d usage reports, got %+v", len(want), got)
@@ -73,4 +73,33 @@ func TestLoop_Say_NoUsageReportWhenTheBackendReportsNone(t *testing.T) {
 			t.Fatalf("expected no usage report from a backend that reports none, got %+v", e)
 		}
 	}
+}
+
+// A resumed session's earlier rounds are not counted again: the run total
+// starts at this process (#78 gap 4 review), which is what the TUI labels
+// it as.
+func TestLoop_Say_RunTokensStartAtThisRunAfterARestore(t *testing.T) {
+	p := &scriptedProvider{responses: []provider.ChatResponse{
+		{Message: provider.Message{Role: provider.RoleAssistant, Content: "back"}, Usage: provider.Usage{PromptTokens: 9_000, CompletionTokens: 20}},
+	}}
+	loop := NewLoop(p, &fakeToolSource{}, "system prompt")
+	loop.Restore([]provider.Message{
+		{Role: provider.RoleUser, Content: "earlier"},
+		{Role: provider.RoleAssistant, Content: "a long reply from an earlier run"},
+	})
+
+	events := make(chan Event, 8)
+	if err := loop.Say(context.Background(), "again", events); err != nil {
+		t.Fatalf("Say returned error: %v", err)
+	}
+	close(events)
+	for e := range events {
+		if e.Kind == EventUsageReported {
+			if e.Usage.RunTokens != 9_020 || e.Usage.ContextTokens != 9_020 {
+				t.Fatalf("usage after a restore = %+v, want this run's 9020 only", e.Usage)
+			}
+			return
+		}
+	}
+	t.Fatal("no usage report")
 }

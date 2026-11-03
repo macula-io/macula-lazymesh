@@ -55,10 +55,11 @@
 //	                              as its own success)
 //	  {"type":"ring_pending","ring_id":"<id>","from":"<petname>","purpose":"..."}
 //	                             (a ring still awaiting an answer, sent as it arrives)
-//	  {"type":"usage","context_tokens":N,"context_window":N,"session_tokens":N}
+//	  {"type":"usage","context_tokens":N,"context_window":N,"run_tokens":N}
 //	                             (after each completion round whose backend reported
 //	                              usage: what the conversation holds, the model's
-//	                              window or 0 when unknown, and the session's total.
+//	                              window or 0 when unknown, and what this run of the
+//	                              session has used: a resumed session starts it at 0.
 //	                              A controller skips any type it does not know, so
 //	                              one older than this line ignores it)
 //	  {"type":"pre_tool","id":"<hook-id>","tool":"<name>","args":"<full JSON>"}
@@ -645,7 +646,7 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 		// it does not know (parseEvent's default), so this line costs it
 		// nothing; a newer one attached to an older session simply never
 		// sees one and shows no figure.
-		line, err = json.Marshal(map[string]any{"type": "usage", "context_tokens": ev.Usage.ContextTokens, "context_window": ev.Usage.ContextWindow, "session_tokens": ev.Usage.SessionTokens})
+		line, err = json.Marshal(map[string]any{"type": "usage", "context_tokens": ev.Usage.ContextTokens, "context_window": ev.Usage.ContextWindow, "run_tokens": ev.Usage.RunTokens})
 	default:
 		return nil, fmt.Errorf("frontend: unknown event kind %v", ev.Kind)
 	}

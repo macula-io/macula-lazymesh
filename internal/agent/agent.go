@@ -78,7 +78,7 @@ const (
 	// EventUsageReported is emitted by Say after every completion round
 	// whose response reported token usage (#78 gap 4): Usage says what the
 	// conversation now holds, how large the model's window is, and what
-	// the session has used so far, so the TUI can show context use and
+	// this run has used so far, so the TUI can show context use and
 	// spend without summing anything itself. A backend that reports no
 	// usage gets no event: zero would read as an empty context.
 	EventUsageReported
@@ -87,12 +87,13 @@ const (
 // UsageReport is the figure an EventUsageReported carries. ContextTokens
 // is the last round's prompt plus completion -- what the next request
 // carries at least. ContextWindow is the provider's own number, 0 when it
-// does not know one; SessionTokens is the running total this Loop has
-// used.
+// does not know one. RunTokens is what this Loop has used since this
+// process started it: a restored session's earlier rounds are not in it,
+// because their usage was never recorded with them.
 type UsageReport struct {
 	ContextTokens int
 	ContextWindow int
-	SessionTokens int
+	RunTokens     int
 }
 
 // Event is one step the loop took, emitted as it happens so a caller (the
@@ -156,7 +157,7 @@ func (l *Loop) reportUsage(round provider.Usage, events chan<- Event) {
 	emit(events, Event{Kind: EventUsageReported, Usage: UsageReport{
 		ContextTokens: held,
 		ContextWindow: l.Provider.ContextWindow(),
-		SessionTokens: l.usage.PromptTokens + l.usage.CompletionTokens,
+		RunTokens:     l.usage.PromptTokens + l.usage.CompletionTokens,
 	}})
 }
 

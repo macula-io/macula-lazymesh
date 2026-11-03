@@ -238,9 +238,11 @@ loses that ambient awareness. Two lines:
   counts, the configured model in bold
   (`mcp 0.51.1 ● · 3 rooms · 2 pending rings · 8 agents seen ·
   deepseek/deepseek-v4-flash`), then how full the model's context is and
-  what the session has used (`context 12.3k/200k (6%) · 48.1k used`; the
-  share is left out for a backend with no known window, and nothing shows
-  until a backend has reported usage at all), then a `listening HH:MM:SS`
+  what this run has used (`context 12.3k/200k (6%) · 48.1k this run`; a
+  resumed session counts from the restart, the share is left out for a
+  backend with no known window, nothing shows until a backend has
+  reported usage at all, and the figure is left out whole rather than cut
+  when the terminal is too narrow for it), then a `listening HH:MM:SS`
   heartbeat once the agent loop's had its first idle cycle — an
   advancing clock is what makes a frozen process distinguishable from a
   correctly-idle one. The line is cut to the terminal's width rather than
@@ -586,8 +588,8 @@ full wire protocol is documented at the top of
   `Say` in both SDKs collects them as `pending_rings`.
 - **Context use reaches the controller.** After every completion round
   whose backend reported usage, the session sends `usage`: the tokens the
-  conversation holds, the model's window (0 when unknown) and the
-  session's running total. A controller skips a type it does not know, so
+  conversation holds, the model's window (0 when unknown) and what this
+  run of the session has used (a resumed session starts at 0). A controller skips a type it does not know, so
   an older one ignores it.
 - **A controller can gate every tool call.** After
   `{"type":"hook","event":"pre_tool"}` the session sends each tool call to

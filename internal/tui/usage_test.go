@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
@@ -22,10 +23,10 @@ func TestSummaryLine_ShowsContextUseAfterATurn(t *testing.T) {
 
 	m, _ = m.handleAgentEvent(agentEventMsg(agent.Event{
 		Kind:  agent.EventUsageReported,
-		Usage: agent.UsageReport{ContextTokens: 12_345, ContextWindow: 200_000, SessionTokens: 48_100},
+		Usage: agent.UsageReport{ContextTokens: 12_345, ContextWindow: 200_000, RunTokens: 48_100},
 	}))
 	got := m.renderSummaryLine()
-	for _, want := range []string{"context 12.3k/200k (6%)", "48.1k used"} {
+	for _, want := range []string{"context 12.3k/200k (6%)", "48.1k this run"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected the summary line to contain %q, got %q", want, got)
 		}
@@ -41,6 +42,7 @@ func TestTokenCountReadsAtAGlance(t *testing.T) {
 	cases := map[int]string{
 		0:         "0",
 		999:       "999",
+		999_950:   "1M",
 		1_000:     "1k",
 		12_345:    "12.3k",
 		200_000:   "200k",
@@ -73,10 +75,10 @@ func TestSummaryLine_NoShareWithoutAKnownWindow(t *testing.T) {
 	m.resizeComponents()
 	m, _ = m.handleAgentEvent(agentEventMsg(agent.Event{
 		Kind:  agent.EventUsageReported,
-		Usage: agent.UsageReport{ContextTokens: 12_345, SessionTokens: 12_345},
+		Usage: agent.UsageReport{ContextTokens: 12_345, RunTokens: 12_345},
 	}))
 	got := m.renderSummaryLine()
-	if !strings.Contains(got, "context 12.3k · 12.3k used") {
+	if !strings.Contains(got, "context 12.3k · 12.3k this run") {
 		t.Fatalf("expected the tokens without a window, got %q", got)
 	}
 	if strings.Contains(got, "%") {
@@ -92,7 +94,7 @@ func TestSummaryLine_WithUsageStillFitsANarrowTerminal(t *testing.T) {
 	m.resizeComponents()
 	m, _ = m.handleAgentEvent(agentEventMsg(agent.Event{
 		Kind:  agent.EventUsageReported,
-		Usage: agent.UsageReport{ContextTokens: 912_345, ContextWindow: 1_000_000, SessionTokens: 4_800_000},
+		Usage: agent.UsageReport{ContextTokens: 912_345, ContextWindow: 1_000_000, RunTokens: 4_800_000},
 	}))
 	got := m.renderSummaryLine()
 	if w := lipgloss.Width(got); w > 40 {
@@ -100,5 +102,44 @@ func TestSummaryLine_WithUsageStillFitsANarrowTerminal(t *testing.T) {
 	}
 	if strings.Contains(got, "\n") {
 		t.Fatalf("summary line wrapped: %q", got)
+	}
+}
+
+// The line is cut to the terminal's width, so the context figure is placed
+// only when it fits whole (#78 gap 4 review): a cut through it ("context
+// 64", "(6") reads as a different number.
+func TestSummaryLine_ContextFigureIsWholeOrAbsentAtEveryWidth(t *testing.T) {
+	const model = "deepseek/deepseek-v4-flash"
+	report := agent.UsageReport{ContextTokens: 645_000, ContextWindow: 1_000_000, RunTokens: 4_800_000}
+	seg := usageSegment(report)
+	shown := 0
+	for w := 40; w <= 140; w++ {
+		m := New(nil, Options{UserInputCh: make(chan string, 8), StatusBarPosition: "bottom", AgentModel: model})
+		m.width, m.height = w, 24
+		m.resizeComponents()
+		m, _ = m.handleAgentEvent(agentEventMsg(agent.Event{Kind: agent.EventUsageReported, Usage: report}))
+		line := ansi.Strip(m.renderSummaryLine())
+		i := strings.Index(line, model)
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len(model):]
+		if rest != "" && rest != " · "+seg {
+			t.Fatalf("at %d columns the figure is cut: %q", w, line)
+		}
+		if rest != "" {
+			shown++
+		}
+	}
+	if shown == 0 {
+		t.Fatal("the figure never showed at any width up to 140")
+	}
+}
+
+// What the figure counts is this run: a resumed session starts it at zero,
+// so the label says "this run", never a session total it does not know.
+func TestSummaryLine_SpendIsLabelledAsThisRun(t *testing.T) {
+	if got := usageSegment(agent.UsageReport{ContextTokens: 1_200, ContextWindow: 200_000, RunTokens: 1_200}); !strings.HasSuffix(got, "1.2k this run") {
+		t.Fatalf("usage segment = %q, want the spend labelled as this run", got)
 	}
 }

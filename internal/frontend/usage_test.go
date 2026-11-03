@@ -11,7 +11,7 @@ import (
 // The usage report crosses the control socket whole (#78 gap 4), so an
 // attached TUI shows the same context figure as the session's own.
 func TestUsageEventSurvivesTheRoundTrip(t *testing.T) {
-	in := agent.Event{Kind: agent.EventUsageReported, Usage: agent.UsageReport{ContextTokens: 12_345, ContextWindow: 200_000, SessionTokens: 48_100}}
+	in := agent.Event{Kind: agent.EventUsageReported, Usage: agent.UsageReport{ContextTokens: 12_345, ContextWindow: 200_000, RunTokens: 48_100}}
 	line, err := marshalEvent(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
