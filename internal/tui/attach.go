@@ -57,7 +57,7 @@ type attachBridge struct {
 	input     chan string
 	interrupt chan struct{}
 	answer    chan ApprovalAnswer
-	resolved  chan ApprovalResolved
+	resolved  chan frontend.ApprovalResolved
 }
 
 // newAttachBridge starts the four goroutines that carry the TUI's
@@ -68,7 +68,7 @@ func newAttachBridge(ctrl *frontend.Controller) *attachBridge {
 		input:     make(chan string, 8),
 		interrupt: make(chan struct{}, 4),
 		answer:    make(chan ApprovalAnswer, 8),
-		resolved:  make(chan ApprovalResolved, 16),
+		resolved:  make(chan frontend.ApprovalResolved, 16),
 	}
 	go func() {
 		for text := range b.input {
@@ -86,18 +86,25 @@ func newAttachBridge(ctrl *frontend.Controller) *attachBridge {
 	}()
 	go func() {
 		for answer := range b.answer {
-			// A refusal here means another frontend answered first. The
-			// operator is told by the approval_resolved event the server
-			// broadcasts to every frontend, which closes the popup and
-			// names who decided it — reporting the error here as well
-			// would say it twice.
-			_ = ctrl.Approve(answer.ID, answer.Allow)
+			// A refusal means another frontend answered first. It is
+			// reported into the TUI's own stream rather than to stderr (the
+			// alt screen would swallow it) and rather than dropped: the
+			// operator pressed a key and is owed the reason it did not
+			// count. The server's broadcast tells them who won; this tells
+			// them their own answer lost, which the broadcast alone does
+			// not distinguish from one they never sent.
+			if err := ctrl.Approve(answer.ID, answer.Allow); err != nil {
+				select {
+				case b.resolved <- frontend.ApprovalResolved{ID: answer.ID, Note: err.Error()}:
+				default:
+				}
+			}
 		}
 	}()
 	go func() {
 		defer close(b.resolved)
 		for r := range ctrl.Approvals() {
-			b.resolved <- ApprovalResolved{ID: r.ID, By: r.By}
+			b.resolved <- r
 		}
 	}()
 	return b

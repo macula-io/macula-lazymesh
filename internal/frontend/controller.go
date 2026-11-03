@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -47,6 +48,11 @@ type SessionInfo struct {
 type ApprovalResolved struct {
 	ID string
 	By string
+
+	// Note is a local explanation a frontend attaches about its OWN
+	// answer, when that answer was not the one used. It never travels on
+	// the wire and is empty for a resolution received from the server.
+	Note string
 }
 
 // Dial connects to a session's control socket and reads the handshake.
@@ -62,6 +68,25 @@ func Dial(path string) (*Controller, error) {
 		approvals: make(chan ApprovalResolved, 16),
 		pending:   make(map[string]chan error),
 		done:      make(chan struct{}),
+	}
+	// The server already refuses a peer that is not this uid, but that
+	// only protects the session. A controller given an explicit socket
+	// path bypasses DefaultSocketPath's private-directory rule, so it must
+	// check the far end itself: someone who planted a socket in a
+	// directory they can write to would otherwise receive what a
+	// controller sends and answer in the session's name.
+	if peerCredsSupported == 0 {
+		conn.Close()
+		return nil, fmt.Errorf("frontend: refusing to attach on this platform: no peer credentials, so the far end of %s cannot be verified", path)
+	}
+	uid, err := peerUID(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("frontend: cannot verify who is listening on %s: %w", path, err)
+	}
+	if own := os.Geteuid(); uid != own {
+		conn.Close()
+		return nil, fmt.Errorf("frontend: %s is served by uid %d, not uid %d; refusing to attach", path, uid, own)
 	}
 	r := bufio.NewReader(conn)
 	line, err := r.ReadBytes('\n')
@@ -260,15 +285,24 @@ func (c *Controller) failPending() {
 // parseEvent turns one output line back into an agent.Event — the inverse
 // of marshalEvent, kept beside it so the two shapes cannot drift apart
 // unnoticed. ok is false for lines that are not events.
+//
+// The field names here are the wire's, not agent.Event's: a tool call and
+// an approval carry their text under "args", a tool result under
+// "result", a ring under "purpose" and "ring_id". Reading "text" for all
+// of them is exactly the bug TestEveryEventSurvivesTheRoundTrip exists to
+// catch — it showed an operator every approval with empty arguments.
 func parseEvent(line []byte) (agent.Event, bool) {
 	var raw struct {
-		Type   string `json:"type"`
-		Text   string `json:"text"`
-		Tool   string `json:"tool"`
-		Result string `json:"result"`
-		Error  string `json:"error"`
-		ID     string `json:"id"`
-		From   string `json:"from"`
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Tool    string `json:"tool"`
+		Args    string `json:"args"`
+		Result  string `json:"result"`
+		Error   string `json:"error"`
+		ID      string `json:"id"`
+		RingID  string `json:"ring_id"`
+		From    string `json:"from"`
+		Purpose string `json:"purpose"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return agent.Event{}, false
@@ -279,7 +313,7 @@ func parseEvent(line []byte) (agent.Event, bool) {
 	case "delta":
 		return agent.Event{Kind: agent.EventAssistantDelta, Text: raw.Text}, true
 	case "tool_call":
-		return agent.Event{Kind: agent.EventToolCall, ToolName: raw.Tool, Text: raw.Text}, true
+		return agent.Event{Kind: agent.EventToolCall, ToolName: raw.Tool, Text: raw.Args}, true
 	case "tool_result":
 		return agent.Event{Kind: agent.EventToolResult, ToolName: raw.Tool, Text: raw.Result}, true
 	case "error":
@@ -289,11 +323,11 @@ func parseEvent(line []byte) (agent.Event, bool) {
 	case "max_failures":
 		return agent.Event{Kind: agent.EventMaxFailuresReached}, true
 	case "approval_request":
-		return agent.Event{Kind: agent.EventApprovalRequested, ID: raw.ID, ToolName: raw.Tool, Text: raw.Text}, true
+		return agent.Event{Kind: agent.EventApprovalRequested, ID: raw.ID, ToolName: raw.Tool, Text: raw.Args}, true
 	case "turn_complete":
 		return agent.Event{Kind: agent.EventListening}, true
 	case "ring_pending":
-		return agent.Event{Kind: agent.EventRingPending, ID: raw.ID, From: raw.From, Text: raw.Text}, true
+		return agent.Event{Kind: agent.EventRingPending, ID: raw.RingID, From: raw.From, Text: raw.Purpose}, true
 	default:
 		return agent.Event{}, false
 	}

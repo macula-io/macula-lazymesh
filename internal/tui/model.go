@@ -22,6 +22,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/termkeys"
@@ -101,7 +102,7 @@ type Options struct {
 	// An attached TUI needs it so a popup that lost the race closes
 	// itself instead of sitting there looking like a decision still to be
 	// made (macula-io/macula-lazymesh#40's threat model).
-	ApprovalResolvedCh <-chan ApprovalResolved
+	ApprovalResolvedCh <-chan frontend.ApprovalResolved
 
 	StatusBarPosition string // "top" or "bottom"
 
@@ -162,7 +163,7 @@ type Model struct {
 	userInputCh        chan<- string
 	interruptCh        chan<- struct{}
 	approvalCh         chan<- ApprovalAnswer
-	approvalResolvedCh <-chan ApprovalResolved
+	approvalResolvedCh <-chan frontend.ApprovalResolved
 	pendingApproval    *pendingApproval
 
 	contactPolicyFile string
@@ -386,7 +387,7 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 
 // waitForApprovalResolved is waitForAgentEvent for the approval
 // resolution stream an attached TUI reads from its control socket.
-func waitForApprovalResolved(ch <-chan ApprovalResolved) tea.Cmd {
+func waitForApprovalResolved(ch <-chan frontend.ApprovalResolved) tea.Cmd {
 	return func() tea.Msg {
 		r, ok := <-ch
 		if !ok {

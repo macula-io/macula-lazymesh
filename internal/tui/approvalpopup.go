@@ -11,6 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+
+	"github.com/macula-io/macula-lazymesh/internal/frontend"
 )
 
 // ApprovalAnswer is the operator's decision on one approval prompt (G9):
@@ -20,23 +22,16 @@ type ApprovalAnswer struct {
 	Allow bool
 }
 
-// ApprovalResolved reports that an approval was answered and by which
-// frontend. It arrives for every approval answered while this TUI is
-// open, including ones another attached frontend answered first, so the
-// popup never sits there pretending a decision is still the operator's to
-// make (macula-io/macula-lazymesh#40's threat model).
-type ApprovalResolved struct {
-	ID string
-	By string
-}
+// approvalResolvedMsg carries a frontend.ApprovalResolved through the tea
+// loop. The type is the control plane's rather than a copy of it: the
+// in-process TUI and an attached one must read the same resolution, and
+// two shapes for one fact is how they drift apart.
+type approvalResolvedMsg frontend.ApprovalResolved
 
-// approvalResolvedMsg carries an ApprovalResolved through the tea loop.
-type approvalResolvedMsg ApprovalResolved
-
-// handleApprovalResolved closes a popup this frontend lost the race for,
-// and records who decided it. The chat line matters more than the popup
-// closing: a human who pressed a key must be able to see that someone
-// else's answer is the one that took effect.
+// handleApprovalResolved closes a popup that was answered by someone
+// else, and records who decided it. The chat line matters more than the
+// popup closing: a human who pressed a key must be able to see that
+// another frontend's answer is the one that took effect.
 func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) {
 	closed := false
 	if m.pendingApproval != nil && m.pendingApproval.id == msg.ID {
@@ -45,12 +40,20 @@ func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) 
 		m.resizeComponents()
 		closed = true
 	}
-	by := msg.By
-	if by == "" {
-		by = "another frontend"
+
+	var text string
+	switch {
+	case msg.Note != "":
+		// This frontend's own answer was refused, and it says why.
+		text = "approval " + msg.ID + ": " + msg.Note
+	default:
+		by := msg.By
+		if by == "" {
+			by = "another frontend"
+		}
+		text = "approval " + msg.ID + " was answered by " + by
 	}
-	text := "approval " + msg.ID + " was answered by " + by
-	if closed {
+	if closed && msg.Note == "" {
 		text += " (this popup's answer was not the one used)"
 	}
 	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: text})

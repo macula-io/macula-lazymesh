@@ -1,6 +1,7 @@
 package frontend
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -291,5 +292,89 @@ func TestLateApprovalIsRefusedNotSilentlyDropped(t *testing.T) {
 	}
 	if err := c.Approve("approve-9", false); err == nil {
 		t.Fatal("a second answer for the same id returned success; it must be refused explicitly")
+	}
+}
+
+// TestEveryEventSurvivesTheRoundTrip is the mechanical check R1 asked for:
+// every event kind the server can encode is decoded back by the client and
+// compared field by field. The bug it exists for was a field-name mismatch
+// that no other test could see — the server wrote "args", the client read
+// "text", so an attached TUI showed every approval with empty arguments and
+// an `rm -rf /` reached the operator as "". A new event kind, or a renamed
+// field on either side, fails here rather than in someone's terminal.
+func TestEveryEventSurvivesTheRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   agent.Event
+		want agent.Event
+	}{
+		{"assistant", agent.Event{Kind: agent.EventAssistantMessage, Text: "done"}, agent.Event{Kind: agent.EventAssistantMessage, Text: "done"}},
+		{"delta", agent.Event{Kind: agent.EventAssistantDelta, Text: "par"}, agent.Event{Kind: agent.EventAssistantDelta, Text: "par"}},
+		{"tool_call", agent.Event{Kind: agent.EventToolCall, ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}, agent.Event{Kind: agent.EventToolCall, ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}},
+		{"tool_result", agent.Event{Kind: agent.EventToolResult, ToolName: "shell_exec", Text: "ok"}, agent.Event{Kind: agent.EventToolResult, ToolName: "shell_exec", Text: "ok"}},
+		{"backoff", agent.Event{Kind: agent.EventBackoff}, agent.Event{Kind: agent.EventBackoff}},
+		{"max_failures", agent.Event{Kind: agent.EventMaxFailuresReached}, agent.Event{Kind: agent.EventMaxFailuresReached}},
+		{"approval_request", agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}, agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "shell_exec", Text: `{"cmd":"rm -rf /"}`}},
+		{"turn_complete", agent.Event{Kind: agent.EventListening}, agent.Event{Kind: agent.EventListening}},
+		{"ring_pending", agent.Event{Kind: agent.EventRingPending, ID: "ring-1", From: "pluto", Text: "review this"}, agent.Event{Kind: agent.EventRingPending, ID: "ring-1", From: "pluto", Text: "review this"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			line, err := marshalEvent(tc.in)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got, ok := parseEvent(line)
+			if !ok {
+				t.Fatalf("parseEvent rejected %s", line)
+			}
+			if got.Kind != tc.want.Kind || got.Text != tc.want.Text || got.ToolName != tc.want.ToolName || got.ID != tc.want.ID || got.From != tc.want.From {
+				t.Fatalf("round trip lost data:\n  encoded %s\n  got     %+v\n  want    %+v", line, got, tc.want)
+			}
+		})
+	}
+
+	// EventError carries an error, not a string field.
+	line, err := marshalEvent(agent.Event{Kind: agent.EventError, ToolName: "shell_exec", Err: errors.New("boom")})
+	if err != nil {
+		t.Fatalf("marshal error event: %v", err)
+	}
+	got, ok := parseEvent(line)
+	if !ok || got.Kind != agent.EventError || got.ToolName != "shell_exec" || got.Err == nil || got.Err.Error() != "boom" {
+		t.Fatalf("error event round trip = %+v (ok=%v)", got, ok)
+	}
+}
+
+// TestTheLocalTUIHearsAnAttachedFrontendAnswer is R3: the session's own
+// in-process TUI is not one of the server's connections, so the broadcast
+// cannot reach it. Without Resolutions() a popup on the local TUI waits
+// out the full approval timeout after an attached frontend has already
+// decided the call.
+func TestTheLocalTUIHearsAnAttachedFrontendAnswer(t *testing.T) {
+	events := make(chan agent.Event, 8)
+	input := make(chan string, 4)
+	s, path := startControllerServer(t, input, events, func(id string, allow bool) bool { return true })
+
+	c, err := Dial(path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	if err := c.Approve("approve-1", true); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	select {
+	case r := <-s.Resolutions():
+		if r.ID != "approve-1" {
+			t.Fatalf("resolution = %+v", r)
+		}
+		if r.By == "" {
+			t.Fatal("the local TUI was not told which frontend answered")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session's own TUI was never told the approval was answered")
 	}
 }

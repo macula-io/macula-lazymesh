@@ -119,6 +119,12 @@ type Server struct {
 	// one approval is outstanding: every new approval request prunes the
 	// ids that came before it.
 	answeredBy map[string]string
+	// localRes carries resolutions to the session's own in-process TUI,
+	// which is not one of this server's connections and so cannot be
+	// reached by the broadcast. Without it, a human watching the session
+	// directly is never told that an attached frontend answered first,
+	// and their popup waits out the full approval timeout for nothing.
+	localRes chan ApprovalResolved
 }
 
 // sessionInfo is what every connecting controller learns on connect.
@@ -227,6 +233,7 @@ func startFor(opts Options, ownUID int) (*Server, error) {
 		ln:         ln,
 		conns:      make(map[net.Conn]*connection),
 		answeredBy: make(map[string]string),
+		localRes:   make(chan ApprovalResolved, 16),
 		shutCh:     make(chan struct{}),
 	}
 	go s.accept()
@@ -546,6 +553,22 @@ func (s *Server) answerApproval(c *connection, id string, allow bool, reply func
 		}
 	}
 	s.mu.Unlock()
+
+	// The in-process TUI hears it too: it is a frontend like any other,
+	// and a popup it is showing has just been decided by someone else.
+	select {
+	case s.localRes <- ApprovalResolved{ID: id, By: by}:
+	default:
+	}
+}
+
+// Resolutions carries every approval answered while this server is up,
+// for the session's own in-process TUI. A TUI with no control socket has
+// no need of it; one running beside a socket does, or an attached
+// frontend's answer would leave its popup waiting for a timeout that has
+// nothing left to wait for.
+func (s *Server) Resolutions() <-chan ApprovalResolved {
+	return s.localRes
 }
 
 // AnswerLocal answers an approval on behalf of the session's own

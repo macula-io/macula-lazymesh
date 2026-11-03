@@ -449,16 +449,28 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
+	// An attached frontend can answer an approval this TUI is showing, and
+	// the in-process TUI is not one of the control socket's connections, so
+	// the server's broadcast cannot reach it. Without this the popup waits
+	// out the full approval timeout after someone else has already decided
+	// the call. nil when no control socket is running: then nothing else
+	// can answer.
+	var resolvedCh <-chan frontend.ApprovalResolved
+	if ctrl != nil {
+		resolvedCh = ctrl.Resolutions()
+	}
+
 	tuiModel := tui.New(client, tui.Options{
-		AgentEvents:       tuiEvents,
-		UserInputCh:       userInputCh,
-		InterruptCh:       interruptCh,
-		ApprovalCh:        approvalCh,
-		StatusBarPosition: cfg.StatusBarPosition,
-		ContactPolicyFile: cfg.ContactPolicyFile,
-		AutoAcceptKnown:   config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
-		AgentModel:        agentModelLabel,
-		MeshServices:      meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
+		AgentEvents:        tuiEvents,
+		UserInputCh:        userInputCh,
+		InterruptCh:        interruptCh,
+		ApprovalCh:         approvalCh,
+		ApprovalResolvedCh: resolvedCh,
+		StatusBarPosition:  cfg.StatusBarPosition,
+		ContactPolicyFile:  cfg.ContactPolicyFile,
+		AutoAcceptKnown:    config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
+		AgentModel:         agentModelLabel,
+		MeshServices:       meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
 		// The l key opens this file in $EDITOR. The same logPath the file
 		// was opened from above, so there is one derivation of the path.
 		LogPath: logPath,
