@@ -129,3 +129,34 @@ func TestPlainDragSelects(t *testing.T) {
 		t.Fatal("release did not clear the selection")
 	}
 }
+
+// TestSelectionPastTheLastMessageIsSilent pins the judgement on the noise
+// Raf saw while testing the editor (macula-lazymesh#60): a drag that lands
+// in the empty area under the last message is inside the chat pane and
+// selects nothing, so it must not print "selection is outside the chat
+// pane" into the chat -- that named the wrong pane and reported an event
+// an operator reads as an ordinary empty drag.
+func TestSelectionPastTheLastMessageIsSilent(t *testing.T) {
+	m := newTestModel(t)
+	m = fillChat(t, m, 1)
+	m.chatViewport.GotoTop()
+
+	paneTop := m.chatPaneTop()
+	content := len(m.chatContentLines())
+	emptyTop := paneTop + content
+	if emptyTop+1 >= paneTop+m.chatViewport.Height {
+		t.Fatalf("test setup: %d chat lines leave no empty row in a %d-row pane", content, m.chatViewport.Height)
+	}
+
+	before := len(m.chatEntries)
+	m.sel = selectionState{anchorRow: emptyTop, endRow: emptyTop + 1, active: true}
+	m, _ = m.finishSelection()
+
+	if m.sel.active {
+		t.Fatal("the selection was not cleared")
+	}
+	if len(m.chatEntries) != before {
+		t.Fatalf("a drag below the last message added %d chat entries, last: %q",
+			len(m.chatEntries)-before, m.chatEntries[len(m.chatEntries)-1].text)
+	}
+}
