@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
@@ -93,5 +94,68 @@ func TestNewBelowMarker_NotShownAtBottom(t *testing.T) {
 	m = deliverAnswer(t, m, "an answer in plain sight")
 	if view := m.View(); strings.Contains(view, "new below") {
 		t.Fatalf("at the bottom, the marker is on screen:\n%s", view)
+	}
+}
+
+// TestNewBelowMarker_ShownWhenAnEarlierEntryGrows: output that lands inside
+// an entry already on the list -- a tool result folded into its call, as
+// PR 83 does -- changes neither the count nor the last entry, and is still
+// news (r2 of #78 gap 7, Terra's probe A).
+func TestNewBelowMarker_ShownWhenAnEarlierEntryGrows(t *testing.T) {
+	m := modelWithLeader(t, "")
+	m = fillChat(t, m, 30)
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatToolCall, tool: "shell_exec", text: "→ shell_exec(go test ./...)"})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatAssistant, text: "running the tests"})
+	m.syncViewport()
+	m.chatViewport.GotoTop()
+
+	m.chatEntries[len(m.chatEntries)-2].text += "\nFAIL pkg"
+	m.syncViewport()
+	if view := m.View(); !strings.Contains(view, "new below") {
+		t.Fatalf("output folded into an earlier entry left no marker:\n%s", view)
+	}
+}
+
+// TestNewBelowMarker_NotShownForAResizeOrAToggle: a re-render that brings
+// nothing new is not news, however much the text on screen moved.
+func TestNewBelowMarker_NotShownForAResizeOrAToggle(t *testing.T) {
+	m := modelWithLeader(t, "")
+	m = fillChat(t, m, 30)
+	m.chatViewport.GotoTop()
+
+	m = send(t, m, tea.WindowSizeMsg{Width: 60, Height: 24})
+	m.syncViewport()
+	if view := m.View(); strings.Contains(view, "new below") {
+		t.Fatalf("a resize put the marker up:\n%s", view)
+	}
+	m.chatViewport.GotoTop()
+	m, _ = pressLeader(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(DefaultKeyMap.ToggleDetails.Keys()[0])})
+	if view := m.View(); strings.Contains(view, "new below") {
+		t.Fatalf("expanding tool detail put the marker up:\n%s", view)
+	}
+}
+
+// TestNewBelowMarker_FitsANarrowTerminal: the marker never wraps, and keeps
+// the key for as long as the width allows (Terra's probe B).
+func TestNewBelowMarker_FitsANarrowTerminal(t *testing.T) {
+	for _, width := range []int{30, 16, 8} {
+		m := modelWithLeader(t, "")
+		m = send(t, m, tea.WindowSizeMsg{Width: width, Height: 20})
+		m = fillChat(t, m, 30)
+		m.chatViewport.GotoTop()
+		m = deliverAnswer(t, m, "an answer that arrived below")
+
+		lines := strings.Split(m.chatBody(), "\n")
+		marker := lines[len(lines)-1]
+		if !strings.Contains(marker, "↓") {
+			t.Fatalf("width %d: no marker on the chat's bottom line: %q", width, marker)
+		}
+		if w := lipgloss.Width(marker); w > width {
+			t.Fatalf("width %d: the marker is %d cells wide: %q", width, w, marker)
+		}
+		chord := m.leaderLabel() + " " + DefaultKeyMap.ScrollBottom.Help().Key
+		if width >= len([]rune("↓ "+chord)) && !strings.Contains(marker, chord) {
+			t.Fatalf("width %d: the marker dropped the key %q though it fits: %q", width, chord, marker)
+		}
 	}
 }

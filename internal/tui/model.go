@@ -397,10 +397,11 @@ type Model struct {
 	chatViewport viewport.Model
 	// newBelow is set when output reaches the chat while the reader is
 	// scrolled up, and drops once the view is back at the bottom (#78 gap
-	// 7). chatSeen is the chat as the last sync left it, so a re-render
-	// that adds nothing (a resize, a toggle) is not mistaken for news.
+	// 7). chatSeen is the chat as the last sync rendered it, so a
+	// re-render that adds nothing (a resize, a toggle) is not mistaken for
+	// news.
 	newBelow bool
-	chatSeen chatMark
+	chatSeen chatRender
 	input    PromptEditor
 
 	width  int
@@ -1547,29 +1548,32 @@ func (m *Model) syncViewport() {
 	for i := range m.chatEntries {
 		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
 	}
-	m.chatViewport.SetContent(strings.Join(lines, "\n"))
+	content := strings.Join(lines, "\n")
+	m.chatViewport.SetContent(content)
 	if atBottom {
 		m.chatViewport.GotoBottom()
 	}
-	seen := markChat(m.chatEntries)
-	if !atBottom && seen != m.chatSeen {
+	seen := chatRender{content: content, width: m.width, details: m.detailsExpanded}
+	if !atBottom && seen.arrivedSince(m.chatSeen) {
 		m.newBelow = true
 	}
 	m.chatSeen = seen
 }
 
-// chatMark is how far the chat had got: its entry count and the length of
-// the last entry, which is the one a streaming answer grows.
-type chatMark struct {
-	entries  int
-	lastText int
+// chatRender is the chat as one sync rendered it, and the two settings that
+// change a rendering without anything arriving.
+type chatRender struct {
+	content string
+	width   int
+	details bool
 }
 
-func markChat(entries []chatEntry) chatMark {
-	if len(entries) == 0 {
-		return chatMark{}
-	}
-	return chatMark{entries: len(entries), lastText: len(entries[len(entries)-1].text)}
+// arrivedSince reports whether output reached the chat between two syncs:
+// the text differs under the same width and detail setting. It reads the
+// rendering, not the shape of the entries, so a new entry, a streamed delta
+// and a result folded into an earlier entry all count alike.
+func (r chatRender) arrivedSince(prev chatRender) bool {
+	return r.width == prev.width && r.details == prev.details && r.content != prev.content
 }
 
 // chatBody is the chat pane, with its bottom line given over to the "new
@@ -1582,9 +1586,26 @@ func (m Model) chatBody() string {
 		return body
 	}
 	lines := strings.Split(body, "\n")
-	bottom := m.leaderLabel() + " " + keyHint(DefaultKeyMap.ScrollBottom, DefaultKeyMap.ScrollBottom.Help().Desc)
-	lines[len(lines)-1] = statusStripStyle.Render("↓ new below -- " + bottom)
+	lines[len(lines)-1] = statusStripStyle.Render(m.newBelowMarker(m.chatViewport.Width))
 	return strings.Join(lines, "\n")
+}
+
+// newBelowMarker is the longest form of the marker that fits width cells.
+// The key goes last, since it is what the reader needs: on a narrow
+// terminal the words go first, then the action's name, then the key.
+func (m Model) newBelowMarker(width int) string {
+	chord := m.leaderLabel() + " " + DefaultKeyMap.ScrollBottom.Help().Key
+	for _, s := range []string{
+		"↓ new below -- " + m.leaderLabel() + " " + keyHint(DefaultKeyMap.ScrollBottom, DefaultKeyMap.ScrollBottom.Help().Desc),
+		"↓ new below -- " + chord,
+		"↓ " + chord,
+		"↓ new below",
+	} {
+		if width < 1 || len([]rune(s)) <= width {
+			return s
+		}
+	}
+	return string([]rune("↓ new below")[:width])
 }
 
 // Colors match the macula brand palette (see chat.go's own comment) --
