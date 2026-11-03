@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -232,6 +233,92 @@ func indentLines(lines []string, style lipgloss.Style) []toolLine {
 	return out
 }
 
+var (
+	diffAddedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ADE80"))
+	diffRemovedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171"))
+	diffHunkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#22D3EE"))
+	diffFileStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true)
+)
+
+// diffLines indents a unified diff and colours each line by what it is: a
+// file header bold, a hunk header cyan, an added line green, a removed one
+// red, context and anything else the body grey (#78 gap 3). Inside a hunk
+// a line is what the hunk says it is, so removing "-- x" is a removed line,
+// not a header: the hunk's old and new line counts say where it ends. It
+// reads only the first characters of lines that are already neutralised,
+// so colour can never carry a control through: a line's text is the same
+// either way.
+func diffLines(lines []string) []toolLine {
+	out := make([]toolLine, 0, len(lines))
+	var h hunk
+	for _, l := range lines {
+		out = append(out, toolLine{text: "  " + l, style: h.style(l)})
+	}
+	return out
+}
+
+var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@`)
+
+// hunk is how many old and new lines the current hunk has still to show;
+// open is set when its header gave no counts, and it then runs to the next
+// hunk or file.
+type hunk struct {
+	old, new int
+	open     bool
+}
+
+func (h *hunk) style(line string) lipgloss.Style {
+	switch {
+	case strings.HasPrefix(line, "diff --git "):
+		*h = hunk{}
+		return diffFileStyle
+	case strings.HasPrefix(line, "@@"):
+		h.start(line)
+		return diffHunkStyle
+	case h.old > 0 || h.new > 0 || h.open:
+		return h.consume(line)
+	case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+		return diffFileStyle
+	}
+	return chatToolBodyStyle
+}
+
+func (h *hunk) start(line string) {
+	m := hunkHeader.FindStringSubmatch(line)
+	if m == nil {
+		*h = hunk{open: true}
+		return
+	}
+	*h = hunk{old: hunkCount(m[1]), new: hunkCount(m[2])}
+}
+
+// hunkCount is a hunk header's line count, which is 1 when it is left out.
+func hunkCount(s string) int {
+	if s == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (h *hunk) consume(line string) lipgloss.Style {
+	switch {
+	case strings.HasPrefix(line, "+"):
+		h.new--
+		return diffAddedStyle
+	case strings.HasPrefix(line, "-"):
+		h.old--
+		return diffRemovedStyle
+	case strings.HasPrefix(line, " "), line == "":
+		h.old--
+		h.new--
+	}
+	return chatToolBodyStyle
+}
+
 // toolCallLines renders a call and, once it has one, its outcome: the
 // headline with a short summary, then the body the outcome warrants.
 // Collapsed, a shell shows the tail of its output and a read or a search
@@ -265,7 +352,7 @@ func (e *chatEntry) toolCallLines(expanded bool) []toolLine {
 		head, body = resultLines(e.tool, head, raw, expanded)
 	}
 	if out.alwaysDetail && e.tool == "shell_exec" {
-		body = append(body, indentLines(textLines(out.detail), chatToolBodyStyle)...)
+		body = append(body, diffLines(textLines(out.detail))...)
 	}
 	return append([]toolLine{head}, body...)
 }
@@ -323,7 +410,7 @@ func resultLines(tool string, head toolLine, result string, expanded bool) (tool
 		head.text += " ✓"
 		return head, nil
 	case "apply_patch":
-		return head, indentLines(all, chatToolBodyStyle)
+		return head, diffLines(all)
 	default:
 		if !expanded {
 			return head, indentLines([]string{"← " + neutralise(truncateForChat(result, 60))}, chatToolBodyStyle)
