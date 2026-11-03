@@ -82,6 +82,13 @@ const (
 	// spend without summing anything itself. A backend that reports no
 	// usage gets no event: zero would read as an empty context.
 	EventUsageReported
+	// EventTurnCrashed is emitted by cmd/lazymesh when a turn ended in a
+	// crash and the session was replaced (#99): Text is the crash notice,
+	// naming the steps that ran, the one that may or may not have, and
+	// saying nothing was sent again. It is its own kind, not an
+	// EventError, because it ends the turn as failed: an error is shown
+	// and the turn carries on, a crash means it never finished.
+	EventTurnCrashed
 )
 
 // UsageReport is the figure an EventUsageReported carries. ContextTokens
@@ -135,13 +142,10 @@ type Loop struct {
 	// usage so a reply that was cut names itself in agent.log instead of
 	// looking like a short answer.
 	lastStop provider.Stop
-	// appended records exactly the messages the current Say call added,
-	// in order — the persistence delta. A position-based diff against a
-	// pre-Say count would break under compaction: trimHistory evicts old
-	// turns (replacing them with a summary), so the slice can be SHORTER
-	// after Say than before, and Messages()[before:] panics on the
-	// out-of-range index (the live actor crash found 2026-09-12).
-	appended []provider.Message
+	// onRecord, when set, receives every message Say adds, the moment it
+	// is added (#99): the persistence hook. It sees only what Say appends,
+	// never trimHistory's compaction of older turns.
+	onRecord func(provider.Message)
 	// summary is the compacted record of every turn trimHistory has
 	// evicted so far (G6): it lives as a system message right after the
 	// real system prompt, so the model keeps the record while losing the
@@ -192,15 +196,21 @@ func (l *Loop) MessageCount() int {
 	return len(l.messages)
 }
 
-// TakeAppended returns the messages the most recent Say call added, in
-// order, and clears the buffer -- the exact persistence delta, immune to
-// trimHistory's eviction of OLDER messages (which a position-based diff
-// would miscount). Say records every append: the user message, each
-// assistant reply and each tool result.
-func (l *Loop) TakeAppended() []provider.Message {
-	out := l.appended
-	l.appended = nil
-	return out
+// OnRecord sets the function that receives each message Say adds, as it
+// is added: the user's message before anything runs, an assistant reply
+// (with its tool calls) before any of those tools run, and each tool's
+// result as soon as it returns (#99). A session that persists through it
+// knows, after a crash, which steps had run.
+func (l *Loop) OnRecord(record func(provider.Message)) {
+	l.onRecord = record
+}
+
+// keep adds m to the conversation and hands it to the record hook.
+func (l *Loop) keep(m provider.Message) {
+	l.messages = append(l.messages, m)
+	if l.onRecord != nil {
+		l.onRecord(m)
+	}
 }
 
 // Messages returns a snapshot of the conversation history, copied so a
@@ -311,11 +321,10 @@ func ToolSpecsFrom(tools []mcpclient.Tool) []provider.ToolSpec {
 // model produces a plain assistant reply with no further tool calls,
 // emitting an Event for every intermediate step along the way.
 func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) error {
-	l.messages = append(l.messages, provider.Message{
+	l.keep(provider.Message{
 		Role:    provider.RoleUser,
 		Content: userText,
 	})
-	l.appended = append(l.appended, l.messages[len(l.messages)-1])
 	l.trimHistory(ctx, events)
 
 	tools, err := l.Tools.ListTools(ctx)
@@ -340,8 +349,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 			emit(events, Event{Kind: EventError, Err: fmt.Errorf("chat completion: %w", err)})
 			return err
 		}
-		l.messages = append(l.messages, resp.Message)
-		l.appended = append(l.appended, resp.Message)
+		l.keep(resp.Message)
 		l.usage.PromptTokens += resp.Usage.PromptTokens
 		l.usage.CompletionTokens += resp.Usage.CompletionTokens
 		l.usage.TotalTokens += resp.Usage.TotalTokens
@@ -365,6 +373,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 			}
 			if callErr != nil {
 				toolMsg.Content = fmt.Sprintf("error: %s", callErr)
+				toolMsg.Failed = true
 				emit(events, Event{Kind: EventError, ToolName: tc.Name, Err: callErr})
 			} else {
 				// Full result goes to the event (TUI/agent.log keep
@@ -374,8 +383,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 				toolMsg.Content = truncateForHistory(result)
 				emit(events, Event{Kind: EventToolResult, ToolName: tc.Name, Text: result})
 			}
-			l.messages = append(l.messages, toolMsg)
-			l.appended = append(l.appended, toolMsg)
+			l.keep(toolMsg)
 			// Trimmed after every tool result, not just once at Say's own
 			// start (2026-09-07 fix): a single Say call can run up to
 			// maxRounds rounds, each appending its own tool results --
