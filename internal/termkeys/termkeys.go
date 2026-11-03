@@ -168,7 +168,10 @@ func (r *Reader) Close() error {
 // Read satisfies io.Reader. It refills from inner whenever its output
 // buffer is empty, translating as it goes, and reports EOF only after
 // everything has been delivered (including any dangling partial
-// sequence, flushed verbatim).
+// sequence, flushed verbatim). A read that yields nothing deliverable --
+// the whole chunk was one incomplete sequence -- returns (0, nil) rather
+// than reading again, so the caller, not this reader, is the one waiting
+// on the terminal.
 func (r *Reader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -187,7 +190,18 @@ func (r *Reader) Read(p []byte) (int, error) {
 		chunk := make([]byte, len(p))
 		n, err := r.inner.Read(chunk)
 		if n > 0 {
-			r.process(chunk[:n])
+			// A read that filled the chunk may have cut a sequence in half;
+			// process is told, because it decides whether a trailing escape
+			// run is the escape key or the start of one.
+			r.process(chunk[:n], n == len(chunk))
+			if len(r.out) == 0 {
+				// The chunk was one incomplete escape run, held in r.partial.
+				// Return rather than reading again: the caller re-reads only
+				// when the descriptor is ready, so the wait that follows is
+				// one cancelreader can interrupt. A read blocked here would
+				// not be, which is the bug this package exists to avoid.
+				return 0, nil
+			}
 			continue
 		}
 		if err != nil {
@@ -208,25 +222,19 @@ func (r *Reader) Read(p []byte) (int, error) {
 
 // process consumes one input chunk: non-escape bytes pass through
 // verbatim, escape-starting runs are classified and either translated,
-// passed through, or held as partial. Chunks containing enter/escape
-// bytes are hex-logged at debug level, so a live key-handling report
-// can be answered with the terminal's actual bytes instead of a guess.
-func (r *Reader) process(data []byte) {
+// passed through, or held as partial. full says the chunk filled the
+// caller's buffer, so more bytes may still be queued behind it. Chunks
+// containing enter/escape bytes are hex-logged at debug level, so a live
+// key-handling report can be answered with the terminal's actual bytes
+// instead of a guess.
+func (r *Reader) process(data []byte, full bool) {
 	for _, b := range data {
 		if b == 0x0d || b == 0x0a || b == 0x1b || b >= 0x80 {
 			slog.Debug("termkeys: input bytes", "hex", hex.EncodeToString(data))
 			break
 		}
 	}
-	// A fresh buffer, not append(r.partial, data...): that append can reuse
-	// the partial's own array, and the code below then appends a slice of it
-	// back onto itself -- overlapping copies that corrupt the held sequence
-	// whenever a chunk boundary falls inside one (found 2026-11-03 while
-	// bounding reads to the caller's buffer: 3-byte reads turned a split CSI
-	// into the raw bytes and the translation was lost).
-	buf := make([]byte, 0, len(r.partial)+len(data))
-	buf = append(buf, r.partial...)
-	buf = append(buf, data...)
+	buf := append(r.partial, data...)
 	r.partial = nil
 	i := 0
 	for i < len(buf) {
@@ -238,6 +246,23 @@ func (r *Reader) process(data []byte) {
 			r.out = append(r.out, buf[i:j]...)
 			i = j
 			continue
+		}
+		if full && i == len(buf)-1 {
+			// A FULL read may have cut a sequence: the terminal still has
+			// bytes queued, and this trailing ESC is probably the first of
+			// them. Hold it for the rest instead of delivering it as the
+			// escape key. A SHORT read is the case the immediate flush below
+			// exists for: nothing is left in the terminal, so a trailing ESC
+			// is the escape key and the modal TUI needs it now.
+			//
+			// This is bubbletea's own rule for its parser (key.go: a short
+			// read ends on an event boundary, a full read may not). With the
+			// kitty protocol pushed, every key is a CSI sequence, and a
+			// buffer edge landing after its ESC delivered a stray Escape --
+			// leaving insert mode mid-typing -- plus the rest as literal
+			// text (macula-lazymesh#60 review).
+			r.partial = append(r.partial, 0x1b)
+			return
 		}
 		seq, complete := classifyCSI(buf[i:])
 		if !complete {

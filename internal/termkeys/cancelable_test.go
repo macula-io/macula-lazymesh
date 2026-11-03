@@ -3,11 +3,13 @@
 package termkeys
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 	"github.com/muesli/cancelreader"
 )
@@ -84,5 +86,66 @@ func TestOnlyATerminalInputIsACancelReaderFile(t *testing.T) {
 	if _, ok := New(r).(cancelreader.File); ok {
 		t.Fatal("a non-terminal input claims to be a cancelreader.File: cancelreader would register a " +
 			"descriptor with epoll that epoll may refuse, and the program then cannot start")
+	}
+}
+
+// TestPasteArrivesWholeThroughTheCancelReader pins why reads are bounded
+// to the caller's buffer, which is what makes the cancellation of the
+// previous test usable at all.
+//
+// bubbletea's cancelable reader waits on the descriptor BEFORE every Read
+// (cancelreader_linux.go), so bytes translated into a buffer of ours that
+// the caller did not ask for have nothing to wake their delivery: the wait
+// is already over, and its next wake-up is the next keystroke. A paste
+// longer than the buffer would then arrive in pieces, one keystroke per
+// piece. Reading no more than the caller can take leaves the remainder in
+// the terminal, where the wait does see it.
+func TestPasteArrivesWholeThroughTheCancelReader(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open a pty: %v", err)
+	}
+	t.Cleanup(func() { ptmx.Close(); tty.Close() })
+	// Raw mode: in the default cooked mode a read stops at a line boundary,
+	// and this paste has no newline in it.
+	if _, err := term.MakeRaw(tty.Fd()); err != nil {
+		t.Fatalf("raw mode: %v", err)
+	}
+
+	cr, err := cancelreader.NewReader(New(tty))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	t.Cleanup(func() { cr.Close() })
+
+	// Longer than bubbletea's 256-byte input buffer, and nothing is written
+	// after it: every byte must come from what is already queued.
+	paste := bytes.Repeat([]byte("x"), 300)
+	if _, err := ptmx.Write(paste); err != nil {
+		t.Fatalf("write the paste: %v", err)
+	}
+
+	arrived := make(chan []byte, 1)
+	go func() {
+		var out []byte
+		buf := make([]byte, 256)
+		for len(out) < len(paste) {
+			n, err := cr.Read(buf)
+			if err != nil {
+				break
+			}
+			out = append(out, buf[:n]...)
+		}
+		arrived <- out
+	}()
+
+	select {
+	case out := <-arrived:
+		if len(out) != len(paste) {
+			t.Fatalf("the paste arrived as %d of %d bytes", len(out), len(paste))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the paste did not arrive whole: bytes past the caller's buffer are waiting " +
+			"behind the cancel reader's wait for the next keystroke")
 	}
 }
