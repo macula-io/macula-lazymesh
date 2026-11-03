@@ -15,6 +15,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // The checkout-notes tests pin threat model invariant 2
@@ -53,10 +54,11 @@ func TestPlantedCheckoutNotesCannotGiveOrders(t *testing.T) {
 	}
 	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes), "ctrl+x")
 
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	p := &recordingProvider{}
 	loop := agent.NewLoop(p, tools, prompt)
 	events := make(chan agent.Event, 1024)

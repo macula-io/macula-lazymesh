@@ -22,6 +22,11 @@ var CodingMeshTools = []string{"mesh_say"}
 // (threat model T4): the model cannot open a channel to a room repository
 // text names, and a say cannot bring back an ungated reply as its tool
 // result.
+//
+// The watched set is not only --room (#97): a ring the operator accepts,
+// or the operator's auto-accept policy accepts, enters it too, and so
+// becomes a room this gate lets mesh_say speak into. Each is an
+// operator's own act; none is the model's.
 type SayOnlyToWatchedRooms struct {
 	inner   agent.ToolSource
 	watches func(room string) bool

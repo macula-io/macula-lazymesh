@@ -44,7 +44,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	cfg.ToolAsklist = nil
 	target := filepath.Join(cfg.LocalTools.WorkingDir, ".bashrc")
 
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	}
 	pid, err := sessionhost.StartSession(node, root, withAsklist(cfg, sessionhost.SessionArgs{
 		Provider:     &writeOnceProvider{},
-		Tools:        tools,
+		Toolchain:    policy,
 		SystemPrompt: "coding test",
 	}))
 	if err != nil {
@@ -68,7 +68,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := make(chan agent.Event, 64)
-	if _, err := startEventBridge(node, ctx, pid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), counters.New()); err != nil {
+	if _, err := startEventBridge(node, ctx, pid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), func(agent.Event) {}, counters.New()); err != nil {
 		t.Fatal(err)
 	}
 

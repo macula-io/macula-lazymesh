@@ -103,10 +103,14 @@ func TestLiveOldDesign_HumanInputWasInvisibleDuringLongMeshSayWait(t *testing.T)
 	}
 
 	const waitReplySeconds = 8
-	tools, err := buildToolSource(config.Config{}, client, nil, codingShell{}) // deliberately unwrapped -- see doc comment
+	policy, err := buildToolSource(config.Config{}, client, nil, codingShell{}) // deliberately unwrapped -- see doc comment
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
+	// The profile's sources themselves, not the chain: this test measures
+	// what a model-chosen wait really costs, so the clamp must not be in
+	// the way (NoBlockingWait is part of the chain now, #100).
+	tools := policy.Base
 	p := &oneShotWaitProvider{roomTopic: room, waitReplySeconds: waitReplySeconds}
 	loop := agent.NewLoop(p, tools, "test")
 	events := make(chan agent.Event, 16)

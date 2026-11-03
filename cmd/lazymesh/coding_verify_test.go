@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 )
 
@@ -58,10 +59,11 @@ func verifyCodingTools(t *testing.T, dir string) agent.ToolSource {
 	if shell.sandbox == nil {
 		t.Fatalf("no sandbox: %s", shell.reason)
 	}
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), shell, nil)
+	policy, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), shell, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	// The multi-source answers a call only for a tool it has been asked
 	// to list.
 	if _, err := tools.ListTools(context.Background()); err != nil {

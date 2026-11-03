@@ -12,6 +12,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // TestLiveR2ToolSelectionStillWorksWithTerseSchemas is R2's explicit acceptance
@@ -62,11 +63,11 @@ func TestLiveR2ToolSelectionStillWorksWithTerseSchemas(t *testing.T) {
 	if err != nil {
 		t.Skipf("buildProvider (likely no deepseek key at %s): %v", keyPath, err)
 	}
-	tools, err := buildToolSource(cfg, client, nil, codingShell{}) // real terse-ified tools, exactly what run() builds
+	policy, err := buildToolSource(cfg, client, nil, codingShell{}) // real terse-ified tools, exactly what run() builds
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
-	tools = agent.NewNoBlockingWaitSource(tools)
+	tools := toolchain.Chain(policy)
 
 	loop := agent.NewLoop(p, tools, buildSystemPrompt(room, "", false, false, false, "", "ctrl+x"))
 	events := make(chan agent.Event, 64)

@@ -21,6 +21,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // These tests pin macula-io/macula-lazymesh#45 at the level the operator
@@ -118,7 +119,7 @@ func (g *gitOnceProvider) sent() string {
 // tool's own RefuseBeforeAsking in place, and returns what a driver needs.
 func startGitSession(t *testing.T, cfg config.Config, p provider.Provider) (gen.Node, gen.PID, gen.PID, chan agent.Event) {
 	t.Helper()
-	tools, gitTool, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, gitTool, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func startGitSession(t *testing.T, cfg config.Config, p provider.Provider) (gen.
 	}
 	args := codingSessionArgs(cfg, sessionhost.SessionArgs{
 		Provider:     p,
-		Tools:        tools,
+		Toolchain:    policy,
 		SystemPrompt: "coding test",
 	}, gitTool)
 	sessPid, err := sessionhost.StartSession(ergoNode, rootPid, args)
@@ -143,7 +144,7 @@ func startGitSession(t *testing.T, cfg config.Config, p provider.Provider) (gen.
 	t.Cleanup(cancel)
 	t.Cleanup(func() { sessionhost.StopSession(ergoNode, sessPid) })
 	events := make(chan agent.Event, 256)
-	if _, err := startEventBridge(ergoNode, ctx, sessPid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), counters.New()); err != nil {
+	if _, err := startEventBridge(ergoNode, ctx, sessPid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), func(agent.Event) {}, counters.New()); err != nil {
 		t.Fatal(err)
 	}
 	return ergoNode, rootPid, sessPid, events
@@ -164,10 +165,11 @@ func TestGitToolAbsentOutsideTheCodingProfileAndTheAllowlist(t *testing.T) {
 	if _, ok := gitToolConfig(notNamed); ok {
 		t.Fatal("the git tool was built although the allowlist does not name it")
 	}
-	tools, gitTool, err := buildCodingToolSource(notNamed, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
+	policy, gitTool, err := buildCodingToolSource(notNamed, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := toolchain.Chain(policy)
 	if gitTool != nil {
 		t.Fatal("a git source came back without an allowlist entry")
 	}

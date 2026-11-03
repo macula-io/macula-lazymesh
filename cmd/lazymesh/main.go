@@ -45,6 +45,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
 	"github.com/macula-io/macula-lazymesh/internal/termkeys"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 	"github.com/macula-io/macula-lazymesh/internal/tui"
 	"github.com/macula-io/macula-lazymesh/internal/updatecheck"
 	"github.com/macula-io/macula-lazymesh/internal/webfetch"
@@ -236,7 +237,15 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// already established for exactly this reason.
 	waiterMgr := roomwaiter.New(client, "")
 	defer waiterMgr.StopAll()
-	var tools agent.ToolSource
+	// roomChanged is the one door for room membership (#97): the event
+	// bridge for the model's tool calls, the TUI for a ring the operator
+	// answers, and the --room joined below all report through it, so the
+	// waiter watches a room whichever route joined it.
+	roomChanged := func(ev agent.Event) {
+		logEvent(agentLog, ev)
+		waiterMgr.Apply(ctx, ev)
+	}
+	var policy toolchain.Policy
 	var shell codingShell
 	var gitTool *gittools.Source
 	if cfg.CodingProfile() {
@@ -245,7 +254,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			fmt.Fprintln(os.Stderr, "lazymesh:", shell.reason)
 			agentLog.Printf("[shell] %s", shell.reason)
 		}
-		tools, gitTool, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, shell, logStack.StdFor("git").Printf)
+		policy, gitTool, err = buildCodingToolSource(cfg, client, waiterMgr.Watches, shell, logStack.StdFor("git").Printf)
 	} else {
 		// The mesh profile gets the same confined shell, or none at all
 		// (#94): its shell_exec used to be a plain sh -c with the
@@ -256,12 +265,17 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			fmt.Fprintln(os.Stderr, "lazymesh:", shell.reason)
 			agentLog.Printf("[shell] %s", shell.reason)
 		}
-		tools, err = buildToolSource(cfg, client, meshSvc, shell)
+		policy, err = buildToolSource(cfg, client, meshSvc, shell)
 	}
 	if err != nil {
 		return fmt.Errorf("build tool source: %w", err)
 	}
-	tools = agent.NewNoBlockingWaitSource(tools)
+	// The chain for the budget below: consent is unset (ask needs both an
+	// ask list and someone to ask) and the run-owned controllers are not
+	// wired yet. Every one of those is passthrough for ListTools, so this
+	// is the same tool list the model will be offered -- it is not a second
+	// door a call could take, since nothing calls a tool through it.
+	tools := toolchain.Chain(policy)
 
 	// Startup budget check (2026-09-07, R2): computed here, before
 	// anything else starts, so a genuinely undersized context window
@@ -319,6 +333,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		if err := joinOperatorRoom(ctx, client, room); err != nil {
 			return err
 		}
+		roomChanged(agent.Event{Kind: agent.EventRoomJoined, Room: room})
 	}
 	initialRooms, err := seedInitialRooms(ctx, client)
 	if err != nil {
@@ -418,14 +433,17 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		preTool = preToolHook.Decide
 	}
 
+	// The controllers that are not the profile's own declaration: the
+	// pre-tool hook (G8) and the denial log (#26). Both are set here
+	// because they belong to this run, not to the profile.
+	policy.PreTool = preTool
+	policy.RecordDenial = denialRecorder(filepath.Join(sessionStore.Dir, resolvedSessionID+".denials.jsonl"), agentLog)
 	sessPid, err := sessionhost.StartSession(node, rootPid, codingSessionArgs(cfg, sessionhost.SessionArgs{
 		Provider:     p,
-		Tools:        tools,
+		Toolchain:    policy,
 		SystemPrompt: systemPrompt,
 		Store:        sessionStore,
 		SessionID:    resolvedSessionID,
-		PreTool:      preTool,
-		RecordDenial: denialRecorder(filepath.Join(sessionStore.Dir, resolvedSessionID+".denials.jsonl"), agentLog),
 	}, gitTool))
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -436,7 +454,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	sess := newCurrentSession(sessPid)
 	defer func() { sessionhost.StopSession(node, sess.Pid()) }()
 	runtimeCounters := counters.New()
-	bridgePid, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, runtimeCounters)
+	bridgePid, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, roomChanged, runtimeCounters)
 	if err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
@@ -565,6 +583,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		Leader:             leader,
 		ContactPolicyFile:  cfg.ContactPolicyFile,
 		AutoAcceptKnown:    config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
+		RoomChanged:        roomChanged,
 		AgentModel:         agentModelLabel,
 		MeshServices:       meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
 		// The l key opens this file in $EDITOR. The same logPath the file
@@ -731,26 +750,29 @@ func providerLabel(cfg config.Config) string {
 	return cfg.Provider
 }
 
-// buildToolSource combines macula-mcp, Phase 3's mesh-service tools when
-// meshSvc is non-nil (real, curated, currently-discovered mesh
-// procedures, dogfooding the mesh's own service directory per the plan's
-// actual thesis -- but OFF by default since R2, 2026-09-07: see
-// config.MeshServicesEnabled's own doc comment for why), and Phase 2's
-// local shell/file tools when explicitly enabled -- then wraps whatever
-// that is in an AllowlistSource. The allowlist is the actual gate: an
-// agent's entire conversation can be steered by arbitrary mesh peers (room
-// messages, ring purposes), so what the model is ALLOWED to see or call
-// matters independently of what sources merely exist. cfg.LocalTools.Enabled
-// controls whether shell_exec/read_file/write_file are wired up at all; it
-// does NOT put them on the allowlist by itself -- see config.ToolAllowlist
-// and internal/agent/allowlist.go.
+// buildToolSource is the mesh profile's declaration for the one tool chain
+// (macula-io/macula-lazymesh#100): it combines macula-mcp, Phase 3's
+// mesh-service tools when meshSvc is non-nil (real, curated,
+// currently-discovered mesh procedures, dogfooding the mesh's own service
+// directory per the plan's actual thesis -- but OFF by default since R2,
+// 2026-09-07: see config.MeshServicesEnabled's own doc comment for why),
+// and Phase 2's local shell/file tools when explicitly enabled, and names
+// the guards around them. The chain itself is built by toolchain.Chain, in
+// the one order declared there -- never assembled here. The allowlist is
+// the actual gate: an agent's entire conversation can be steered by
+// arbitrary mesh peers (room messages, ring purposes), so what the model is
+// ALLOWED to see or call matters independently of what sources merely
+// exist. cfg.LocalTools.Enabled controls whether
+// shell_exec/read_file/write_file are wired up at all; it does NOT put them
+// on the allowlist by itself -- see config.ToolAllowlist and
+// internal/agent/allowlist.go.
 //
 // meshSvc is constructed by the caller (run), not here, as of 2026-09-08 --
 // see run's own comment on why: the TUI's `s` panel needs the identical
 // Source instance to read via Snapshot, not a second one wrapping the
 // same client. Must be nil exactly when cfg.MeshServicesEnabled is false
 // (the caller's job to keep those in sync -- see run).
-func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source, meshShell codingShell) (agent.ToolSource, error) {
+func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshservices.Source, meshShell codingShell) (toolchain.Policy, error) {
 	sources := []agent.ToolSource{client}
 	// web_fetch (G12) is always wired but never reachable by default: the
 	// default allowlist excludes it, so it costs nothing until an
@@ -764,22 +786,21 @@ func buildToolSource(cfg config.Config, client *mcpclient.Client, meshSvc *meshs
 	if cfg.LocalTools.Enabled {
 		local, err := meshLocalTools(cfg, meshShell)
 		if err != nil {
-			return nil, err
+			return toolchain.Policy{}, err
 		}
 		sources = append(sources, local)
 	}
-	combined := agent.NewMultiSource(sources...)
-	var gated agent.ToolSource = agent.NewAllowlistSource(combined, resolveAllowlist(cfg))
-	// G11: the handoff-discipline wrapper sits AFTER the allowlist (only
-	// allowed calls matter) and enforces the reply-kind in_reply_to rule
-	// at the boundary.
-	gated = agent.NewHandoffSource(gated)
-
-	// Terse-ified last, after allowlisting -- see internal/agent/terse.go's
-	// own doc comment (R2, 2026-09-07): only shortens what actually
-	// reaches the model, never wastes work rewriting a tool the allowlist
-	// would filter out anyway.
-	return agent.NewTerseDescriptionSource(gated), nil
+	// G11's handoff discipline and R2's terse descriptions (2026-09-07) are
+	// part of both profiles' declared chain, so they cannot be forgotten in
+	// one of them. Terse only ever shortens what the allowlist actually
+	// admits, never wastes work rewriting a tool it would filter out anyway.
+	return toolchain.Policy{
+		Base:           agent.NewMultiSource(sources...),
+		Allowlist:      resolveAllowlist(cfg),
+		Handoff:        true,
+		Terse:          true,
+		NoBlockingWait: true,
+	}, nil
 }
 
 // meshLocalTools is the mesh profile's local tool set. Its shell is the same
@@ -813,7 +834,7 @@ func meshLocalTools(cfg config.Config, meshShell codingShell) (*localtools.Sourc
 // tool; when it is not nil, run hands its RefuseBeforeAsking to the
 // session so a push this tool would refuse never becomes an approval
 // prompt (macula-io/macula-lazymesh#45).
-func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches func(room string) bool, shell codingShell, logf gittools.Logf) (agent.ToolSource, *gittools.Source, error) {
+func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches func(room string) bool, shell codingShell, logf gittools.Logf) (toolchain.Policy, *gittools.Source, error) {
 	sources := []agent.ToolSource{mesh}
 	if cfg.LocalTools.Enabled {
 		localCfg := localtools.Config{
@@ -828,7 +849,7 @@ func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches fun
 		}
 		local, err := localtools.New(localCfg)
 		if err != nil {
-			return nil, nil, fmt.Errorf("local tools: %w", err)
+			return toolchain.Policy{}, nil, fmt.Errorf("local tools: %w", err)
 		}
 		sources = append(sources, local)
 	}
@@ -842,14 +863,18 @@ func buildCodingToolSource(cfg config.Config, mesh agent.ToolSource, watches fun
 		var err error
 		gitTool, err = gittools.New(gcfg)
 		if err != nil {
-			return nil, nil, fmt.Errorf("git tool: %w", err)
+			return toolchain.Policy{}, nil, fmt.Errorf("git tool: %w", err)
 		}
 		sources = append(sources, gitTool)
 	}
-	var gated agent.ToolSource = agent.NewAllowlistSource(agent.NewMultiSource(sources...), allowed)
-	gated = rostergate.NewSayOnlyToWatchedRooms(gated, watches)
-	gated = agent.NewHandoffSource(gated)
-	return agent.NewTerseDescriptionSource(gated), gitTool, nil
+	return toolchain.Policy{
+		Base:           agent.NewMultiSource(sources...),
+		Allowlist:      allowed,
+		WatchedRooms:   watches,
+		Handoff:        true,
+		Terse:          true,
+		NoBlockingWait: true,
+	}, gitTool, nil
 }
 
 // gitAllowlisted reports whether the operator named a git tool, which is
@@ -1006,7 +1031,7 @@ func hostToolNames() []string {
 // withAsklist sets the session's ask list from cfg: the one place run
 // and its tests take it from.
 func withAsklist(cfg config.Config, args sessionhost.SessionArgs) sessionhost.SessionArgs {
-	args.AskTools = resolveAsklist(cfg)
+	args.Toolchain.Ask = resolveAsklist(cfg)
 	return args
 }
 
@@ -1019,8 +1044,8 @@ func withAsklist(cfg config.Config, args sessionhost.SessionArgs) sessionhost.Se
 func codingSessionArgs(cfg config.Config, args sessionhost.SessionArgs, gitTool *gittools.Source) sessionhost.SessionArgs {
 	args = withAsklist(cfg, args)
 	if gitTool != nil {
-		args.RefuseBeforeAsking = gitTool.RefuseBeforeAsking
-		args.ApprovalText = gitTool.ApprovalText
+		args.Toolchain.RefuseBeforeAsking = gitTool.RefuseBeforeAsking
+		args.Toolchain.Describe = gitTool.ApprovalText
 	}
 	return args
 }
@@ -1871,38 +1896,6 @@ func parseJoinedRooms(resultJSON string) []string {
 	return rooms
 }
 
-// parseRoomTopic extracts a top-level "room_topic" string field --
-// mesh_join_room/mesh_leave_room/mesh_ring's own result shape (unlike
-// mesh_rooms's own {"joined": [...]} array, each of these reports exactly
-// one room). "" on anything unparseable or absent, e.g. an error result
-// from a failed call -- never misfires waiterMgr.Add/Remove on those.
-func parseRoomTopic(resultJSON string) string {
-	var parsed struct {
-		RoomTopic string `json:"room_topic"`
-	}
-	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil {
-		return ""
-	}
-	return parsed.RoomTopic
-}
-
-// parseAnsweredRingRoom extracts mesh_answer_ring's own room_topic, but
-// only when answer 1 (accept) actually joined it -- ring_service.ts's
-// answerPendingRing always reports room_topic in its result, accept or
-// decline, but only calls joinRoom on accept. Reporting a decline's
-// room_topic here would tell waiterMgr to watch a room this agent was
-// never actually added to.
-func parseAnsweredRingRoom(resultJSON string) (string, bool) {
-	var parsed struct {
-		Answer    int    `json:"answer"`
-		RoomTopic string `json:"room_topic"`
-	}
-	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil || parsed.Answer != 1 || parsed.RoomTopic == "" {
-		return "", false
-	}
-	return parsed.RoomTopic, true
-}
-
 // buildRosterGate builds the roster gate the configuration asks for: an
 // enforcing one in the coding profile, which requires a roster; an
 // observing one in the mesh profile when a roster is set, so the filter
@@ -1952,7 +1945,7 @@ func joinOperatorRoom(ctx context.Context, client rostergate.Caller, room string
 	if err != nil {
 		return fmt.Errorf("join room %s: %w", room, err)
 	}
-	if parseRoomTopic(result) != room {
+	if agent.RoomTopicOf(result) != room {
 		return fmt.Errorf("join room %s: the mesh did not confirm the join: %s", room, result)
 	}
 	return nil
@@ -2088,6 +2081,10 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 		agentLog.Printf("[stopped] agent stopped after repeated failures")
 	case agent.EventListening:
 		agentLog.Printf("[listening] waiting for the next human message, room arrival, or periodic check")
+	case agent.EventRoomJoined:
+		agentLog.Printf("[room] joined %s, now watched", ev.Room)
+	case agent.EventRoomLeft:
+		agentLog.Printf("[room] left %s, no longer watched", ev.Room)
 	}
 }
 
