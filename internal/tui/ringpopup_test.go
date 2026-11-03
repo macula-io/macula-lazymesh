@@ -13,7 +13,7 @@ import (
 
 func TestAnswerRingCmd_CallsMeshAnswerRingWithCorrectArgs(t *testing.T) {
 	fake := &fakeToolCaller{responses: map[string]string{"mesh_answer_ring": "{}"}}
-	cmd := answerRingCmd(fake, "ring-123", answerAccept, false, "")
+	cmd := answerRingCmd(fake, nil, "ring-123", answerAccept, false, "")
 	msg := cmd()
 
 	answered, ok := msg.(ringAnsweredMsg)
@@ -33,7 +33,7 @@ func TestAnswerRingCmd_CallsMeshAnswerRingWithCorrectArgs(t *testing.T) {
 
 func TestAnswerRingCmd_DeclineDoesNotCallTrust(t *testing.T) {
 	fake := &fakeToolCaller{responses: map[string]string{"mesh_answer_ring": "{}"}}
-	cmd := answerRingCmd(fake, "ring-123", answerDecline, false, "")
+	cmd := answerRingCmd(fake, nil, "ring-123", answerDecline, false, "")
 	msg := cmd().(ringAnsweredMsg)
 	if msg.accepted {
 		t.Fatalf("expected accepted=false for a decline")
@@ -50,7 +50,7 @@ func TestAnswerRingCmd_AlsoTrustCallsTrustAgentAfterSuccessfulAccept(t *testing.
 		"mesh_answer_ring": "{}",
 		"mesh_trust_agent": "{}",
 	}}
-	cmd := answerRingCmd(fake, "ring-123", answerAccept, true, "deadbeef")
+	cmd := answerRingCmd(fake, nil, "ring-123", answerAccept, true, "deadbeef")
 	msg := cmd().(ringAnsweredMsg)
 	if msg.err != nil {
 		t.Fatalf("expected no error, got %v", msg.err)
@@ -65,7 +65,7 @@ func TestAnswerRingCmd_AlsoTrustCallsTrustAgentAfterSuccessfulAccept(t *testing.
 
 func TestAnswerRingCmd_AlsoTrustSkipsTrustCallWhenAnswerFails(t *testing.T) {
 	fake := &fakeToolCaller{errs: map[string]error{"mesh_answer_ring": fmt.Errorf("boom")}}
-	cmd := answerRingCmd(fake, "ring-123", answerAccept, true, "deadbeef")
+	cmd := answerRingCmd(fake, nil, "ring-123", answerAccept, true, "deadbeef")
 	msg := cmd().(ringAnsweredMsg)
 	if msg.err == nil {
 		t.Fatalf("expected an error to propagate")

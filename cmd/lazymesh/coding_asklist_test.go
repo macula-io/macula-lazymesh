@@ -68,7 +68,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := make(chan agent.Event, 64)
-	if _, err := startEventBridge(node, ctx, pid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), counters.New()); err != nil {
+	if _, err := startEventBridge(node, ctx, pid, agent.NewOutlet(ctx.Done(), events), agent.NewOutlet(ctx.Done(), nil), log.New(io.Discard, "", 0), roomwaiter.New(nil, ""), func(agent.Event) {}, counters.New()); err != nil {
 		t.Fatal(err)
 	}
 

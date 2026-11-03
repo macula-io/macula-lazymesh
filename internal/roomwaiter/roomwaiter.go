@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
 // Caller is the minimal subset of *mcpclient.Client a Manager needs --
@@ -176,6 +178,21 @@ func (m *Manager) Remove(room string) {
 		cancel()
 		delete(m.cancels, room)
 		delete(m.pending, room)
+	}
+}
+
+// Apply follows one membership event (#97): EventRoomJoined starts
+// watching its room, EventRoomLeft stops; any other event is ignored.
+// It is the door every route that changes this node's rooms goes
+// through -- the model's tool calls, a ring the operator answers, the
+// --room lazymesh joins itself -- so a room joined by any of them is
+// watched.
+func (m *Manager) Apply(ctx context.Context, ev agent.Event) {
+	switch ev.Kind {
+	case agent.EventRoomJoined:
+		m.Add(ctx, ev.Room)
+	case agent.EventRoomLeft:
+		m.Remove(ev.Room)
 	}
 }
 

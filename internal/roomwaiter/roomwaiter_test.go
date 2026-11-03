@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
 func TestArrived_TimedOutZeroMeansArrived(t *testing.T) {
@@ -371,5 +373,31 @@ func TestManager_WatchesNamesExactlyTheWatchedRooms(t *testing.T) {
 	m.Remove("agents.room.a")
 	if m.Watches("agents.room.a") {
 		t.Error("a removed room is still reported as watched")
+	}
+}
+
+// #97: a membership event is the one way a room joins or leaves the
+// watched set from outside the waiter.
+func TestManager_ApplyFollowsMembershipEvents(t *testing.T) {
+	f := &fakeCaller{respond: func(ctx context.Context, room string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	m := New(f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer m.StopAll()
+
+	m.Apply(ctx, agent.Event{Kind: agent.EventRoomJoined, Room: "agents.room.a"})
+	if !m.Watches("agents.room.a") {
+		t.Fatalf("a joined room is not watched")
+	}
+	m.Apply(ctx, agent.Event{Kind: agent.EventToolResult, Room: "agents.room.b"})
+	if m.Watches("agents.room.b") {
+		t.Fatalf("an event that is no membership change started a waiter")
+	}
+	m.Apply(ctx, agent.Event{Kind: agent.EventRoomLeft, Room: "agents.room.a"})
+	if m.Watches("agents.room.a") {
+		t.Fatalf("a room left is still watched")
 	}
 }

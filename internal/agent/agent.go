@@ -82,6 +82,14 @@ const (
 	// spend without summing anything itself. A backend that reports no
 	// usage gets no event: zero would read as an empty context.
 	EventUsageReported
+	// EventRoomJoined and EventRoomLeft say this node's membership of
+	// Room changed (#97): the model's own mesh_join_room, mesh_ring,
+	// mesh_answer_ring or mesh_leave_room, a ring the operator answered,
+	// or the --room lazymesh joins itself. cmd/lazymesh builds one
+	// function that takes them all, and the room-waiter consumes it, so
+	// a room joined by any route is watched.
+	EventRoomJoined
+	EventRoomLeft
 )
 
 // UsageReport is the figure an EventUsageReported carries. ContextTokens
@@ -108,6 +116,7 @@ type Event struct {
 	From     string      // set for EventRingPending (the caller's petname)
 	Err      error       // set for EventError
 	Usage    UsageReport // set for EventUsageReported
+	Room     string      // set for EventRoomJoined / EventRoomLeft
 	// Stop is why the reply ended, set on the completed
 	// EventAssistantMessage (#77). Zero when the backend reported nothing;
 	// a consumer shows a cut marker only when Stop.Cut() is true.
