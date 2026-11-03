@@ -136,6 +136,16 @@ default.
 | `pgup` / `pgdn` | scroll the chat one page |
 | `ctrl+e` | compose in `$EDITOR` (falls back to `vi`); the result lands in the message box |
 | `ctrl+c` | quit, in every state |
+| `↑` / `↓` in an empty message box | walk back and forward through the last 50 prompts you sent in this checkout, kept across restarts; down past the newest empties the box. Once you edit a recalled prompt it is your draft, and the arrows move inside it again |
+
+Sent prompts are kept for that recall in `history/<checkout>.jsonl` in
+lazymesh's data directory (`$XDG_DATA_HOME/lazymesh`, by default
+`~/.local/share/lazymesh`), beside the session logs: the prompt text only,
+the last 50, in a file only you can read (`0600`). A prompt can contain a
+secret; the session log already keeps every prompt, and this list is a
+second copy of the recent ones. `forget_prompts: true` in `config.yaml` turns
+it off (nothing read, nothing written); deleting the file removes what it
+holds. An attached TUI (`lazymesh attach`) keeps no history of its own.
 
 Commands, pressed after `ctrl+x`:
 
