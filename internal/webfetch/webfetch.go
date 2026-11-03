@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -36,6 +37,10 @@ import (
 // fetchTimeout bounds one whole fetch (connect + body), the same
 // bounded-operation posture as the mesh content transfer's own timeouts.
 const fetchTimeout = 15 * time.Second
+
+// dialAttemptTimeout bounds one address's connect, so an address that
+// never answers leaves time to try the next one within fetchTimeout.
+const dialAttemptTimeout = 5 * time.Second
 
 // maxBodyBytes caps how much of a response ever reaches the model: a
 // fetch is for reading a page, not for downloading the internet.
@@ -82,7 +87,8 @@ func New() *Source {
 			// name, since both come from the request URL, not from addr.
 			var dialErr error
 			for _, ip := range ips {
-				conn, err := (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				dialer := &net.Dialer{Timeout: dialAttemptTimeout}
+				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 				if err == nil {
 					return conn, nil
 				}
@@ -118,16 +124,88 @@ func systemLookupIP(ctx context.Context, host string) ([]net.IP, error) {
 }
 
 // PublicAddr approves exactly the addresses a mesh-facing fetch should
-// ever touch: everything not loopback, private, link-local, multicast or
-// unspecified.
+// ever touch: none of the IANA special-purpose ranges in nonPublic. An
+// IPv4-mapped address is judged as its IPv4 address, and a NAT64 or 6to4
+// address as the IPv4 address it carries, so wrapping a private address
+// in IPv6 does not make it public.
 func PublicAddr(ip net.IP) bool {
-	return !ip.IsLoopback() &&
-		!ip.IsPrivate() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast() &&
-		!ip.IsUnspecified()
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	return publicAddr(addr.Unmap().WithZone(""))
 }
+
+func publicAddr(addr netip.Addr) bool {
+	for _, prefix := range nonPublic {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	if v4, ok := embeddedV4(addr); ok {
+		return publicAddr(v4)
+	}
+	return true
+}
+
+// nat64 and sixToFour carry an IPv4 address inside an IPv6 one: in the
+// last 32 bits (RFC 6052) and in bits 16-47 (RFC 3056).
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+)
+
+func embeddedV4(addr netip.Addr) (netip.Addr, bool) {
+	b := addr.As16()
+	if nat64.Contains(addr) {
+		return netip.AddrFrom4([4]byte(b[12:16])), true
+	}
+	if sixToFour.Contains(addr) {
+		return netip.AddrFrom4([4]byte(b[2:6])), true
+	}
+	return netip.Addr{}, false
+}
+
+// nonPublic is every range that is not the public internet, from the IANA
+// IPv4 and IPv6 special-purpose address registries plus multicast and the
+// reserved space. Global-but-special ranges are refused too: a fetch has no
+// business reaching any of them.
+var nonPublic = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, s := range []string{
+		// IPv4
+		"0.0.0.0/8",       // this network
+		"10.0.0.0/8",      // private
+		"100.64.0.0/10",   // shared address space (CGNAT), also cloud metadata
+		"127.0.0.0/8",     // loopback
+		"169.254.0.0/16",  // link-local, also cloud metadata
+		"172.16.0.0/12",   // private
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // documentation
+		"192.88.99.0/24",  // 6to4 relay anycast
+		"192.168.0.0/16",  // private
+		"198.18.0.0/15",   // benchmarking
+		"198.51.100.0/24", // documentation
+		"203.0.113.0/24",  // documentation
+		"224.0.0.0/4",     // multicast
+		"240.0.0.0/4",     // reserved, and the limited broadcast address
+		// IPv6
+		"::/96",          // unspecified, loopback and IPv4-compatible
+		"64:ff9b:1::/48", // local-use NAT64
+		"100::/64",       // discard-only
+		"2001::/23",      // IETF protocol assignments, Teredo included
+		"2001:db8::/32",  // documentation
+		"3fff::/20",      // documentation
+		"5f00::/16",      // segment routing SIDs
+		"fc00::/7",       // unique local
+		"fe80::/10",      // link-local
+		"fec0::/10",      // site-local (deprecated)
+		"ff00::/8",       // multicast
+	} {
+		out = append(out, netip.MustParsePrefix(s))
+	}
+	return out
+}()
 
 // webFetchTool is the one tool this source advertises.
 const webFetchTool = "web_fetch"

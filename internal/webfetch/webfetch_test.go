@@ -79,28 +79,75 @@ func TestSSRFGuardRefusesLoopback(t *testing.T) {
 	}
 }
 
-// TestSSRFGuardRefusesPrivateRanges pins the address classification:
-// 10.x, 192.168.x, 169.254.x and ::1 are all non-public.
+// TestSSRFGuardRefusesPrivateRanges pins the address classification: one
+// address inside every non-public range is refused, wrapped forms
+// (IPv4-mapped, NAT64, 6to4) are judged by the IPv4 address they carry,
+// and real public addresses pass (#93).
 func TestSSRFGuardRefusesPrivateRanges(t *testing.T) {
 	cases := []struct {
 		ip   string
 		want bool
 	}{
+		// public
 		{"8.8.8.8", true},
 		{"1.1.1.1", true},
+		{"2606:4700:4700::1111", true},
+		{"2001:4860:4860::8888", true},
+		{"64:ff9b::808:808", true}, // NAT64 of 8.8.8.8
+		{"2002:808:808::1", true},  // 6to4 of 8.8.8.8
+		// IPv4 special-purpose
+		{"0.0.0.0", false},
+		{"0.1.2.3", false},
 		{"10.0.0.1", false},
-		{"192.168.1.1", false},
-		{"172.16.0.1", false},
+		{"100.64.0.1", false},
+		{"100.100.100.200", false},
+		{"100.127.255.254", false},
 		{"127.0.0.1", false},
 		{"169.254.1.1", false},
-		{"0.0.0.0", false},
+		{"169.254.169.254", false},
+		{"172.16.0.1", false},
+		{"192.0.0.1", false},
+		{"192.0.2.1", false},
+		{"192.88.99.1", false},
+		{"192.168.1.1", false},
+		{"198.18.0.1", false},
+		{"198.19.255.254", false},
+		{"198.51.100.1", false},
+		{"203.0.113.1", false},
 		{"224.0.0.1", false},
+		{"240.0.0.1", false},
+		{"255.255.255.255", false},
+		// IPv6 special-purpose
+		{"::", false},
 		{"::1", false},
+		{"::7f00:1", false},           // IPv4-compatible
+		{"::ffff:127.0.0.1", false},   // IPv4-mapped loopback
+		{"::ffff:10.0.0.1", false},    // IPv4-mapped private
+		{"64:ff9b::7f00:1", false},    // NAT64 of loopback
+		{"64:ff9b::a9fe:a9fe", false}, // NAT64 of link-local
+		{"64:ff9b::a00:1", false},     // NAT64 of private
+		{"64:ff9b:1::1", false},
+		{"2002:7f00:1::1", false},   // 6to4 of loopback
+		{"2002:c0a8:101::1", false}, // 6to4 of private
+		{"2002:6440:1::1", false},   // 6to4 of CGNAT
+		{"100::1", false},
+		{"2001::1", false},
+		{"2001:db8::1", false},
+		{"3fff::1", false},
+		{"5f00::1", false},
+		{"fc00::1", false},
+		{"fd00:ec2::254", false},
 		{"fe80::1", false},
+		{"fec0::1", false},
+		{"ff02::1", false},
 	}
 	for _, c := range cases {
-		if got := PublicAddr(net.ParseIP(c.ip)); got != c.want {
-			t.Fatalf("PublicAddr(%s) = %v, want %v", c.ip, got, c.want)
+		ip := net.ParseIP(c.ip)
+		if ip == nil {
+			t.Fatalf("bad test address %q", c.ip)
+		}
+		if got := PublicAddr(ip); got != c.want {
+			t.Errorf("PublicAddr(%s) = %v, want %v", c.ip, got, c.want)
 		}
 	}
 }
