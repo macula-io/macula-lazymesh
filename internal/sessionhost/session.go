@@ -266,6 +266,10 @@ type session struct {
 	// turnEvents is the running turn's event channel, set for the length
 	// of runSay; consent sends its question on it.
 	turnEvents chan<- agent.Event
+
+	// crash is what Init found of a turn a crash cut short, until the
+	// driver takes it (#99).
+	crash CrashReport
 }
 
 func sessionFactory() gen.ProcessBehavior { return &session{} }
@@ -274,7 +278,9 @@ func sessionFactory() gen.ProcessBehavior { return &session{} }
 // the persisted conversation when a store is wired — a resumed session
 // (or a supervisor-restarted one, which gets the same SessionArgs per the
 // SOFO restart contract) starts from its log, not from zero. A fresh Loop
-// is still what a restart yields when nothing was ever persisted.
+// is still what a restart yields when nothing was ever persisted. A turn
+// the log shows a crash cut short is closed and kept as a CrashReport
+// (#99); from then on every message is written as it happens.
 func (s *session) Init(args ...any) error {
 	sessArgs, ok := args[0].(SessionArgs)
 	if !ok {
@@ -288,17 +294,45 @@ func (s *session) Init(args ...any) error {
 	policy.Consent = s.consent
 	s.loop = agent.NewLoop(sessArgs.Provider, toolchain.Chain(policy), sessArgs.SystemPrompt)
 	s.subscribers = make(map[gen.PID]struct{})
-	if sessArgs.Store != nil && sessArgs.SessionID != "" {
-		s.store = sessArgs.Store
-		s.sessionID = sessArgs.SessionID
-		msgs, err := sessArgs.Store.Load(sessArgs.SessionID)
-		if err != nil {
-			s.Log().Error("sessionhost: restore conversation: %s", err)
-			return nil
-		}
-		s.loop.Restore(msgs)
+	if sessArgs.Store == nil || sessArgs.SessionID == "" {
+		return nil
 	}
+	conv, err := sessArgs.Store.Load(sessArgs.SessionID)
+	if err != nil {
+		// Nothing is persisted for a log that cannot be read, so the
+		// session reports itself as keeping none: an earlier crash in it
+		// cannot be told apart from no crash (#99 r=2).
+		s.Log().Error("sessionhost: restore conversation: %s", err)
+		return nil
+	}
+	s.store = sessArgs.Store
+	s.sessionID = sessArgs.SessionID
+	s.crash.Logged = true
+	msgs := conv.Messages
+	if len(conv.Unfinished) > 0 {
+		steps, closing := crashedTurn(conv.Unfinished)
+		s.crash.Steps = steps
+		msgs = append(msgs, closing...)
+		s.endTurn(closing...)
+	}
+	s.loop.Restore(msgs)
+	s.loop.OnRecord(func(m provider.Message) { s.persist(m) })
 	return nil
+}
+
+// persist appends messages to the session log. A failed write is logged:
+// the turn goes on, and the log is short by what it could not write.
+func (s *session) persist(msgs ...provider.Message) {
+	if err := s.store.Append(s.sessionID, msgs); err != nil {
+		s.Log().Error("sessionhost: persist: %s", err)
+	}
+}
+
+// endTurn marks the turn in the log as ended, after its last messages.
+func (s *session) endTurn(last ...provider.Message) {
+	if err := s.store.EndTurn(s.sessionID, last...); err != nil {
+		s.Log().Error("sessionhost: persist turn end: %s", err)
+	}
 }
 
 // ProcessKind reports this process as a per-conversation session actor.
@@ -334,6 +368,10 @@ func (s *session) HandleCall(from gen.PID, ref gen.Ref, request any) (any, error
 		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage(), Rounds: rounds, ToolSchemaBytes: schemaBytes, Stop: s.loop.LastStopReason()}, nil
 	case Subscribe:
 		return s.subscribe(from), nil
+	case takeCrashReport:
+		report := s.crash
+		s.crash = CrashReport{Logged: report.Logged}
+		return report, nil
 	}
 	s.Log().Warning("sessionhost: session answered unknown request %T from %s with UnsupportedReply", request, from)
 	if err := s.SendResponse(from, ref, UnsupportedReply{Request: request}); err != nil {
@@ -404,21 +442,11 @@ func (s *session) runSay(text string) error {
 	}()
 	s.turnEvents = events
 	err := s.say(ctx, text, events, drained)
-	// Persist the turn's completed state change: the messages Say appended
-	// (user + assistant + tool results), appended to the log after the
-	// turn finishes. An in-flight turn lost to a crash is exactly that —
-	// lost; the log records completed changes, and the driver's reattach
-	// path retries the prompt against the restored state.
+	// Each message reached the log as it happened (OnRecord). A turn that
+	// returns, failed or not, is marked ended; one a panic cut short is
+	// not, and the restarted session reports it instead (#99).
 	if s.store != nil {
-		// The exact delta Say recorded, not a position-based diff: a
-		// turn that triggered context compaction evicts OLDER messages,
-		// so any before/after slice math would index out of range (the
-		// live boundsError crash found 2026-09-12).
-		if added := s.loop.TakeAppended(); len(added) > 0 {
-			if err := s.store.Append(s.sessionID, added); err != nil {
-				s.Log().Error("sessionhost: persist turn: %s", err)
-			}
-		}
+		s.endTurn()
 	}
 	// The turn-complete marker is emitted BY the session, after every event
 	// of the turn it just ran has been delivered: it rides the same path as

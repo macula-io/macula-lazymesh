@@ -129,6 +129,10 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 		return chatEntry{kind: chatSystem, at: now, text: "agent hit an error, backing off before retrying"}
 	case agent.EventMaxFailuresReached:
 		return chatEntry{kind: chatSystem, at: now, text: "agent stopped after repeated failures -- see agent.log"}
+	case agent.EventTurnCrashed:
+		// #99: the operator must learn which steps of the crashed turn
+		// ran, since nothing is sent again on their behalf.
+		return chatEntry{kind: chatError, at: now, text: termTextOf(ev.Text), detail: termTextOf(ev.Text)}
 	case agent.EventListening:
 		// macula-io/macula-lazymesh#13/#15: the loop-owned room-waiter
 		// design parks silently between real events, with none of the
