@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -91,7 +92,7 @@ func TestHandleRingPopupKey_AnswerAcceptsAndClearsPopup(t *testing.T) {
 	m = armPopups(m) // a person who paused: the guard's own tests are in popuparm_test.go
 
 	updated, cmd := m.handleRingPopupKey(runeKey('a'))
-	if updated.mode != ModeNormal {
+	if updated.mode != ModeCompose {
 		t.Fatalf("expected normal mode after answering, got %v", updated.mode)
 	}
 	if updated.pendingRingPopup != nil {
@@ -118,7 +119,7 @@ func TestHandleRingPopupKey_DeclineClearsPopup(t *testing.T) {
 	m = armPopups(m)
 
 	updated, cmd := m.handleRingPopupKey(runeKey('d'))
-	if updated.pendingRingPopup != nil || updated.mode != ModeNormal {
+	if updated.pendingRingPopup != nil || updated.mode != ModeCompose {
 		t.Fatalf("expected popup cleared and normal mode")
 	}
 	msg := cmd().(ringAnsweredMsg)
@@ -159,7 +160,7 @@ func TestHandleRingPopupKey_EscDismissesWithoutAnswering(t *testing.T) {
 	m.mode = ModeRingPopup
 
 	updated, cmd := m.handleRingPopupKey(typeKey(tea.KeyEsc))
-	if updated.pendingRingPopup != nil || updated.mode != ModeNormal {
+	if updated.pendingRingPopup != nil || updated.mode != ModeCompose {
 		t.Fatalf("expected popup cleared and normal mode after Esc")
 	}
 	if !updated.seenRingIDs["r1"] {
@@ -227,22 +228,27 @@ func TestProcessPendingRings_ShowsPopupForUntrustedPeer(t *testing.T) {
 // Regression guard for a real bug found live 2026-09-06: an incoming ring
 // while the operator was mid-composition silently switched them to
 // ModeRingPopup, and their in-progress input just vanished (the pop-up's
-// own render path never touches or preserves m.input). A ring must never
-// force a mode switch out of ModeInsert.
-func TestProcessPendingRings_DoesNotInterruptInsertMode(t *testing.T) {
+// own render path never touches or preserves m.input). Since #62 the
+// composer is always focused, so the rule is the 2 s idle one: a ring never
+// takes the screen away from a person who typed a moment ago.
+func TestProcessPendingRings_WaitsWhileTheComposerIsBusy(t *testing.T) {
 	fake := &fakeToolCaller{}
 	m := newPopupTestModel(t, fake)
-	m.mode = ModeInsert
+	clock := &fakeClock{at: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}
+	m = withClock(m, clock)
+
+	updated, _ := m.handleKey(runeKey('h'))
+	m = updated.(Model)
 	m.input.SetValue("half-typed message")
 	m.state.pending = []pendingRing{{RingID: "r1", Peer: "stranger", Purpose: "hi"}}
 
 	cmds := m.processPendingRings()
 
-	if m.mode != ModeInsert {
-		t.Fatalf("expected mode to stay ModeInsert, got %v", m.mode)
+	if m.mode != ModeCompose {
+		t.Fatalf("expected mode to stay ModeCompose, got %v", m.mode)
 	}
 	if m.pendingRingPopup != nil {
-		t.Fatalf("expected no pop-up while composing, got %+v", m.pendingRingPopup)
+		t.Fatalf("expected no pop-up while the composer is busy, got %+v", m.pendingRingPopup)
 	}
 	if m.input.Value() != "half-typed message" {
 		t.Fatalf("expected the in-progress input to survive untouched, got %q", m.input.Value())
@@ -255,25 +261,32 @@ func TestProcessPendingRings_DoesNotInterruptInsertMode(t *testing.T) {
 	}
 }
 
-// The other half of the same guard: once the operator leaves ModeInsert,
-// a ring that was deferred while they were composing must still surface
-// -- it was never marked seen, so the next refresh tick's own call to
-// processPendingRings picks it up exactly as if it had just arrived.
-func TestProcessPendingRings_ShowsDeferredRingOnceBackToNormal(t *testing.T) {
+// The other half of the same guard: once the composer has been idle for the
+// delay, a ring that was deferred while the person was typing must still
+// surface -- it was never marked seen, so the next refresh tick's own call
+// to processPendingRings picks it up exactly as if it had just arrived.
+func TestProcessPendingRings_ShowsDeferredRingOnceTheComposerIsIdle(t *testing.T) {
 	fake := &fakeToolCaller{}
 	m := newPopupTestModel(t, fake)
-	m.mode = ModeInsert
-	m.state.pending = []pendingRing{{RingID: "r1", Peer: "stranger", Purpose: "hi"}}
-	m.processPendingRings() // deferred while composing, per the test above
+	clock := &fakeClock{at: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}
+	m = withClock(m, clock)
 
-	m.mode = ModeNormal
+	updated, _ := m.handleKey(runeKey('h'))
+	m = updated.(Model)
+	m.state.pending = []pendingRing{{RingID: "r1", Peer: "stranger", Purpose: "hi"}}
+	m.processPendingRings() // deferred while the person was typing
+
+	clock.advance(popupIdleDelay)
 	m.processPendingRings()
 
 	if m.pendingRingPopup == nil || m.pendingRingPopup.RingID != "r1" {
 		t.Fatalf("expected the previously-deferred ring to surface now, got %+v", m.pendingRingPopup)
 	}
 	if m.mode != ModeRingPopup {
-		t.Fatalf("expected mode to switch to ModeRingPopup now that composing is done, got %v", m.mode)
+		t.Fatalf("expected mode to switch to ModeRingPopup now that the composer is idle, got %v", m.mode)
+	}
+	if m.input.Value() != "h" {
+		t.Fatalf("the deferred ring cost the draft: %q", m.input.Value())
 	}
 }
 

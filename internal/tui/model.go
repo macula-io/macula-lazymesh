@@ -58,11 +58,14 @@ type agentEventMsg agent.Event
 type Mode int
 
 const (
-	ModeNormal Mode = iota
-	ModeInsert
+	// ModeCompose is the default and only "idle" state: the composer has
+	// focus, enter sends, and every key that is not a pop-up's, a panel's or
+	// the leader's is a letter. There is no normal/insert split any more
+	// (macula-lazymesh#62): a bare key is something someone meant to type.
+	ModeCompose Mode = iota
 	ModeRingPopup
 	// ModeRealmJoin: typing a realm name to join, in the `r` panel --
-	// its own mode, not a repurposed ModeInsert, because `i` means
+	// its own mode, not a repurposed ModeCompose, because `i` means
 	// something different depending on which overlay is showing (compose
 	// a message normally; type a realm name while the realm panel is
 	// open) and the two draft inputs (realmJoinInput vs. the main
@@ -75,7 +78,7 @@ const (
 	// procedure they want never has to pay mesh_services_enabled's
 	// fixed-prefix token cost just to have the AI decide to call it on
 	// their behalf. Same reasoning as ModeRealmJoin for being its own
-	// mode with its own draft input, not a repurposed ModeInsert.
+	// mode with its own draft input, not a repurposed ModeCompose.
 	ModeMeshServiceCall
 	// ModeErrorPopup: reading the last error in full, wrapped and
 	// scrollable, with a copy key. Its own mode for the same reason as
@@ -85,6 +88,10 @@ const (
 	// ModeApprovalPopup: answering a per-action approval prompt (G9) --
 	// the tool call waits, nothing else proceeds until y/n lands.
 	ModeApprovalPopup
+	// ModeMeshServicesPanel: the `s` panel has focus -- up/down move the
+	// cursor and enter calls the selected procedure, so the composer cannot
+	// take those keys while it is open. Esc closes it and gives focus back.
+	ModeMeshServicesPanel
 	// ModeNotesPanel: reading a checkout's note in full before trusting it
 	// (macula-io/macula-lazymesh#44). Its own mode because t means trust
 	// only here, the scroll keys move the note's content rather than the
@@ -276,6 +283,32 @@ type Model struct {
 	// time.Now; tests set it so a 600 ms guard costs no wall clock.
 	now func() time.Time
 
+	// leaderPending is true between ctrl+x and the key after it (#62). While
+	// it is set the next key is a command or a cancel, never a letter: what
+	// someone meant to type cannot become a command, and a command cannot
+	// land in the draft.
+	leaderPending bool
+
+	// lastKeyAt is when a key last reached the TUI. A pop-up opens only when
+	// this is popupIdleDelay in the past, so one cannot take the screen in the
+	// middle of a word (#62).
+	lastKeyAt time.Time
+
+	// deferredApproval is the one approval request that arrived while the
+	// person was busy, held until they are free to see it (nil when none is).
+	// One, not a queue: the session has at most one question outstanding
+	// (sessionhost's approvalSlot), so a newer request means the held one is
+	// dead and is replaced -- showing the dead one first would put a prompt on
+	// screen for a call nobody is waiting on any more, and then swap it for
+	// the live one under the person's eyes (macula-lazymesh#62 review r=2).
+	deferredApproval *ApprovalRequestEvent
+
+	// lastInputAt is when this TUI last sent a message to the agent.
+	// lastListeningAt (below) is its other half: the agent emits a listening
+	// beat when it parks between turns, so a send that no beat has followed is
+	// a turn in flight, which is what esc interrupts.
+	lastInputAt time.Time
+
 	// approvalArm and ringArm are the two pop-ups' arming state (#59): the
 	// answer keys do nothing until a pause has passed, so a key meant for a
 	// message cannot answer a prompt that appeared under the cursor.
@@ -365,7 +398,12 @@ func New(client toolCaller, opts Options) Model {
 	// The chatbox (D3, opencode's own look-and-feel): the PromptEditor
 	// component owns the key semantics (enter = newline, alt+enter =
 	// send) -- see prompteditor.go.
+	//
+	// Focused here, before Init: the composer is the default focus since
+	// #62, and a blurred textarea ignores every key. Init re-focuses it,
+	// which is also what starts the cursor's blink loop.
 	ti := NewPromptEditor()
+	ti.Focus()
 
 	realmInput := textinput.New()
 	realmInput.Placeholder = "io.macula"
@@ -402,7 +440,7 @@ func New(client toolCaller, opts Options) Model {
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
-		mode:                 ModeNormal,
+		mode:                 ModeCompose,
 		statusBarPosition:    statusBarPosition,
 		agentModel:           opts.AgentModel,
 		logPath:              opts.LogPath,
@@ -457,7 +495,7 @@ func (m Model) Init() tea.Cmd {
 	// stack and never affect this screen. Popped on the quit paths below,
 	// while the alternate screen is still current.
 	fmt.Fprint(os.Stdout, termkeys.Enable)
-	cmds := []tea.Cmd{m.refreshCmd(), tick(), textinput.Blink}
+	cmds := []tea.Cmd{m.refreshCmd(), tick(), m.input.Focus()}
 	if m.agentEvents != nil {
 		cmds = append(cmds, waitForAgentEvent(m.agentEvents))
 	}
@@ -697,7 +735,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tickMsg:
-		return m.maybeAutoPopError(), tea.Batch(m.refreshCmd(), tick())
+		m, held := m.maybeShowDeferredApproval()
+		return m.maybeAutoPopError(), tea.Batch(m.refreshCmd(), tick(), held)
 
 	case refreshMsg:
 		return m.handleRefresh(msg)
@@ -734,12 +773,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Update's dispatch so it holds for every caller, including tests
 // driving keys directly.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.lastKeyAt = m.clock()
 	updated, cmd := m.applyKey(msg)
 	next, ok := updated.(Model)
 	if !ok {
 		return updated, cmd
 	}
-	return next.maybeAutoPopError(), cmd
+	next, held := next.maybeShowDeferredApproval()
+	return next.maybeAutoPopError(), tea.Batch(cmd, held)
 }
 
 func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -747,160 +788,146 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.quit()
 	}
 
-	if m.mode == ModeRingPopup {
+	// A pop-up or a focused panel owns the keyboard while it is open. The
+	// leader cannot be pending here: opening either one cancels it, so a key
+	// pressed after ctrl+x can never answer a prompt.
+	switch m.mode {
+	case ModeRingPopup:
 		return m.handleRingPopupKey(msg)
-	}
-
-	if m.mode == ModeApprovalPopup {
+	case ModeApprovalPopup:
 		return m.handleApprovalPopupKey(msg)
-	}
-
-	if m.mode == ModeErrorPopup {
+	case ModeErrorPopup:
 		return m.handleErrorPopupKey(msg)
-	}
-
-	if m.mode == ModeNotesPanel {
+	case ModeNotesPanel:
 		return m.handleNotesPanelKey(msg)
+	case ModeMeshServicesPanel:
+		return m.handleMeshServicesPanelKey(msg)
+	case ModeRealmJoin:
+		return m.handleRealmJoinKey(msg)
+	case ModeMeshServiceCall:
+		return m.handleMeshServiceCallKey(msg)
 	}
 
-	// Works from either Normal or Insert -- composing in $EDITOR is useful
-	// as a way INTO a message (from Normal) just as much as a way to
-	// finish one already started (from Insert), and always lands in
-	// Insert with the edited text loaded either way.
+	// The leader is armed: the next key is a command, whether or not it is
+	// one, and it never reaches the draft.
+	if m.leaderPending {
+		return m.runLeader(msg)
+	}
+
+	if key.Matches(msg, DefaultKeyMap.Leader) {
+		m.leaderPending = true
+		m.resizeComponents()
+		return m, nil
+	}
+
 	if key.Matches(msg, DefaultKeyMap.OpenEditor) {
 		return m, openEditorCmd(m.input.Value())
 	}
 
-	if m.mode == ModeRealmJoin {
+	if key.Matches(msg, DefaultKeyMap.Normal) {
+		return m.escape()
+	}
+
+	// Chat scrolling, on the keys the composer leaves free. The read-only
+	// overlays cover the chat, so there is nothing to scroll while one shows.
+	if !m.meshExpanded && !m.realmExpanded {
 		switch {
-		case key.Matches(msg, DefaultKeyMap.Normal):
-			m.realmJoinInput.Blur()
-			m.realmJoinInput.Reset() // unlike the main compose input, no draft is kept -- a realm name is a one-shot action, not something to resume composing
-			m.mode = ModeNormal
-			m.resizeComponents()
+		case key.Matches(msg, DefaultKeyMap.ScrollLineUp):
+			m.chatViewport.LineUp(1)
 			return m, nil
-		case key.Matches(msg, DefaultKeyMap.Submit):
-			name := strings.TrimSpace(m.realmJoinInput.Value())
-			m.realmJoinInput.Reset()
-			m.realmJoinInput.Blur()
-			m.mode = ModeNormal
-			m.resizeComponents()
-			if name == "" {
-				return m, nil
-			}
-			return m.startRealmJoin(name)
-		default:
+		case key.Matches(msg, DefaultKeyMap.ScrollLineDown):
+			m.chatViewport.LineDown(1)
+			return m, nil
+		case key.Matches(msg, DefaultKeyMap.ScrollPageUp), key.Matches(msg, DefaultKeyMap.ScrollPageDown):
 			var cmd tea.Cmd
-			m.realmJoinInput, cmd = m.realmJoinInput.Update(msg)
+			m.chatViewport, cmd = m.chatViewport.Update(msg)
 			return m, cmd
 		}
 	}
 
-	if m.mode == ModeMeshServiceCall {
-		switch {
-		case key.Matches(msg, DefaultKeyMap.Normal):
-			m.meshServiceCallInput.Blur()
-			m.meshServiceCallInput.Reset() // one-shot action, no draft kept -- same reasoning as realmJoinInput
-			m.meshServiceCallProcedure = ""
-			m.mode = ModeNormal
-			m.resizeComponents()
-			return m, nil
-		case key.Matches(msg, DefaultKeyMap.Submit):
-			argsJSON := strings.TrimSpace(m.meshServiceCallInput.Value())
-			procedure := m.meshServiceCallProcedure
-			m.meshServiceCallInput.Reset()
-			m.meshServiceCallInput.Blur()
-			m.meshServiceCallProcedure = ""
-			m.mode = ModeNormal
-			m.resizeComponents()
-			if procedure == "" || m.meshServices == nil {
-				// Panel was disabled or the procedure vanished between `i`
-				// and Submit (shouldn't happen -- nothing re-fetches
-				// Snapshot() mid-input -- but never invoke with an empty
-				// procedure name either way).
-				return m, nil
-			}
-			m.meshServiceCallInFlight = true
-			return m, startMeshServiceCall(m.meshServices, procedure, argsJSON)
-		default:
-			var cmd tea.Cmd
-			m.meshServiceCallInput, cmd = m.meshServiceCallInput.Update(msg)
+	// The realms list shows while the composer keeps focus, so enter has to
+	// mean both things: with a draft it sends, and with an empty draft it
+	// opens the join input. A key meant for a message never starts a join.
+	if key.Matches(msg, DefaultKeyMap.Submit) && m.realmExpanded && m.realmJoinLatest == nil &&
+		strings.TrimSpace(m.input.Value()) == "" {
+		m.mode = ModeRealmJoin
+		m.resizeComponents()
+		return m, m.realmJoinInput.Focus()
+	}
+
+	// Everything else is the composer's.
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.resizeComponents() // the chatbox may have grown a row
+	if m.input.Submitted() {
+		text := strings.TrimSpace(m.input.Value())
+		m.input.Reset()
+		if text == "" {
 			return m, cmd
 		}
+		m.chatEntries = append(m.chatEntries, youChatEntry(text))
+		m.lastInputAt = time.Now()
+		m.syncViewport()
+		return m, tea.Batch(cmd, sendUserInput(m.userInputCh, text))
 	}
+	return m, cmd
+}
 
-	if m.mode == ModeInsert {
-		if key.Matches(msg, DefaultKeyMap.Normal) {
-			m.input.Blur()
-			m.mode = ModeNormal
-			m.resizeComponents() // hint row goes from 1 line (Insert) to 2 (Normal)
+// escape is esc's whole meaning, in the order the design sets: close what is
+// open, cancel a pending leader, or stop a running turn. When none of those is
+// true it does nothing at all and the draft stays exactly as it was -- it is
+// not a way out of a mode, because there is no mode to leave.
+func (m Model) escape() (tea.Model, tea.Cmd) {
+	switch {
+	case m.notesPanel != nil:
+		return m.handleNotesPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	case m.meshServicesExpanded:
+		m.meshServicesExpanded = false
+		m.meshServicesCursor = 0
+		m.resizeComponents()
+		focus := m.composerFocus()
+		return m, focus
+	case m.realmExpanded:
+		if m.realmJoinLatest != nil {
+			// A finished join's status first, the panel second.
+			m.realmJoinLatest = nil
 			return m, nil
 		}
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		m.resizeComponents() // the chatbox may have grown a row
-		if m.input.Submitted() {
-			text := strings.TrimSpace(m.input.Value())
-			m.input.Reset()
-			m.input.Blur()
-			m.mode = ModeNormal
-			m.resizeComponents()
-			if text == "" {
-				return m, cmd
-			}
-			m.chatEntries = append(m.chatEntries, youChatEntry(text))
-			m.syncViewport()
-			return m, tea.Batch(cmd, sendUserInput(m.userInputCh, text))
-		}
-		return m, cmd
+		m.realmExpanded = false
+		return m, nil
+	case m.meshExpanded:
+		m.meshExpanded = false
+		return m, nil
+	case m.leaderPending:
+		m.leaderPending = false
+		m.resizeComponents()
+		return m, nil
+	case m.turnRunning():
+		return m.interruptTurn()
+	}
+	return m, nil
+}
+
+// runLeader runs the command the key after ctrl+x names. A key that names no
+// command cancels the leader: whatever it was, it was not meant for the
+// draft, and it is not replayed later.
+func (m Model) runLeader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.leaderPending = false
+	m.resizeComponents()
+
+	if key.Matches(msg, DefaultKeyMap.Normal) {
+		return m, nil
 	}
 
-	// Normal mode.
 	switch {
 	case key.Matches(msg, DefaultKeyMap.Quit):
 		return m, m.quit()
-	case key.Matches(msg, DefaultKeyMap.Normal):
-		// Esc's only meaning in Normal mode: dismiss a finished/errored
-		// join's status (renderRealmJoinProgress) back to the plain
-		// membership list, without leaving the `r` panel itself. A no-op
-		// everywhere else -- Normal mode has nothing else for Esc to do.
-		if m.realmExpanded && m.realmJoinLatest != nil {
-			m.realmJoinLatest = nil
-		}
-		return m, nil
-	case key.Matches(msg, DefaultKeyMap.Insert):
-		// `i` means something different depending on which overlay is
-		// showing: compose a message to the agent normally, type a
-		// realm name while the `r` panel is open, or type arguments to
-		// directly invoke the `s` panel's selected procedure -- but only
-		// when there's a membership list/curated row to act on, not
-		// while a previous join's QR/status is still showing (dismiss
-		// that with Esc first, so a stray `i` can never fire a second
-		// join on top of one still in flight), and not while a mesh
-		// service call is already in flight (same reasoning).
-		if m.realmExpanded && m.realmJoinLatest == nil {
-			m.mode = ModeRealmJoin
-			m.resizeComponents()
-			return m, m.realmJoinInput.Focus()
-		}
-		if m.meshServicesExpanded && m.meshServices != nil && !m.meshServiceCallInFlight {
-			entries, _ := m.meshServiceEntries()
-			if m.meshServicesCursor < len(entries) {
-				m.meshServiceCallProcedure = entries[m.meshServicesCursor].Procedure()
-				m.mode = ModeMeshServiceCall
-				m.resizeComponents()
-				return m, m.meshServiceCallInput.Focus()
-			}
-		}
-		m.mode = ModeInsert
-		m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert)
-		return m, m.input.Focus()
 	case key.Matches(msg, DefaultKeyMap.ToggleMesh):
 		// Mutually exclusive with the other two overlays, not stacked --
 		// more than one showing at once would halve (or worse) the chat
-		// margin pin-to-top already keeps tight, for concerns (mesh
-		// STATE vs. available SERVICES vs. realm MEMBERSHIP) that are
-		// never all what an operator wants to see in the same glance.
+		// margin pin-to-top already keeps tight, for concerns (mesh STATE
+		// vs. available SERVICES vs. realm MEMBERSHIP) that are never all
+		// what an operator wants to see in the same glance.
 		m.meshExpanded = !m.meshExpanded
 		if m.meshExpanded {
 			m.meshServicesExpanded = false
@@ -908,24 +935,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.ToggleMeshServices):
-		m.meshServicesExpanded = !m.meshServicesExpanded
-		if m.meshServicesExpanded {
-			m.meshExpanded = false
-			m.realmExpanded = false
-		} else {
-			// Reopening starts at the top, not wherever the cursor was
-			// left -- same reasoning as realmJoinLatest getting cleared
-			// when the `r` panel closes (see ToggleRealm's own case):
-			// stale position from last time isn't what "open the panel"
-			// should mean.
-			m.meshServicesCursor = 0
-		}
-		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleNotes):
-		m.openNotes()
-		return m, nil
-	case key.Matches(msg, DefaultKeyMap.TrustNote):
-		return m.trustSelectedNote()
+		return m.openMeshServicesPanel()
 	case key.Matches(msg, DefaultKeyMap.ToggleRealm):
 		m.realmExpanded = !m.realmExpanded
 		if m.realmExpanded {
@@ -938,30 +948,9 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.realmJoinLatest = nil
 		}
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleQuiet):
-		m.muted = !m.muted
+	case key.Matches(msg, DefaultKeyMap.ToggleNotes):
+		m.openNotes()
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleDetails):
-		m.detailsExpanded = !m.detailsExpanded
-		m.syncViewport()
-		return m, nil
-	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
-		m.showChatter = !m.showChatter
-		return m, nil
-	case key.Matches(msg, DefaultKeyMap.Interrupt):
-		// Phase 3: cancel the in-flight turn. A non-blocking send --
-		// the caller's own interrupt handling must never stall the TUI.
-		if m.interruptCh != nil {
-			select {
-			case m.interruptCh <- struct{}{}:
-				m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "interrupting the current turn..."})
-				m.syncViewport()
-			default:
-			}
-		}
-		return m, nil
-	case key.Matches(msg, DefaultKeyMap.CopyChat):
-		return m.copyLastAnswer()
 	case key.Matches(msg, DefaultKeyMap.ToggleLogs):
 		return m.openAgentLog()
 	case key.Matches(msg, DefaultKeyMap.ShowError):
@@ -969,38 +958,121 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// has already been dismissed is still reachable, which is the
 		// point of keeping the list at all.
 		return m.openErrorPopup(len(m.errorHistory) - 1), nil
-	case key.Matches(msg, DefaultKeyMap.Up):
-		switch {
-		case m.meshServicesExpanded:
-			if m.meshServicesCursor > 0 {
-				m.meshServicesCursor--
-			}
-		case !m.meshExpanded && !m.realmExpanded:
-			m.chatViewport.LineUp(1)
+	case key.Matches(msg, DefaultKeyMap.ToggleDetails):
+		m.detailsExpanded = !m.detailsExpanded
+		m.syncViewport()
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleChatter):
+		m.showChatter = !m.showChatter
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleQuiet):
+		m.muted = !m.muted
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.CopyChat):
+		return m.copyLastAnswer()
+	case key.Matches(msg, DefaultKeyMap.Interrupt):
+		return m.interruptTurn()
+	case key.Matches(msg, DefaultKeyMap.ScrollTop):
+		if !m.meshExpanded && !m.realmExpanded {
+			m.chatViewport.GotoTop()
 		}
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.Down):
-		switch {
-		case m.meshServicesExpanded:
-			entries, _ := m.meshServiceEntries()
-			if m.meshServicesCursor < len(entries)-1 {
-				m.meshServicesCursor++
-			}
-		case !m.meshExpanded && !m.realmExpanded:
-			m.chatViewport.LineDown(1)
+	case key.Matches(msg, DefaultKeyMap.ScrollBottom):
+		if !m.meshExpanded && !m.realmExpanded {
+			m.chatViewport.GotoBottom()
 		}
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.LeaderHelp):
+		m.explainLeader()
 		return m, nil
 	}
+	return m, nil
+}
 
-	// Page keys scroll the chat pane a viewport at a time when no
-	// overlay is up -- the viewport's own key handling, forwarded rather
-	// than re-implemented (same reason the mouse wheel is forwarded).
-	if !m.meshExpanded && !m.realmExpanded && !m.meshServicesExpanded {
-		switch msg.String() {
-		case "pgup", "pgdown", "home", "end":
-			var cmd tea.Cmd
-			m.chatViewport, cmd = m.chatViewport.Update(msg)
-			return m, cmd
+// personIdle reports whether a pop-up may take the screen: nobody is typing
+// into anything (the composer, a panel's own input, an armed leader), and no
+// key has arrived for popupIdleDelay. A prompt appearing mid-word is exactly
+// what #59 is about; this is the other half of that fix -- it does not appear
+// mid-word at all, so the arming guard has less to catch.
+//
+// Neither a read-only overlay nor another pop-up counts as "busy". An overlay
+// has no draft to protect and gives its screen back when the prompt closes,
+// and keys that reach a pop-up are handled (and guarded) there, never typed
+// into anything -- so a ring arriving while an approval waits is shown rather
+// than queued behind a question nobody may answer.
+func (m Model) personIdle() bool {
+	switch m.mode {
+	case ModeCompose, ModeRingPopup, ModeApprovalPopup, ModeErrorPopup:
+	default:
+		return false
+	}
+	if m.meshServicesExpanded || m.notesPanel != nil || m.leaderPending {
+		return false
+	}
+	return m.lastKeyAt.IsZero() || m.clock().Sub(m.lastKeyAt) >= popupIdleDelay
+}
+
+// composerIdle is personIdle with the composer itself in front and nothing
+// overlaid on it. An error may only pop over the composer: over an open
+// pop-up it would replace a question the operator is already answering (the
+// ring or approval underneath), and closing it would leave that pop-up with
+// nothing showing it.
+func (m Model) composerIdle() bool {
+	return m.mode == ModeCompose && !m.meshExpanded && !m.realmExpanded && m.personIdle()
+}
+
+// approvalMayOpen adds the approval's own rule to personIdle: it never
+// replaces a prompt that is already on screen. A second request would put
+// different arguments under a person already reading the first, with a fresh
+// guard, so a y meant for the call they read would approve the one they have
+// not. The session has at most one question outstanding, so the held one is
+// the newest and the older is dead (macula-lazymesh#62 review r=2).
+func (m Model) approvalMayOpen() bool {
+	return m.pendingApproval == nil && m.personIdle()
+}
+
+// composerFocus hands the keyboard back to the composer if it has not got it.
+// It returns no command when the composer is still focused: focusing again
+// would restart the cursor's blink loop for nothing.
+//
+// A pointer receiver on purpose: focusing mutates the textarea, and a value
+// receiver would focus a copy and hand back a model that still ignores keys.
+func (m *Model) composerFocus() tea.Cmd {
+	if m.input.Focused() {
+		return nil
+	}
+	return m.input.Focus()
+}
+
+// maybeShowDeferredApproval shows the approval request that arrived while the
+// person was busy, once they are not. The tool call is waiting on the answer
+// either way; showing it a moment later is the whole difference.
+func (m Model) maybeShowDeferredApproval() (Model, tea.Cmd) {
+	if m.deferredApproval == nil || !m.approvalMayOpen() {
+		return m, nil
+	}
+	ev := *m.deferredApproval
+	m.deferredApproval = nil
+	return m.showApprovalNow(ev)
+}
+
+// turnRunning reports whether the agent is in the middle of a turn: this TUI
+// sent a message and the agent has not emitted a listening beat since -- it
+// emits one when it parks between turns (see lastListeningAt). Esc interrupts
+// only while this holds, so a stray esc while the agent is idle does nothing.
+func (m Model) turnRunning() bool {
+	return !m.lastInputAt.IsZero() && m.lastInputAt.After(m.lastListeningAt)
+}
+
+// interruptTurn cancels the in-flight turn. A non-blocking send: the caller's
+// own interrupt handling must never stall the TUI.
+func (m Model) interruptTurn() (tea.Model, tea.Cmd) {
+	if m.interruptCh != nil {
+		select {
+		case m.interruptCh <- struct{}{}:
+			m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "interrupting the current turn..."})
+			m.syncViewport()
+		default:
 		}
 	}
 	return m, nil
@@ -1029,6 +1101,159 @@ func (m Model) takeServerVersion(v string) Model {
 		text: fmt.Sprintf("macula-mcp is now %s (was %s)", v, was),
 	})
 	return m
+}
+
+// explainLeader writes the whole keymap into the chat, where it can be read,
+// scrolled and copied like anything else on screen. It is the same list the
+// hint row offers while the leader is pending, so there is nothing to learn
+// twice.
+func (m *Model) explainLeader() {
+	var b strings.Builder
+	b.WriteString("ctrl+x then:")
+	for _, c := range leaderHelp() {
+		b.WriteString("  " + c.Key + " " + c.Action)
+	}
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: b.String()})
+	m.syncViewport()
+}
+
+// handleRealmJoinKey types a realm name in the `r` panel. Esc cancels without
+// starting anything, enter joins, and the composer is back either way with its
+// draft untouched -- a realm name is a one-shot action, not something to resume
+// composing.
+func (m Model) handleRealmJoinKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, DefaultKeyMap.Normal):
+		m.realmJoinInput.Blur()
+		m.realmJoinInput.Reset()
+		m.mode = ModeCompose
+		m.resizeComponents()
+		focus := m.composerFocus()
+		return m, focus
+	case key.Matches(msg, DefaultKeyMap.Submit):
+		name := strings.TrimSpace(m.realmJoinInput.Value())
+		m.realmJoinInput.Reset()
+		m.realmJoinInput.Blur()
+		m.mode = ModeCompose
+		m.resizeComponents()
+		if name == "" {
+			focus := m.composerFocus()
+			return m, focus
+		}
+		next, cmd := m.startRealmJoin(name)
+		focus := next.composerFocus()
+		return next, tea.Batch(cmd, focus)
+	default:
+		var cmd tea.Cmd
+		m.realmJoinInput, cmd = m.realmJoinInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// handleMeshServiceCallKey types the raw JSON arguments for the `s` panel's
+// selected procedure -- the non-AI door into the same mesh the agent's own
+// tools call through.
+func (m Model) handleMeshServiceCallKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, DefaultKeyMap.Normal):
+		m.meshServiceCallInput.Blur()
+		m.meshServiceCallInput.Reset() // one-shot action, no draft kept
+		m.meshServiceCallProcedure = ""
+		m.mode = ModeCompose
+		m.resizeComponents()
+		// This one was opened from the focus-taking panel, which blurs the
+		// composer, so focus has to come back here.
+		focus := m.composerFocus()
+		return m, focus
+	case key.Matches(msg, DefaultKeyMap.Submit):
+		argsJSON := strings.TrimSpace(m.meshServiceCallInput.Value())
+		procedure := m.meshServiceCallProcedure
+		m.meshServiceCallInput.Reset()
+		m.meshServiceCallInput.Blur()
+		m.meshServiceCallProcedure = ""
+		m.mode = ModeCompose
+		m.resizeComponents()
+		if procedure == "" || m.meshServices == nil {
+			// The panel was disabled or the procedure vanished between the
+			// selection and Submit; never invoke with an empty procedure.
+			focus := m.composerFocus()
+			return m, focus
+		}
+		m.meshServiceCallInFlight = true
+		focus := m.composerFocus()
+		return m, tea.Batch(startMeshServiceCall(m.meshServices, procedure, argsJSON), focus)
+	default:
+		var cmd tea.Cmd
+		m.meshServiceCallInput, cmd = m.meshServiceCallInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// handleMeshServicesPanelKey drives the `s` panel, which has focus while it is
+// open: the arrows move the selection and enter calls the selected procedure.
+// esc closes it and puts the composer back where it was, draft intact.
+func (m Model) handleMeshServicesPanelKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, DefaultKeyMap.Normal):
+		m.meshServicesExpanded = false
+		m.meshServicesCursor = 0
+		m.mode = ModeCompose
+		m.resizeComponents()
+		focus := m.composerFocus()
+		return m, focus
+	case key.Matches(msg, DefaultKeyMap.Submit):
+		return m.startMeshServiceCallForSelection()
+	case msg.String() == "up" || msg.String() == "k":
+		if m.meshServicesCursor > 0 {
+			m.meshServicesCursor--
+		}
+	case msg.String() == "down" || msg.String() == "j":
+		entries, _ := m.meshServiceEntries()
+		if m.meshServicesCursor < len(entries)-1 {
+			m.meshServicesCursor++
+		}
+	}
+	return m, nil
+}
+
+// openMeshServicesPanel shows the `s` panel and gives it focus: enter there
+// calls the selected procedure, so the composer must not be taking enter. It
+// opens whenever there is a row to show -- the curated catalog is static, so
+// that includes the mesh_services_enabled: false case, where the panel is the
+// one place that says why nothing is live rather than the key doing nothing.
+func (m Model) openMeshServicesPanel() (tea.Model, tea.Cmd) {
+	entries, _ := m.meshServiceEntries()
+	if len(entries) == 0 {
+		// Nothing curated to show: the panel would be an empty box over the
+		// chat, so it stays closed.
+		m.meshServicesExpanded = false
+		return m, nil
+	}
+	m.meshExpanded = false
+	m.realmExpanded = false
+	m.meshServicesExpanded = true
+	m.meshServicesCursor = 0
+	m.mode = ModeMeshServicesPanel
+	m.input.Blur()
+	m.resizeComponents()
+	return m, nil
+}
+
+// startMeshServiceCallForSelection opens the call input for the row under the
+// cursor, if there is one and no call is already in flight.
+func (m Model) startMeshServiceCallForSelection() (Model, tea.Cmd) {
+	if m.meshServices == nil || m.meshServiceCallInFlight {
+		return m, nil
+	}
+	entries, _ := m.meshServiceEntries()
+	if m.meshServicesCursor >= len(entries) {
+		return m, nil
+	}
+	m.meshServiceCallProcedure = entries[m.meshServicesCursor].Procedure()
+	m.mode = ModeMeshServiceCall
+	m.meshServicesExpanded = false
+	m.resizeComponents()
+	return m, m.meshServiceCallInput.Focus()
 }
 
 func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
@@ -1076,14 +1301,12 @@ func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
 // ever called from within handleRefresh, which already holds its own
 // value-receiver copy.
 //
-// Never force-switches OUT of ModeInsert: found live 2026-09-06 -- an
-// incoming ring while the operator was mid-composition silently yanked
-// them into ModeRingPopup, and the in-progress input just vanished from
-// view (the pop-up's own render path doesn't touch or preserve m.input at
-// all). A not-yet-shown ring simply stays in m.state.pending/not yet in
-// seenRingIDs -- still visible in the status strip's own "pending rings"
-// count the whole time -- and this same function picks it up on a later
-// refresh tick once the operator leaves ModeInsert on their own. Trusted
+// Never takes the keyboard from someone typing: found live 2026-09-06 -- an
+// incoming ring while the operator was mid-composition silently yanked them
+// into ModeRingPopup, and the in-progress input just vanished from view. A
+// ring that cannot be shown yet stays in m.state.pending and out of
+// seenRingIDs -- still counted in the status strip the whole time -- and this
+// same function picks it up on a later tick once the person is idle. Trusted
 // auto-accepts are unaffected either way: they were never interactive.
 func (m *Model) processPendingRings() []tea.Cmd {
 	var cmds []tea.Cmd
@@ -1101,7 +1324,7 @@ func (m *Model) processPendingRings() []tea.Cmd {
 			cmds = append(cmds, answerRingCmd(m.mcp, ring.RingID, answerAccept, false, ""))
 			continue
 		}
-		if m.mode != ModeInsert && m.pendingRingPopup == nil {
+		if m.personIdle() && m.pendingRingPopup == nil {
 			r := ring
 			*m = m.rememberFocus(ModeRingPopup)
 			m.pendingRingPopup = &r
@@ -1145,7 +1368,16 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	}
 
 	if ev.Kind == agent.EventApprovalRequested {
-		return m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
+		next, cmd := m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
+		// A held request is a tool call waiting on a person who may never see
+		// it: say so with the same double bell a ring gets, and reopen the
+		// listener -- every other branch does, and dropping it here would end
+		// this TUI's agent events at the first approval.
+		rearm := waitForAgentEvent(m.agentEvents)
+		if next.deferredApproval != nil {
+			return next, tea.Batch(cmd, ringBell(bellDouble, m.muted), rearm)
+		}
+		return next, tea.Batch(cmd, rearm)
 	}
 
 	if isChatter(ev.Kind) && !m.showChatter {
@@ -1243,7 +1475,7 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.input.SetValue(strings.TrimRight(string(content), "\n"))
 	m.input.CursorEnd()
-	m.mode = ModeInsert
+	m.mode = ModeCompose
 	m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Insert) -- a no-op if already Insert
 	return m, m.input.Focus()
 }
@@ -1395,64 +1627,69 @@ func (m Model) View() string {
 // and what's actually on screen drift apart.
 func (m Model) statusLines() []string {
 	lines := m.renderHintLines()
+	if line, ok := m.renderHeldApprovalLine(); ok {
+		lines = append(lines, line)
+	}
 	return append(lines, m.renderSummaryLine())
 }
 
-// renderModeIndicator follows vim's own bottom-of-screen convention
-// (`-- INSERT --` etc.).
-func (m Model) renderModeIndicator() string {
-	switch m.mode {
-	case ModeInsert:
-		return statusStripStyle.Render("-- INSERT --")
-	case ModeRingPopup:
-		return statusStripStyle.Render("-- RING --")
-	case ModeRealmJoin:
-		return statusStripStyle.Render("-- REALM --")
-	case ModeMeshServiceCall:
-		return statusStripStyle.Render("-- MESH CALL --")
-	default:
-		return dimStyle.Render("-- NORMAL --")
+// renderHeldApprovalLine says a tool call is waiting on an answer that is not
+// on screen yet. Without it a request held behind a focused panel, an armed
+// leader or someone typing for two minutes is invisible, and the call is then
+// refused by its own timeout with nothing ever having asked (macula-lazymesh#62
+// review r=2, probe P3). It is one line, present only while something is held,
+// so the reserved-height math in resizeComponents follows it for free.
+func (m Model) renderHeldApprovalLine() (string, bool) {
+	if m.deferredApproval == nil {
+		return "", false
 	}
+	return statusStripStyle.Render("-- APPROVAL WAITING -- ") +
+		dimStyle.Render("stop typing (or close the panel, or cancel ctrl+x) to answer: "+m.deferredApproval.Tool), true
 }
 
-// renderHintLines is the shortcuts row, leading with the mode indicator.
-// Briefly split across 2 lines (2026-09-07) after the combined line
-// routinely ran well past a narrow terminal's width; reverted back to 1
-// line 2026-09-08 (Raf's own call, after weighing it directly: the extra
-// row of vertical space matters more day to day than the clipping risk
-// on a narrow terminal). Also retires what used to be the mode
-// indicator's own separate status line: merging it into this line
-// removes a line from the block for the same information, rather than
-// adding one. The ring pop-up already shows its own hints
-// (renderRingPopup), so needs none here.
+// renderHintLines is the shortcuts row. While the leader is pending it shows
+// the leader and what can follow it -- the whole list, so the leader is
+// discoverable without a manual; the rest of the time it shows the few keys
+// that do something outside a pop-up. One line, always: the row's height is
+// part of the reserved-height math (statusLines).
 func (m Model) renderHintLines() []string {
-	mode := m.renderModeIndicator()
 	switch m.mode {
 	case ModeRingPopup:
-		return []string{mode}
-	case ModeInsert:
-		return []string{mode + "  " + dimStyle.Render("esc: normal mode  enter: send  shift+enter: newline  ctrl+e: edit in $EDITOR")}
+		return []string{statusStripStyle.Render("-- RING --")}
+	case ModeApprovalPopup:
+		return []string{statusStripStyle.Render("-- APPROVAL --")}
+	case ModeErrorPopup:
+		return []string{statusStripStyle.Render("-- ERRORS --")}
+	case ModeNotesPanel:
+		return []string{statusStripStyle.Render("-- NOTES --") + "  " + dimStyle.Render("tab: next  t: trust  N/esc: close")}
 	case ModeRealmJoin:
-		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: join")}
+		return []string{statusStripStyle.Render("-- REALM --") + "  " + dimStyle.Render("enter: join  esc: cancel")}
 	case ModeMeshServiceCall:
-		return []string{mode + "  " + dimStyle.Render("esc: cancel  enter: call "+m.meshServiceCallProcedure)}
-	default:
-		// `i` and `esc` both mean something different depending on which
-		// overlay is showing -- see handleKey's own Insert and Normal
-		// cases -- so the hint names the actual action, not a fixed label.
-		insertHint := "i: compose"
-		if m.realmExpanded {
-			if m.realmJoinLatest != nil {
-				insertHint = "esc: dismiss"
-			} else {
-				insertHint = "i: join a realm"
-			}
-		}
-		if m.meshServicesExpanded && m.meshServices != nil {
-			insertHint = "↑↓: select  i: call selected"
-		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  N: checkout notes  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
+		return []string{statusStripStyle.Render("-- MESH CALL --") + "  " + dimStyle.Render("enter: call "+m.meshServiceCallProcedure+"  esc: cancel")}
+	case ModeMeshServicesPanel:
+		return []string{statusStripStyle.Render("-- MESH SERVICES --") + "  " + dimStyle.Render("↑↓: select  enter: call  esc: close")}
 	}
+
+	if m.leaderPending {
+		return []string{m.renderLeaderHint()}
+	}
+
+	hint := "enter: send  shift+enter: newline  esc: close or interrupt  shift+↑↓: scroll  ctrl+e: $EDITOR  ctrl+x: commands"
+	if m.realmExpanded && m.realmJoinLatest == nil && strings.TrimSpace(m.input.Value()) == "" {
+		hint = "enter: join a realm  " + hint
+	}
+	return []string{dimStyle.Render(hint)}
+}
+
+// renderLeaderHint is the leader's own list: what it is waiting for and
+// everything it can do, so the next key is never a guess.
+func (m Model) renderLeaderHint() string {
+	var b strings.Builder
+	b.WriteString(statusStripStyle.Render("ctrl+x …"))
+	for _, c := range leaderHelp() {
+		b.WriteString(dimStyle.Render("  " + c.Key + ": " + c.Action))
+	}
+	return b.String()
 }
 
 // renderSummaryLine is the mesh-state line: this instance's own identity

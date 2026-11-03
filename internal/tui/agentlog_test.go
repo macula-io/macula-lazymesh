@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func modelWithLogPath(t *testing.T, path string) Model {
@@ -23,13 +25,13 @@ func modelWithLogPath(t *testing.T, path string) Model {
 func TestOpenAgentLog_LaunchesAnEditor(t *testing.T) {
 	m := modelWithLogPath(t, filepath.Join(t.TempDir(), "agent.log"))
 
-	updated, cmd := m.handleKey(keyPress("l"))
-	m = updated.(Model)
+	var cmd tea.Cmd
+	m, cmd = leader(t, m, keyPress("l"))
 
 	if cmd == nil {
-		t.Fatal("l should hand the log to $EDITOR, got no command")
+		t.Fatal("ctrl+x l should hand the log to $EDITOR, got no command")
 	}
-	if m.mode != ModeNormal {
+	if m.mode != ModeCompose {
 		t.Fatalf("opening the log in an editor should not change the TUI's mode, got %v", m.mode)
 	}
 }
@@ -39,8 +41,8 @@ func TestOpenAgentLog_LaunchesAnEditor(t *testing.T) {
 func TestOpenAgentLog_UnconfiguredPathIsReportedNotOpened(t *testing.T) {
 	m := modelWithLogPath(t, "")
 
-	updated, cmd := m.handleKey(keyPress("l"))
-	m = updated.(Model)
+	var cmd tea.Cmd
+	m, cmd = leader(t, m, keyPress("l"))
 
 	if cmd != nil {
 		t.Fatal("with no log path there is nothing to open, so no editor should launch")
@@ -75,7 +77,7 @@ func TestLogViewed_NeverDeletesTheLogOrLoadsItIntoCompose(t *testing.T) {
 	if v := m.input.Value(); v != "" {
 		t.Fatalf("viewing the log must not put anything in the compose box, got %q", v)
 	}
-	if m.mode != ModeNormal {
+	if m.mode != ModeCompose {
 		t.Fatalf("viewing the log must not switch into insert mode, got %v", m.mode)
 	}
 }

@@ -82,7 +82,7 @@ func (m *Model) openNotes() {
 
 func (m *Model) closeNotes() {
 	m.notesPanel = nil
-	m.mode = ModeNormal
+	m.mode = ModeCompose
 	m.resizeComponents()
 }
 
@@ -185,7 +185,7 @@ func (m Model) scrollNotes(key string) bool {
 // handleNotesPanelKey scrolls, switches note, trusts, or closes.
 func (m Model) handleNotesPanelKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.notesPanel == nil {
-		m.mode = ModeNormal
+		m.mode = ModeCompose
 		return m, nil
 	}
 	m.ensureNotesPanel()
@@ -198,7 +198,7 @@ func (m Model) handleNotesPanelKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.selectNote(m.notesCursor + 1), nil
 	case msg.String() == "shift+tab":
 		return m.selectNote(m.notesCursor - 1), nil
-	case key.Matches(msg, DefaultKeyMap.TrustNote):
+	case msg.String() == "t":
 		return m.trustSelectedNote()
 	}
 	if m.scrollNotes(msg.String()) {

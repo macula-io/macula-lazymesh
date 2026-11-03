@@ -75,7 +75,6 @@ func TestRealEditorQuitsWithColonQ(t *testing.T) {
 	}
 
 	term := startAttachedWithEditor(t, startFakeSession(t), editor)
-	term.waitFor(t, "-- NORMAL --", 30*time.Second)
 
 	term.mustWrite(t, []byte{0x05}) // ctrl+e
 
@@ -92,9 +91,32 @@ func TestRealEditorQuitsWithColonQ(t *testing.T) {
 
 	term.mustWrite(t, []byte(":q\r"))
 
-	// A compose round trip always lands back in insert mode, so the marker
-	// says both that the editor took ":q" and that the TUI resumed.
-	term.waitFor(t, "-- INSERT --", 30*time.Second)
+	// The editor leaves its alternate screen on the way out: the terminal is
+	// back on the TUI's own screen.
+	deadline = time.Now().Add(30 * time.Second)
+	for strings.Count(term.screen(), "\x1b[?1049l") < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the editor never left the alternate screen within 30s\nscreen:\n%s", term.screen())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Since #62 the composer is the TUI's only idle state, so the mode marker
+	// this case used to wait for is gone. Typing after ":q" asks the stronger
+	// question: the line reaches the composer only if the TUI has the
+	// keyboard back, which is what the issue was about. The first bytes can
+	// still land in the gap between the editor's exit and the TUI's re-entered
+	// raw mode, so the typing is repeated until it shows; on the defect this
+	// covers, no repetition ever makes it appear.
+	const typed = "editor-returned"
+	deadline = time.Now().Add(30 * time.Second)
+	for !strings.Contains(term.screen(), typed) {
+		if time.Now().After(deadline) {
+			t.Fatalf("typing at the composer after the editor quit never reached it within 30s\nscreen:\n%s", term.screen())
+		}
+		term.mustWrite(t, []byte(typed))
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // editorTerminal is the attached TUI plus the pid of the lazymesh process

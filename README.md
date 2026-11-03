@@ -109,29 +109,54 @@ terminal for anything the collapsed chat view doesn't show.
 
 ## Using the TUI
 
-Vim-style modal input — **normal mode by default**:
+The message box is focused from the moment lazymesh starts: type, and
+`Enter` sends. There is no normal/insert switch — a bare key is a letter
+in your message, and every command lives behind the leader `ctrl+x`.
+Press `ctrl+x ?` to see the whole list in the chat, or press `ctrl+x` and
+read the hint row: while the leader is armed it offers every command.
 
-| Key | Normal mode | Insert mode |
-|---|---|---|
-| `j`/`k` or `↓`/`↑` | scroll chat history | (typed as text) |
-| `m` | show/hide the mesh view (rooms/rings/presence) | (typed as text) |
-| `s` | show/hide the mesh services view (the curated catalog below) | (typed as text) |
-| `r` | show/hide the realms view (memberships, and joining a new one below) | (typed as text) |
-| `N` | show/hide the checkout notes (the working directory's `AGENTS.md`/`CLAUDE.md`, and trusting one) | (typed as text) |
-| `t` | inside the checkout notes: trust the selected file (below) | (typed as text) |
-| `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
-| `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
-| `b` | mute/unmute the bell | (typed as text) |
-| `i` | enter insert mode to compose a message | — |
-| `ctrl+e` | compose in `$EDITOR` (falls back to `vi`), lands in insert mode with the result | compose in `$EDITOR`, same as normal mode |
-| `Esc` | — | return to normal mode |
-| `Enter` | — | send the composed message to the agent |
-| `q` | quit | (typed as text — never steals a "q" while you're composing) |
-| `ctrl+c` | quit | quit (works in either mode) |
+| Key | What it does |
+|---|---|
+| `Enter` | send the composed message to the agent; the message box keeps focus |
+| `shift+Enter` | newline in the message (multi-line compose) |
+| `Esc` | close what is open, cancel a pending leader, or stop a running turn. With nothing open it does nothing, and keeps your draft |
+| `shift+↑` / `shift+↓` | scroll the chat one line |
+| `pgup` / `pgdn` | scroll the chat one page |
+| `ctrl+e` | compose in `$EDITOR` (falls back to `vi`); the result lands in the message box |
+| `ctrl+c` | quit, in every state |
 
-The compose line is always visible, in either mode — a draft you start
-composing and step away from with `Esc` stays there, dimmed but not lost,
-until you press `i` again.
+Commands, pressed after `ctrl+x`:
+
+| Key | What it does |
+|---|---|
+| `ctrl+x m` | show/hide the mesh view (rooms/rings/presence) |
+| `ctrl+x s` | show/hide the mesh services view (the curated catalog below). The panel takes the keyboard: `↑`/`↓` select, `Enter` calls the selected procedure, `Esc` closes it |
+| `ctrl+x r` | show/hide the realms view (memberships, and joining a new one below). `Enter` opens the join input when the message box is empty |
+| `ctrl+x N` | show/hide the checkout notes (the working directory's `AGENTS.md`/`CLAUDE.md`, and trusting one) |
+| `ctrl+x l` | open `agent.log` in `$EDITOR` |
+| `ctrl+x E` | read the recent errors in full (a repeating failure is one entry with a count) |
+| `ctrl+x e` | expand/collapse tool-call detail in the chat pane |
+| `ctrl+x v` | toggle verbose mode (tool calls inline in chat vs. dropped) |
+| `ctrl+x b` | mute/unmute the bell |
+| `ctrl+x y` | copy the last agent answer |
+| `ctrl+x x` | interrupt the running turn |
+| `ctrl+x g` / `ctrl+x G` | jump the chat to the top / bottom |
+| `ctrl+x q` | quit |
+| `ctrl+x ?` | show this list in the chat |
+
+A key pressed after `ctrl+x` is a command or a cancel, never a letter:
+it cannot land in your draft. `Esc`, or any key that names no command,
+cancels the leader.
+
+Inside a panel, its own keys stay what they are: `t` trusts the selected
+checkout note, `tab` moves to the next one, `N` or `Esc` closes; `c`
+copies from the error view and `p`/`n` step through older and newer
+errors; the ring pop-up keeps `a`/`d`/`t` and the approval pop-up keeps
+`y`/`n` (see below).
+
+The compose line is always visible — a draft you leave stays there while
+a panel, an overlay or a pop-up is on screen, and the next key after
+closing one is the next letter of your message.
 
 The mesh view overlays the Rooms/Pending rings/Presence panels on top of
 the chat pane rather than replacing it outright: the panels pin to the
@@ -147,13 +172,18 @@ dim, muted border rather than a solid bright one, so the overlay reads
 as a light layer over the conversation rather than a popup taking it
 over.
 
-The mesh services view (`s`, below) and the realms view (`r`, below) are
-the same overlay shape over their own panels, and all of them (mesh, mesh
-services, realms, checkout notes) are mutually exclusive — opening one
-closes the others rather than stacking, since two panels competing for the
-same tight chat margin would leave less room for either.
+The mesh services view (`ctrl+x s`, below) and the realms view
+(`ctrl+x r`, below) are the same overlay shape over their own panels,
+and all of them (mesh, mesh services, realms, checkout notes) are
+mutually exclusive — opening one closes the others rather than stacking,
+since two panels competing for the same tight chat margin would leave
+less room for either.
 
-### Checkout notes (`N`)
+A ring, an approval request or a first error opens its own prompt over
+everything else, but only once the message box has been quiet for two
+seconds: a prompt never takes the screen in the middle of a word.
+
+### Checkout notes (`ctrl+x N`)
 
 In the coding profile the working directory is a checkout, so its
 `AGENTS.md` and `CLAUDE.md` are written by whoever wrote the repository —
@@ -162,7 +192,7 @@ them **as data about the repository, never as orders**: they are delivered
 inside a fence, after the rules, and nothing in them can change the
 tools, the profile or what needs your approval.
 
-`N` lists them with each one's state. `t` trusts the selected file: the
+`ctrl+x N` lists them with each one's state. `t` trusts the selected file: the
 record (path plus the SHA-256 of the exact bytes you were shown) is
 written to `trusted_checkout_notes.json` beside your `config.yaml`, never
 inside the checkout, and only that key writes it. A trusted file is
@@ -179,8 +209,10 @@ top\|bottom` in config, default bottom) is always visible whether the chat
 pane or the full mesh view is showing — collapsing the mesh view never
 loses that ambient awareness. Two lines:
 
-- the shortcuts row, leading with a vim-style mode indicator
-  (`-- NORMAL --` / `-- INSERT --`).
+- the shortcuts row: whatever is modal on screen names itself first
+  (`-- APPROVAL --`, `-- RING --`, `-- NOTES --`, …), the candidates for
+  the next key while `ctrl+x` is pending, and otherwise the keys that do
+  something at the composer.
 - the summary line: this instance's own petname once known, bold and in
   its own color so it stands out (`swift-otter`, requires macula-mcp
   >= 0.25.2 — see the room-message color coding above for the same
@@ -200,14 +232,14 @@ loses that ambient awareness. Two lines:
   wrapped, so it always stays one row; the mcp segment leads it so the cut
   never takes it.
   Routine tool-call "chatter" (`mesh_call`, `mesh_say`, ...) is dropped
-  from here entirely by default; `v` shows it inline in the chat pane
+  from here entirely by default; `ctrl+x v` shows it inline in the chat pane
   instead for anyone who wants the full detail.
 
 **Audio cues**, plain terminal bell only (no audio library, no sound
 files): single bell for an ordinary room message from someone else,
 double bell for a ring addressed to you, triple bell if the agent enters
 a retry backoff or stops after repeated failures. Silent for the agent's
-own outgoing messages. Toggle with `b`; degrades silently wherever the
+own outgoing messages. Toggle with `ctrl+x b`; degrades silently wherever the
 bell is muted or unreachable (headless box, SSH, visual-bell-only
 terminals) — it never errors, since sending the raw BEL byte is always
 safe regardless of whether the terminal actually does anything with it.
@@ -238,7 +270,7 @@ Set `mesh_services_enabled: true` in `config.yaml` to turn this on —
 **off by default** (R2, 2026-09-07): a room-chat-only agent usually never
 touches corpus search at all, and the catalog's own tool schemas are real
 fixed-prefix token cost every operator would otherwise pay whether they
-use it or not. Press `s` any time (on or off) to see the curated catalog
+use it or not. Press `ctrl+x s` any time (on or off) to see the curated catalog
 itself — Procedure/Status/Description, each tagged `live` (currently
 discovered and callable), `not live` (curated but not currently
 advertised), `checking...` (enabled, discovery just hasn't resolved yet),
@@ -246,9 +278,9 @@ or `inactive` (the feature itself is off) — reading from the exact same
 `Source` the agent's own tool calls go through, not a second, possibly-
 diverging query.
 
-### Realms (`r`)
+### Realms (`ctrl+x r`)
 
-Press `r` to see which mesh realms this identity has joined — a small
+Press `ctrl+x r` to see which mesh realms this identity has joined — a small
 table of realm/handle/tier/joined-at, sourced from macula-mcp's
 `mesh_list_realms` tool alongside the other three `mesh_*` state calls the
 overlay panels already poll.
@@ -258,8 +290,9 @@ mesh peer's room text) can trigger — there is no `mesh_join_realm`-style
 tool with a realm parameter reachable from the model's own tool-calling
 loop, on purpose: any parameter on any MCP tool is reachable by whichever
 peer can steer the conversation, not just by the operator typing at the
-keyboard. Instead, with the realms view open, press `i` to type a realm
-name directly and `Enter` to start the join — this runs
+keyboard. Instead, with the realms view open and the message box empty,
+press `Enter` to type a realm name directly and `Enter` again to start
+the join — this runs
 `macula-mcp-realm`, a separate CLI never registered as an MCP tool,
 inheriting the same identity file the running macula-mcp server already
 uses. A join in progress shows its own session (link/QR code) and status
@@ -404,11 +437,11 @@ What changes in this profile:
   as `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
   asking — a patch larger than that has to be sent in several pieces.
-  The prompt can arrive while you are mid-word, so its answer keys
-  stay asleep for 0.6 s after it appears and after the last key that
-  reached it — a letter meant for your message cannot answer it, and the
-  prompt says so while the keys sleep. `esc` denies at once: the safe
-  answer is never delayed.
+  The prompt only appears once the message box has been quiet for two
+  seconds, and its answer keys then stay asleep for a further 0.6 s —
+  a letter meant for your message cannot answer it, and the prompt says so
+  while the keys sleep. `esc` denies at once: the safe answer is never
+  delayed.
 - **Handing work out is a separate, narrower tool.** Name `git_branch`,
   `git_commit` and `git_push` on `tool_allowlist` and the model can create
   or switch a branch, commit, and push that branch to your checkout's own

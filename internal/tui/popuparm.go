@@ -13,6 +13,13 @@ import (
 // whole point is that a keystroke meant for a message never answers a prompt.
 const popupArmDelay = 600 * time.Millisecond
 
+// popupIdleDelay is how long the composer has to be still before a pop-up may
+// take the screen (macula-lazymesh#62). With the composer always focused, "the
+// person is composing" is "a key arrived in the last two seconds": without
+// this a ring would never pop, and an approval would keep landing mid-word,
+// which is the situation the arming guard then has to clean up after.
+const popupIdleDelay = 2 * time.Second
+
 // popupArm is one pop-up's arming state. An answer key acts only once the
 // guard has passed since the LATER of the two times, so a person still typing
 // keeps extending the sleep instead of ending it -- the key that answers has
@@ -81,13 +88,13 @@ func (m Model) refocus(target Mode) Model {
 	switch target {
 	case ModeApprovalPopup:
 		if m.pendingApproval == nil {
-			m.mode = ModeNormal
+			m.mode = ModeCompose
 			return m
 		}
 		m.approvalArm = popupArm{shownAt: now}
 	case ModeRingPopup:
 		if m.pendingRingPopup == nil {
-			m.mode = ModeNormal
+			m.mode = ModeCompose
 			return m
 		}
 		m.ringArm = popupArm{shownAt: now}

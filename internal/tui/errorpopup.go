@@ -118,7 +118,7 @@ func newErrorPopup(text string, termWidth, termHeight int) errorPopup {
 // and the next successful refresh clears it on its own.
 func (m Model) handleErrorPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.errorPopup == nil {
-		m.mode = ModeNormal
+		m.mode = ModeCompose
 		m.resizeComponents()
 		return m, nil
 	}
@@ -137,15 +137,15 @@ func (m Model) handleErrorPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.errorPopup.copied = copyDone
 		m.errorPopup.copyErrMsg = ""
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.Up):
+	case msg.String() == "k" || msg.String() == "up":
 		m.errorPopup.viewport.LineUp(1)
 		return m, nil
-	case key.Matches(msg, DefaultKeyMap.Down):
+	case msg.String() == "j" || msg.String() == "down":
 		m.errorPopup.viewport.LineDown(1)
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Normal): // Esc
 		m.errorPopup = nil
-		m.mode = ModeNormal
+		m.mode = ModeCompose
 		m.resizeComponents()
 		return m, nil
 	}
@@ -224,9 +224,11 @@ func (m Model) renderErrorPopup() string {
 // errorPopupMarker is the affordance shown next to the status line's
 // error. It sits BEFORE the message deliberately: the message is what
 // runs off the right edge, so a hint appended after it would be the first
-// thing lost -- exactly on the error it is meant to rescue.
+// thing lost -- exactly on the error it is meant to rescue. It names the
+// whole leader sequence since #62, not just the letter: `E` alone types an
+// E into the composer.
 func errorPopupMarker() string {
-	return errStyle.Render("[E]")
+	return errStyle.Render("[ctrl+x E]")
 }
 
 func formatSummaryError(err error) string {

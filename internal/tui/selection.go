@@ -103,7 +103,7 @@ func (m Model) chatOnScreen() bool {
 	if m.meshExpanded || m.realmExpanded || m.meshServicesExpanded {
 		return false
 	}
-	return m.mode == ModeNormal || m.mode == ModeInsert
+	return m.mode == ModeCompose
 }
 
 // finishSelection copies the selected visible rows to the clipboard and
