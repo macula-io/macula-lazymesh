@@ -223,3 +223,40 @@ func TestTimeoutEndsTheCommand(t *testing.T) {
 		t.Fatalf("a timed-out command held the call for %s", took)
 	}
 }
+
+// TestConfigDirIsUnreachable: the operator's config directory, where the
+// trusted checkout notes record (slice B, #44) and config.yaml live, can
+// be neither read nor written from an approved command, and cannot be
+// mounted read-only either.
+func TestConfigDirIsUnreachable(t *testing.T) {
+	requireBwrap(t)
+	l := newLayout(t)
+	configDir := filepath.Join(l.home, ".config", "lazymesh")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(configDir, "trusted_checkout_notes.json")
+	if err := os.WriteFile(notes, []byte(`{"TRUST-CANARY":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := Prepare(context.Background(), Options{Checkout: l.checkout, Home: l.home, CacheDir: l.cache, Private: []string{configDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := sb.Run(context.Background(), "cat "+quote(notes)+"; echo '{\"evil\":1}' > "+quote(notes)+"; echo 'profile: mesh' > "+quote(filepath.Join(configDir, "config.yaml")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Stdout, "TRUST-CANARY") {
+		t.Error("the trusted notes record is readable from inside")
+	}
+	if got, _ := os.ReadFile(notes); string(got) != `{"TRUST-CANARY":1}` {
+		t.Errorf("the trusted notes record was rewritten from inside: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "config.yaml")); err == nil {
+		t.Error("a config.yaml was written into the config directory from inside")
+	}
+	if _, err := Prepare(context.Background(), Options{Checkout: l.checkout, Home: l.home, CacheDir: l.cache, Private: []string{configDir}, ReadOnly: []string{filepath.Dir(configDir)}}); err == nil {
+		t.Error("a read-only mount holding the config directory was accepted")
+	}
+}

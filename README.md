@@ -393,6 +393,15 @@ to `<session-id>.denials.jsonl` next to the session's own log.
 Install bubblewrap from your distribution: `apt install bubblewrap`,
 `dnf install bubblewrap`, `pacman -S bubblewrap`.
 
+On Ubuntu 24.04 and later, AppArmor stops bubblewrap from setting up its
+sandbox unless it has a profile, and lazymesh's start-up check then
+reports `a plain command does not run`. Give bubblewrap one:
+
+```sh
+printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/bwrap
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
 ## Driving lazymesh from another program
 
 `lazymesh --headless` runs without the TUI and serves a control socket
