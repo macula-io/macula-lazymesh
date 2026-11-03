@@ -30,7 +30,7 @@ func TestASymlinkedCheckoutNoteNeverReachesThePrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes))
+	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes), "ctrl+x")
 	if strings.Contains(prompt, "PRIVATE KEY") {
 		t.Fatalf("a symlinked note put the operator's key in the coding prompt:\n%s", prompt)
 	}
@@ -87,7 +87,7 @@ func TestARecordInsideTheCheckoutTrustsNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("a trust record inside the checkout was accepted")
 	}
-	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes))
+	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes), "ctrl+x")
 	if strings.Contains(prompt, "<"+checkoutnotes.OperatorFence) {
 		t.Fatalf("the checkout pre-trusted its own note:\n%s", prompt)
 	}
