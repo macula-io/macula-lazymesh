@@ -56,12 +56,15 @@ func TestOnlyTheOperatorCanAnswerAnApproval(t *testing.T) {
 	}
 }
 
+// answersApproval matches a call to either way of answering an
+// approval: AnswerApproval, and TryAnswerApproval, the control socket's
+// variant (#41).
 func answersApproval(fun ast.Expr) bool {
 	switch f := fun.(type) {
 	case *ast.SelectorExpr:
-		return f.Sel.Name == "AnswerApproval"
+		return f.Sel.Name == "AnswerApproval" || f.Sel.Name == "TryAnswerApproval"
 	case *ast.Ident:
-		return f.Name == "AnswerApproval"
+		return f.Name == "AnswerApproval" || f.Name == "TryAnswerApproval"
 	}
 	return false
 }

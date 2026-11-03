@@ -253,6 +253,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return err
 	}
+	reportGateFailures(gate, tuiEvents, frontendEvents)
 
 	// Loop-owned ring listening (2026-09-07, replacing the system
 	// prompt's own former blanket ring-check mandate): same teardown
@@ -331,15 +332,14 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		preTool = preToolHook.Decide
 	}
 
-	sessPid, err := sessionhost.StartSession(node, rootPid, sessionhost.SessionArgs{
+	sessPid, err := sessionhost.StartSession(node, rootPid, withAsklist(cfg, sessionhost.SessionArgs{
 		Provider:     p,
 		Tools:        tools,
 		SystemPrompt: systemPrompt,
 		Store:        sessionStore,
 		SessionID:    resolvedSessionID,
-		AskTools:     cfg.ToolAsklist,
 		PreTool:      preTool,
-	})
+	}))
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -678,6 +678,32 @@ func codingAllowlist(cfg config.Config) []string {
 	for _, local := range localtools.ToolNames() {
 		if allowlistIncludes(cfg.ToolAllowlist, local) {
 			names = append(names, local)
+		}
+	}
+	return names
+}
+
+// withAsklist sets the session's ask list from cfg: the one place run
+// and its tests take it from.
+func withAsklist(cfg config.Config, args sessionhost.SessionArgs) sessionhost.SessionArgs {
+	args.AskTools = resolveAsklist(cfg)
+	return args
+}
+
+// resolveAsklist is the list of tools that wait for the operator's
+// approval on every call. In the coding profile it is every local tool
+// the allowlist lets in, whatever tool_asklist says: a peer's assignment
+// leads to these calls, and write_file to ~/.bashrc or .git/hooks runs
+// code just as shell_exec does, so none of them runs unasked
+// (macula-io/macula-lazymesh#38, threat model invariant 4).
+func resolveAsklist(cfg config.Config) []string {
+	if !cfg.CodingProfile() {
+		return cfg.ToolAsklist
+	}
+	names := append([]string{}, cfg.ToolAsklist...)
+	for _, name := range codingAllowlist(cfg) {
+		if allowlistIncludes(localtools.ToolNames(), name) {
+			names = appendUnique(names, name)
 		}
 	}
 	return names
@@ -1529,6 +1555,25 @@ func buildRosterGate(ctx context.Context, cfg config.Config, client rostergate.C
 		gate.SetSelf(self)
 	}
 	return gate, nil
+}
+
+// reportGateFailures shows the operator every inbox read the gate could
+// not make, in the TUI and on the control socket: a gate that cannot
+// read delivers nothing, and an agent that hears nothing looks idle, not
+// broken.
+func reportGateFailures(gate *rostergate.Gate, sinks ...chan<- agent.Event) {
+	if gate == nil {
+		return
+	}
+	gate.OnReadFailure(func(room string, err error) {
+		ev := agent.Event{Kind: agent.EventError, ToolName: "rostergate", Err: fmt.Errorf("room %s: crew messages could not be read, so none reach the agent: %w", room, err)}
+		for _, sink := range sinks {
+			select {
+			case sink <- ev:
+			default:
+			}
+		}
+	})
 }
 
 // joinOperatorRoom joins room on the operator's behalf (the --room flag

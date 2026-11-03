@@ -412,3 +412,32 @@ func TestJoinOperatorRoom(t *testing.T) {
 		t.Fatal("an unconfirmed join passed")
 	}
 }
+
+type brokenInbox struct{}
+
+func (brokenInbox) CallTool(context.Context, string, map[string]any) (string, error) {
+	return "", fmt.Errorf("macula-mcp is gone")
+}
+
+// TestReportGateFailures_ReachesTheOperator: an inbox read that fails
+// becomes an error event for the TUI and the control socket, so a broken
+// gate does not pass for a quiet room.
+func TestReportGateFailures_ReachesTheOperator(t *testing.T) {
+	roster, _ := rostergate.ParseRoster([]string{codingSupervisor})
+	gate := rostergate.New(brokenInbox{}, roster, rostergate.Enforce, nil)
+	tui, socket := make(chan agent.Event, 1), make(chan agent.Event, 1)
+	reportGateFailures(gate, tui, socket)
+	if _, ok := roomPrompt(context.Background(), gate, codingRoom); ok {
+		t.Fatal("a failed read started a turn")
+	}
+	for name, sink := range map[string]chan agent.Event{"tui": tui, "socket": socket} {
+		select {
+		case ev := <-sink:
+			if ev.Kind != agent.EventError || ev.Err == nil || !strings.Contains(ev.Err.Error(), codingRoom) {
+				t.Errorf("%s got %+v", name, ev)
+			}
+		default:
+			t.Errorf("the %s never heard the gate failed", name)
+		}
+	}
+}
