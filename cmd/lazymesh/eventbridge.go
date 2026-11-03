@@ -17,9 +17,9 @@ import (
 // subscribes to the session actor and hands every loop event to the parts
 // of lazymesh that are NOT actors yet — the TUI's event channel, the
 // agent log, and the room-waiter's reactive churn detection. It preserves
-// today's event-forwarding behavior exactly (logEvent + waiterMgr sync +
-// non-blocking tuiEvents), just moved from a goroutine inside runAgent to
-// a node-level process the session broadcasts to.
+// today's event-forwarding behavior (logEvent + waiterMgr sync), moved
+// from a goroutine inside runAgent to a node-level process the session
+// broadcasts to.
 //
 // It lives at node level, not under the root supervisor: the root's
 // simple_one_for_one template hosts sessions and only sessions, and the
@@ -28,20 +28,20 @@ import (
 type eventBridge struct {
 	act.Actor
 
-	ctx            context.Context
-	tuiEvents      chan<- agent.Event
-	frontendEvents chan<- agent.Event
-	agentLog       *log.Logger
-	waiterMgr      *roomwaiter.Manager
-	counters       *counters.Registry
+	ctx       context.Context
+	tui       *agent.Outlet
+	frontend  *agent.Outlet
+	agentLog  *log.Logger
+	waiterMgr *roomwaiter.Manager
+	counters  *counters.Registry
 }
 
 func eventBridgeFactory() gen.ProcessBehavior { return &eventBridge{} }
 
 func (b *eventBridge) Init(args ...any) error {
 	b.ctx = args[0].(context.Context)
-	b.tuiEvents = args[1].(chan<- agent.Event)
-	b.frontendEvents = args[2].(chan<- agent.Event)
+	b.tui = args[1].(*agent.Outlet)
+	b.frontend = args[2].(*agent.Outlet)
 	b.agentLog = args[3].(*log.Logger)
 	b.waiterMgr = args[4].(*roomwaiter.Manager)
 	b.counters = args[5].(*counters.Registry)
@@ -88,17 +88,11 @@ func (b *eventBridge) HandleMessage(from gen.PID, message any) error {
 		}
 	}
 
-	// Non-blocking: the TUI and the control plane's socket are both slow,
-	// human- or controller-paced consumers that must never be able to
-	// stall event delivery (or block the session mid-turn).
-	select {
-	case b.tuiEvents <- msg.Event:
-	default:
-	}
-	select {
-	case b.frontendEvents <- msg.Event:
-	default:
-	}
+	// Each consumer has its own Outlet, so a TUI that is not reading never
+	// holds back the socket, and neither ever loses an approval request or
+	// a turn-complete marker (#98).
+	b.tui.Send(msg.Event)
+	b.frontend.Send(msg.Event)
 	return nil
 }
 
@@ -122,7 +116,7 @@ type bridgeSubscribeTo struct {
 }
 
 // startEventBridge spawns the bridge on n and subscribes it to session.
-func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents chan<- agent.Event, agentLog *log.Logger, waiterMgr *roomwaiter.Manager, counters *counters.Registry) (gen.PID, error) {
+func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents *agent.Outlet, agentLog *log.Logger, waiterMgr *roomwaiter.Manager, counters *counters.Registry) (gen.PID, error) {
 	bridge, err := n.Spawn(eventBridgeFactory, gen.ProcessOptions{}, ctx, tuiEvents, frontendEvents, agentLog, waiterMgr, counters)
 	if err != nil {
 		return gen.PID{}, err

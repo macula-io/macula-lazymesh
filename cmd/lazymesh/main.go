@@ -144,14 +144,23 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}
 	defer client.Close()
 
-	// Buffered generously since the TUI side is the slow consumer (a human
-	// reading, not a tight loop) and the agent side must never block on it.
-	tuiEvents := make(chan agent.Event, 64)
-	// The control plane's own event fan-out: the event bridge and the
-	// driver broadcast every event here too, and the frontend server
-	// drains it. Without a socket there is no reader, and the non-blocking
-	// sends simply drop — the TUI's channel is unaffected.
-	frontendEvents := make(chan agent.Event, 64)
+	// The TUI's events, and the control plane's own fan-out the frontend
+	// server drains. Every sender (the event bridge, the driver, the roster
+	// gate, the ring waiter) sends through the one Outlet of each consumer:
+	// nothing is lost, the order is the order sent, and a consumer that is
+	// not reading holds back only itself (#98). A channel exists only when
+	// something reads it: no TUI in a headless run, no socket unless one
+	// was asked for. The control socket is decided again, with its hook,
+	// further down.
+	var tuiEvents, frontendEvents chan agent.Event
+	if !headless {
+		tuiEvents = make(chan agent.Event, 64)
+	}
+	if socketPath != "" || headless {
+		frontendEvents = make(chan agent.Event, 64)
+	}
+	tuiOut := agent.NewOutlet(ctx.Done(), tuiEvents)
+	frontendOut := agent.NewOutlet(ctx.Done(), frontendEvents)
 	userInputCh := make(chan string, 8)
 
 	// Moved ahead of buildToolSource (2026-09-07, R2): meshservices.Source
@@ -327,7 +336,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return err
 	}
-	reportGateFailures(gate, tuiEvents, frontendEvents)
+	reportGateFailures(gate, tuiOut, frontendOut)
 
 	// Loop-owned ring listening (2026-09-07, replacing the system
 	// prompt's own former blanket ring-check mandate): same teardown
@@ -340,10 +349,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// failing since startup" were indistinguishable from the log alone.
 	ringMgr.SetLogger(logStack.StdFor("ring"))
 	ringMgr.OnSurfaced(func(r ringwaiter.Ring) {
-		select {
-		case frontendEvents <- agent.Event{Kind: agent.EventRingPending, ID: r.RingID, From: r.FromPetname, Text: r.Purpose}:
-		default:
-		}
+		frontendOut.Send(agent.Event{Kind: agent.EventRingPending, ID: r.RingID, From: r.FromPetname, Text: r.Purpose})
 	})
 	defer ringMgr.Stop()
 	ringMgr.Start(ctx)
@@ -426,7 +432,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}
 	defer sessionhost.StopSession(node, sessPid)
 	runtimeCounters := counters.New()
-	if _, err := startEventBridge(node, ctx, sessPid, tuiEvents, frontendEvents, agentLog, waiterMgr, runtimeCounters); err != nil {
+	if _, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, runtimeCounters); err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
 	if cfg.MetricsListen != "" {
@@ -518,7 +524,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 				panic(r)
 			}
 		}()
-		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiEvents, frontendEvents, userInputCh, schedulerMgr.Arrivals(), idleStart, gate, initialRooms)
+		runAgent(ctx, node, rootPid, sessPid, waiterMgr, ringMgr, agentLog, tuiOut, frontendOut, userInputCh, schedulerMgr.Arrivals(), idleStart, gate, initialRooms)
 	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
@@ -1368,7 +1374,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // failure falls into the ordinary backoff accounting. Room/ring waiting
 // stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
 // this function supplies the cadence, driven by real events.
-func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
+func runAgent(ctx context.Context, n gen.Node, root, sessPid gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
 	prompt, ok := firstPrompt(ctx, idleStart, userInputCh, waiterMgr, ringMgr, wakeups, gate, initialRooms)
@@ -1563,7 +1569,7 @@ const maxConsecutiveErrors = 8
 // count, report, back off with growth, and stop after
 // maxConsecutiveErrors so a wedged provider never retries forever
 // silently. Returns false when the driver should stop.
-func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Duration, agentLog *log.Logger, tuiEvents, frontendEvents chan<- agent.Event, err error) bool {
+func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Duration, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, err error) bool {
 	*consecutiveErrors++
 	agentLog.Printf("lazymesh agent: %s (consecutive failures: %d/%d)", err, *consecutiveErrors, maxConsecutiveErrors)
 	if *consecutiveErrors >= maxConsecutiveErrors {
@@ -1582,18 +1588,12 @@ func failCycle(ctx context.Context, consecutiveErrors *int, backoff *time.Durati
 	return true
 }
 
-// emitTui forwards a driver-level event to the TUI without ever blocking
-// on it — the TUI is a slow, human-paced consumer and must never stall
-// the agent's cadence.
-func emitTui(tuiEvents, frontendEvents chan<- agent.Event, ev agent.Event) {
-	select {
-	case tuiEvents <- ev:
-	default:
-	}
-	select {
-	case frontendEvents <- ev:
-	default:
-	}
+// emitTui forwards a driver-level event to the TUI and the socket, never
+// losing it (#98): a lost backoff or turn-complete would leave the TUI's
+// turn clock running and a controller waiting out its deadline.
+func emitTui(tuiEvents, frontendEvents *agent.Outlet, ev agent.Event) {
+	tuiEvents.Send(ev)
+	frontendEvents.Send(ev)
 }
 
 // metricsReader reads the counters and the session's token and round
@@ -1898,17 +1898,14 @@ func buildRosterGate(ctx context.Context, cfg config.Config, client rostergate.C
 // not make, in the TUI and on the control socket: a gate that cannot
 // read delivers nothing, and an agent that hears nothing looks idle, not
 // broken.
-func reportGateFailures(gate *rostergate.Gate, sinks ...chan<- agent.Event) {
+func reportGateFailures(gate *rostergate.Gate, sinks ...*agent.Outlet) {
 	if gate == nil {
 		return
 	}
 	gate.OnReadFailure(func(room string, err error) {
 		ev := agent.Event{Kind: agent.EventError, ToolName: "rostergate", Err: fmt.Errorf("room %s: crew messages could not be read, so none reach the agent: %w", room, err)}
 		for _, sink := range sinks {
-			select {
-			case sink <- ev:
-			default:
-			}
+			sink.Send(ev)
 		}
 	})
 }
