@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
 func TestChatEntryFromAgentEvent_ToolCallCollapsedByDefault(t *testing.T) {
@@ -77,7 +78,7 @@ func TestChatEntryFromAgentEvent_Listening(t *testing.T) {
 	if !strings.Contains(entry.render(false, 80), "listening") {
 		t.Fatalf("expected the rendered text to say it's listening, got %q", entry.render(false, 80))
 	}
-	if !isChatter(agent.EventListening) {
+	if !isChatter(agent.Event{Kind: agent.EventListening}) {
 		t.Fatalf("expected EventListening to be routed as chatter (status strip, not the main chat pane)")
 	}
 }
@@ -144,5 +145,41 @@ func TestChatEntry_ApplyPatchShowsTheDiffWithoutExpanding(t *testing.T) {
 	other := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventToolResult, ToolName: "mesh_rooms", Text: diff})
 	if strings.Contains(other.render(false, 80), "+three") {
 		t.Fatalf("an ordinary tool result expanded itself")
+	}
+}
+
+// TestChatEntryFromAgentEvent_CutReplyIsMarked: a reply the backend cut short
+// must say so under the answer, with the answer's own text left whole so
+// scrollback and copy return what the model actually said (#77).
+func TestChatEntryFromAgentEvent_CutReplyIsMarked(t *testing.T) {
+	cases := []struct {
+		stop   provider.Stop
+		marker string
+	}{
+		{provider.Stop{Reason: provider.StopOutputLimit}, "reply cut: output limit reached"},
+		{provider.Stop{Reason: provider.StopStreamEndedEarly}, "reply cut: stream ended early"},
+		{provider.Stop{Reason: provider.StopOther, Detail: "content_filter"}, "reply cut: stopped early (content_filter)"},
+	}
+	for _, c := range cases {
+		entry := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventAssistantMessage, Text: "the answer stops mid", Stop: c.stop})
+		rendered := entry.render(false, 80)
+		if !strings.Contains(rendered, c.marker) {
+			t.Errorf("render for %+v = %q, want marker %q", c.stop, rendered, c.marker)
+		}
+		if entry.text != "the answer stops mid" {
+			t.Errorf("entry text = %q, want the cut text kept whole (the marker is rendered, not stored)", entry.text)
+		}
+	}
+}
+
+// TestChatEntryFromAgentEvent_NormalReplyHasNoMarker: a finished turn, and a
+// backend that reported nothing at all, both render exactly as before --
+// only a positively named cut earns a marker.
+func TestChatEntryFromAgentEvent_NormalReplyHasNoMarker(t *testing.T) {
+	for _, stop := range []provider.Stop{{}, {Reason: provider.StopNormal}} {
+		entry := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventAssistantMessage, Text: "hello room", Stop: stop})
+		if rendered := entry.render(false, 80); strings.Contains(rendered, "reply cut") {
+			t.Errorf("render for %+v marked a reply that was not cut: %q", stop, rendered)
+		}
 	}
 }
