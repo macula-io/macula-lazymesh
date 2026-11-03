@@ -12,18 +12,17 @@ import (
 // and no delta text is lost or reordered on the way.
 func TestOutlet_FloodOfDeltasThenApprovalArrivesInOrder(t *testing.T) {
 	ch := make(chan Event, 4)
-	o := NewOutlet(ch)
 	done := make(chan struct{})
 	defer close(done)
+	o := NewOutlet(done, ch)
 
 	var want strings.Builder
 	for i := 0; i < 500; i++ {
 		chunk := fmt.Sprintf("[%d]", i)
 		want.WriteString(chunk)
-		o.Send(done, Event{Kind: EventAssistantDelta, Text: chunk})
+		o.Send(Event{Kind: EventAssistantDelta, Text: chunk})
 	}
-	sent := make(chan bool, 1)
-	go func() { sent <- o.Send(done, Event{Kind: EventApprovalRequested, ID: "approve-1"}) }()
+	o.Send(Event{Kind: EventApprovalRequested, ID: "approve-1"})
 
 	var got strings.Builder
 	timeout := time.After(5 * time.Second)
@@ -34,9 +33,6 @@ func TestOutlet_FloodOfDeltasThenApprovalArrivesInOrder(t *testing.T) {
 				if got.String() != want.String() {
 					t.Fatalf("delta text before the approval:\n got %q\nwant %q", got.String(), want.String())
 				}
-				if !<-sent {
-					t.Fatal("Send reported the approval as not taken")
-				}
 				return
 			}
 			got.WriteString(ev.Text)
@@ -46,38 +42,72 @@ func TestOutlet_FloodOfDeltasThenApprovalArrivesInOrder(t *testing.T) {
 	}
 }
 
-// #98: with no consumer at all (a nil channel: the TUI's in a headless
-// run, the socket's when there is none) nothing blocks.
-func TestOutlet_NoConsumerNeverBlocks(t *testing.T) {
-	o := NewOutlet(nil)
+// #98 r=2: Send never blocks, however long the consumer does not read, so
+// one consumer cannot hold back a sender that also feeds another.
+func TestOutlet_SendNeverBlocksOnAConsumerThatIsNotReading(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+	o := NewOutlet(done, make(chan Event)) // nobody reads
 	finished := make(chan struct{})
 	go func() {
-		o.Send(nil, Event{Kind: EventAssistantDelta, Text: "x"})
-		o.Send(nil, Event{Kind: EventListening})
+		for i := 0; i < 1000; i++ {
+			o.Send(Event{Kind: EventToolResult, Text: "r"})
+			o.Send(Event{Kind: EventAssistantDelta, Text: "d"})
+		}
 		close(finished)
 	}()
 	select {
 	case <-finished:
 	case <-time.After(2 * time.Second):
-		t.Fatal("an Outlet without a consumer blocked its sender")
+		t.Fatal("Send blocked on a consumer that is not reading")
 	}
 }
 
-// #98: a sender waiting on a consumer that never reads is released when
-// done closes, and is told the event was not taken.
-func TestOutlet_DoneReleasesABlockedSender(t *testing.T) {
+// #98: with no consumer at all (a nil channel: the TUI's in a headless
+// run, the socket's when there is none) nothing is delivered and nothing
+// blocks.
+func TestOutlet_NoConsumerNeverBlocks(t *testing.T) {
+	o := NewOutlet(nil, nil)
+	o.Send(Event{Kind: EventAssistantDelta, Text: "x"})
+	o.Send(Event{Kind: EventListening})
+	o.Close()
+}
+
+// Close delivers what is already queued, then closes the channel, so a
+// consumer ranging over it sees every event and then the end.
+func TestOutlet_CloseDeliversTheQueueThenClosesTheChannel(t *testing.T) {
 	ch := make(chan Event)
-	o := NewOutlet(ch)
 	done := make(chan struct{})
-	sent := make(chan bool, 1)
-	go func() { sent <- o.Send(done, Event{Kind: EventListening}) }()
+	defer close(done)
+	o := NewOutlet(done, ch)
+	o.Send(Event{Kind: EventToolResult, Text: "one"})
+	o.Send(Event{Kind: EventListening})
+	o.Close()
+
+	var kinds []EventKind
+	for ev := range ch {
+		kinds = append(kinds, ev.Kind)
+	}
+	if len(kinds) != 2 || kinds[0] != EventToolResult || kinds[1] != EventListening {
+		t.Fatalf("delivered %v, want the tool result then listening", kinds)
+	}
+}
+
+// When done has already stopped delivery, Close still closes the channel.
+func TestOutlet_CloseAfterDoneClosesTheChannel(t *testing.T) {
+	ch := make(chan Event)
+	done := make(chan struct{})
+	o := NewOutlet(done, ch)
+	o.Send(Event{Kind: EventListening})
 	close(done)
+	time.Sleep(50 * time.Millisecond)
+	o.Close()
 	select {
-	case ok := <-sent:
-		if ok {
-			t.Fatal("Send reported an event nobody took as delivered")
+	case _, ok := <-ch:
+		for ok {
+			_, ok = <-ch
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("closing done did not release the blocked sender")
+		t.Fatal("the channel was never closed")
 	}
 }

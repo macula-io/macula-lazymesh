@@ -34,8 +34,7 @@ type Controller struct {
 	pending map[string]chan error // approval id -> the verdict for our answer
 	closed  bool
 	done    chan struct{}
-	// closing closes on Close, releasing a reader that is waiting for the
-	// TUI to take an event that must arrive (#98).
+	// closing closes on Close and stops delivery to Events.
 	closing chan struct{}
 }
 
@@ -218,10 +217,13 @@ func (c *Controller) send(v any) error {
 // Approve call waiting on them.
 func (c *Controller) read(r *bufio.Reader) {
 	defer close(c.done)
-	defer close(c.events)
-	// Only a delta may be held back from a TUI that is not keeping up; an
-	// approval request or a turn_complete waits for it (#98).
-	events := agent.NewOutlet(c.events)
+	// The reader never waits on the TUI: events queue in an Outlet, so a
+	// TUI that pauses (its operator in $EDITOR) keeps this controller
+	// draining the socket and is not mistaken by the server for a dead one,
+	// and it still gets every event when it reads again (#98). Events closes
+	// once the queue is delivered.
+	events := agent.NewOutlet(c.closing, c.events)
+	defer events.Close()
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
@@ -265,10 +267,7 @@ func (c *Controller) read(r *bufio.Reader) {
 		if !ok {
 			continue
 		}
-		if !events.Send(c.closing, ev) {
-			c.failPending()
-			return
-		}
+		events.Send(ev)
 	}
 }
 

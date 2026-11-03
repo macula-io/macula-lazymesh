@@ -40,8 +40,8 @@ func eventBridgeFactory() gen.ProcessBehavior { return &eventBridge{} }
 
 func (b *eventBridge) Init(args ...any) error {
 	b.ctx = args[0].(context.Context)
-	b.tui = agent.NewOutlet(args[1].(chan<- agent.Event))
-	b.frontend = agent.NewOutlet(args[2].(chan<- agent.Event))
+	b.tui = args[1].(*agent.Outlet)
+	b.frontend = args[2].(*agent.Outlet)
 	b.agentLog = args[3].(*log.Logger)
 	b.waiterMgr = args[4].(*roomwaiter.Manager)
 	b.counters = args[5].(*counters.Registry)
@@ -88,12 +88,11 @@ func (b *eventBridge) HandleMessage(from gen.PID, message any) error {
 		}
 	}
 
-	// Only a delta may be held back from a consumer that is not keeping
-	// up; an approval request or a turn-complete marker waits for it
-	// (#98). Waiting here never blocks the session: its sends to this
-	// bridge land in the bridge's mailbox, in order.
-	b.tui.Send(b.ctx.Done(), msg.Event)
-	b.frontend.Send(b.ctx.Done(), msg.Event)
+	// Each consumer has its own Outlet, so a TUI that is not reading never
+	// holds back the socket, and neither ever loses an approval request or
+	// a turn-complete marker (#98).
+	b.tui.Send(msg.Event)
+	b.frontend.Send(msg.Event)
 	return nil
 }
 
@@ -117,7 +116,7 @@ type bridgeSubscribeTo struct {
 }
 
 // startEventBridge spawns the bridge on n and subscribes it to session.
-func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents chan<- agent.Event, agentLog *log.Logger, waiterMgr *roomwaiter.Manager, counters *counters.Registry) (gen.PID, error) {
+func startEventBridge(n gen.Node, ctx context.Context, session gen.PID, tuiEvents, frontendEvents *agent.Outlet, agentLog *log.Logger, waiterMgr *roomwaiter.Manager, counters *counters.Registry) (gen.PID, error) {
 	bridge, err := n.Spawn(eventBridgeFactory, gen.ProcessOptions{}, ctx, tuiEvents, frontendEvents, agentLog, waiterMgr, counters)
 	if err != nil {
 		return gen.PID{}, err

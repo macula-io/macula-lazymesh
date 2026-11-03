@@ -451,3 +451,48 @@ func TestController_ApprovalAfterADeltaFloodReachesTheAttachedTUI(t *testing.T) 
 		}
 	}
 }
+
+// #98 r=2: an attached TUI that pauses longer than the server's stall
+// timeout (the operator is in $EDITOR) is slow, not dead: its controller
+// keeps draining the socket, stays connected, and the approval is there
+// when the TUI reads again.
+func TestController_APausedTUIIsNotDisconnected(t *testing.T) {
+	old := controllerStallTimeout
+	controllerStallTimeout = 300 * time.Millisecond
+	defer func() { controllerStallTimeout = old }()
+
+	events := make(chan agent.Event, 4096)
+	_, path := startControllerServer(t, make(chan string, 4), events, nil)
+	c, err := Dial(path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	big := strings.Repeat("r", 64*1024)
+	const results = 200 // more than the controller's channel, outBuffer and the socket's own buffer together
+	for i := 0; i < results; i++ {
+		events <- agent.Event{Kind: agent.EventToolResult, ToolName: "read_file", Text: big}
+	}
+	events <- agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "risky", Text: "{}"}
+	time.Sleep(4 * controllerStallTimeout) // the TUI is in $EDITOR
+
+	timeout := time.After(5 * time.Second)
+	for got := 0; ; {
+		select {
+		case ev, ok := <-c.Events():
+			if !ok {
+				t.Fatalf("the controller was disconnected after %d events", got)
+			}
+			got++
+			if ev.Kind == agent.EventApprovalRequested {
+				if got != results+1 {
+					t.Fatalf("the approval arrived as event %d, want %d", got, results+1)
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("the approval never reached the paused TUI")
+		}
+	}
+}
