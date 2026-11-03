@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/counters"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
@@ -42,7 +44,7 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 	cfg.ToolAsklist = nil
 	target := filepath.Join(cfg.LocalTools.WorkingDir, ".bashrc")
 
-	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), nil)
+	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,5 +128,21 @@ func TestResolveAsklist_CodingAddsEveryAllowedLocalTool(t *testing.T) {
 	mesh.ToolAsklist = nil
 	if got := resolveAsklist(mesh); len(got) != 0 {
 		t.Errorf("mesh profile ask list = %v, want tool_asklist as written (empty)", got)
+	}
+}
+
+// TestMeshProfileKeepsItsShell: the mesh profile still offers shell_exec
+// when the operator opts in, unconfined as before slice C.
+func TestMeshProfileKeepsItsShell(t *testing.T) {
+	cfg := config.Default()
+	cfg.LocalTools = config.LocalTools{Enabled: true, WorkingDir: t.TempDir()}
+	cfg.ToolAllowlist = []string{"shell_exec"}
+	tools, err := meshLocalTools(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := tools.CallToolRaw(context.Background(), "shell_exec", `{"command":"echo mesh-shell"}`)
+	if err != nil || !strings.Contains(out, "mesh-shell") {
+		t.Fatalf("mesh profile shell_exec = (%q, %v)", out, err)
 	}
 }

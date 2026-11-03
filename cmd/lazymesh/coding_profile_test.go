@@ -136,7 +136,7 @@ func onlyRoom(room string) func(string) bool {
 // without reaching the mesh (invariants 1 and 1b).
 func TestCodingToolChainOffersOnlyVettedTools(t *testing.T) {
 	mesh := &fakeMesh{}
-	tools, _, err := buildCodingToolSource(codingConfig(t), mesh, onlyRoom(codingRoom), nil)
+	tools, _, err := buildCodingToolSource(codingConfig(t), mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestCodingProfileCanaryNeverReachesTheProvider(t *testing.T) {
 
 	cfg := codingConfig(t)
 	cfg.LocalTools.Enabled = false
-	tools, _, err := buildCodingToolSource(cfg, mesh, onlyRoom(codingRoom), nil)
+	tools, _, err := buildCodingToolSource(cfg, mesh, onlyRoom(codingRoom), codingShell{reason: "test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
