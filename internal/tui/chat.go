@@ -43,6 +43,11 @@ type chatEntry struct {
 	streaming bool   // assistant entry still accumulating deltas
 	md        string // glamour rendering, cached once finished
 	mdWidth   int    // the width md was rendered at
+	// alwaysDetail renders detail even when details are collapsed. Set for
+	// apply_patch: a patch that was applied to the checkout is shown to the
+	// operator straight away (#46) -- a change they did not see is not a
+	// review, and hunting for it behind a toggle is how it gets missed.
+	alwaysDetail bool
 }
 
 // chatEntryFromAgentEvent converts one agent.Event into a chat line. Plain
@@ -58,7 +63,9 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	case agent.EventToolCall:
 		return chatEntry{kind: chatToolCall, at: now, tool: ev.ToolName, text: fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 	case agent.EventToolResult:
-		return chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
+		return entry
 	case agent.EventError:
 		msg := ""
 		if ev.Err != nil {
@@ -132,7 +139,7 @@ var (
 func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
 	text := e.text
-	if detailsExpanded && e.detail != "" && e.detail != e.text {
+	if (detailsExpanded || e.alwaysDetail) && e.detail != "" && e.detail != e.text {
 		switch e.kind {
 		case chatToolCall:
 			text = fmt.Sprintf("→ %s(%s)", e.tool, e.detail)

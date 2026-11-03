@@ -293,13 +293,16 @@ trigger local execution.
 ### Local tools (opt-in, off by default, allowlist-gated separately)
 
 Setting `local_tools.enabled: true` in `config.yaml` wires up `shell_exec`/
-`read_file`/`write_file`, scoped to `local_tools.working_dir` (read/write
-confined there; `shell_exec` runs with that as its starting directory
-only, not a real sandbox — treat it as exactly as trusted as the operator
-running commands themselves). **This flag alone does not make them
-reachable by the agent** — the tool allowlist above still excludes them.
-Reaching them needs a second, separate step: explicitly listing them in
-`tool_allowlist` in your own config, e.g.:
+`read_file`/`write_file`/`search`/`apply_patch`, scoped to
+`local_tools.working_dir`. Every one of them reaches the directory through
+an `os.Root`: a path that resolves outside — by `..`, by an absolute path,
+or through a symlink — is refused, and a write never follows a symlink at
+all. `shell_exec` is the exception: it runs with that as its starting
+directory only, not a real sandbox (in the coding profile it is the
+confined shell below). **This flag alone does not make them reachable by
+the agent** — the tool allowlist above still excludes them. Reaching them
+needs a second, separate step: explicitly listing them in `tool_allowlist`
+in your own config, e.g.:
 
 ```yaml
 local_tools:
@@ -317,9 +320,23 @@ tool_allowlist:
   - shell_exec
   - read_file
   - write_file
+  - search
+  - apply_patch
 ```
 
-**Adding `shell_exec` (or `read_file`/`write_file`) to `tool_allowlist`
+`search` takes a literal string or a regular expression and returns one
+line per match as `path:line:text`. `apply_patch` applies a unified diff to
+the working directory and refuses any path that resolves outside it, any
+path inside `.git`, and any patch that would create a symlink. Both are
+edited by the model and both are shown to you: a patch is asked about with
+its whole text on screen before it runs, and the diff of the working tree
+appears in the chat as soon as it has been applied.
+
+A result too long for one answer is paged, not cut: `read_file` and
+`search` return a page with the offset for the next one in the footer, so
+a search's last match and a long file's last line stay reachable.
+
+**Adding `shell_exec` (or any file tool) to `tool_allowlist`
 re-exposes the mesh-content-to-arbitrary-execution risk the default
 allowlist exists to prevent** — the fix removes the capability from the
 default, it doesn't mark peer-authored room text as untrusted. Only do
@@ -361,13 +378,14 @@ What changes in this profile:
   model.
 - **Only you approve.** A roster member can assign and discuss work. No
   message can approve a tool call: approvals come only from the TUI or the
-  control socket. Every local tool you allow here (`read_file`,
-  `write_file`, `shell_exec`) asks you before each call, whatever
-  `tool_asklist` says. The approval prompt shows the whole call, with
-  invisible characters (bidi overrides, zero-width marks) written out as
-  `\u{XXXX}`; one taller than the screen must be paged through, every
+  control socket. Every local tool you allow here (`read_file`, `search`,
+  `apply_patch`, `write_file`, `shell_exec`) asks you before each call,
+  whatever `tool_asklist` says. The approval prompt shows the whole call,
+  with invisible characters (bidi overrides, zero-width marks) written out
+  as `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
-  asking. The prompt can arrive while you are mid-word, so its answer keys
+  asking — a patch larger than that has to be sent in several pieces.
+  The prompt can arrive while you are mid-word, so its answer keys
   stay asleep for 0.6 s after it appears and after the last key that
   reached it — a letter meant for your message cannot answer it, and the
   prompt says so while the keys sleep. `esc` denies at once: the safe

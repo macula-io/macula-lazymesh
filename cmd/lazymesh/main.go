@@ -1182,7 +1182,10 @@ func buildCodingSystemPrompt(goalText string, localToolsReachable, gitReachable 
 		"message came from with mesh_say, using that room_topic. When you have nothing to add, end " +
 		"your turn; the harness wakes you when a crew member writes."
 	if localToolsReachable {
-		prompt += " You have shell_exec/read_file/write_file in a local working directory for the work itself."
+		prompt += " You have local tools in a working directory for the work itself: read_file, search and " +
+			"apply_patch to read and edit the checkout, write_file, and shell_exec where the operator's " +
+			"allowlist allows it. A result too long for one reply comes back in pages: call again with the " +
+			"offset its footer names rather than assuming you saw all of it."
 	}
 	if gitReachable {
 		prompt += " You have git_branch, git_commit and git_push for handing the work out on a branch: " +
@@ -1244,9 +1247,9 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"arguments rather than giving up after one attempt."
 	}
 	if localToolsReachable {
-		toolsLine += " You also have shell_exec/read_file/write_file scoped to a local working " +
-			"directory -- use those only when actual local work (not just mesh conversation or " +
-			"a mesh service) is genuinely called for."
+		toolsLine += " You also have local tools scoped to a local working directory -- read_file, search, " +
+			"apply_patch, write_file and shell_exec, as far as your operator's allowlist allows -- use those " +
+			"only when actual local work (not just mesh conversation or a mesh service) is genuinely called for."
 	}
 	roomHint := ""
 	if room != "" {

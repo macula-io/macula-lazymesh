@@ -36,13 +36,15 @@ const (
 // TestCodingToolChainOffersOnlyVettedTools: that is the planted ungated
 // path this test exists to catch.
 var vettedCodingTools = map[string]bool{
-	"mesh_say":   true,
-	"shell_exec": true,
-	"read_file":  true,
-	"write_file": true,
-	"git_branch": true,
-	"git_commit": true,
-	"git_push":   true,
+	"mesh_say":    true,
+	"shell_exec":  true,
+	"read_file":   true,
+	"write_file":  true,
+	"git_branch":  true,
+	"git_commit":  true,
+	"git_push":    true,
+	"search":      true,
+	"apply_patch": true,
 }
 
 // everyKnownTool is what a misconfigured or hostile setup could try to
@@ -55,7 +57,7 @@ var everyKnownTool = []string{
 	"mesh_remember", "mesh_recall", "mesh_trust_agent", "mesh_untrust_agent", "mesh_join_realm",
 	"mesh_call", "mesh_get", "mesh_put", "mesh_publish", "mesh_watch", "mesh_open_room",
 	"mesh_find_records", "mesh_read_node_events", "mesh_hello", "web_fetch",
-	"shell_exec", "read_file", "write_file",
+	"shell_exec", "read_file", "write_file", "search", "apply_patch",
 }
 
 // fakeMesh is macula-mcp as far as the coding profile can see it: it
@@ -70,7 +72,8 @@ type fakeMesh struct {
 func (f *fakeMesh) ListTools(ctx context.Context) ([]mcpclient.Tool, error) {
 	var tools []mcpclient.Tool
 	for _, name := range everyKnownTool {
-		if name == "shell_exec" || name == "read_file" || name == "write_file" {
+		if name == "shell_exec" || name == "read_file" || name == "write_file" ||
+			name == "search" || name == "apply_patch" {
 			continue // served by internal/localtools, not the mesh
 		}
 		tools = append(tools, mcpclient.Tool{Name: name, InputSchema: map[string]any{"type": "object"}})
