@@ -117,6 +117,8 @@ Vim-style modal input — **normal mode by default**:
 | `m` | show/hide the mesh view (rooms/rings/presence) | (typed as text) |
 | `s` | show/hide the mesh services view (the curated catalog below) | (typed as text) |
 | `r` | show/hide the realms view (memberships, and joining a new one below) | (typed as text) |
+| `N` | show/hide the checkout notes (the working directory's `AGENTS.md`/`CLAUDE.md`, and trusting one) | (typed as text) |
+| `t` | inside the checkout notes: trust the selected file (below) | (typed as text) |
 | `e` | expand/collapse tool-call detail in the chat pane | (typed as text) |
 | `v` | toggle verbose mode (tool calls inline in chat vs. dropped) | (typed as text) |
 | `b` | mute/unmute the bell | (typed as text) |
@@ -146,10 +148,31 @@ as a light layer over the conversation rather than a popup taking it
 over.
 
 The mesh services view (`s`, below) and the realms view (`r`, below) are
-the same overlay shape over their own panels, and all three (mesh, mesh
-services, realms) are mutually exclusive — opening one closes the others
-rather than stacking, since two panels competing for the same tight chat
-margin would leave less room for either.
+the same overlay shape over their own panels, and all of them (mesh, mesh
+services, realms, checkout notes) are mutually exclusive — opening one
+closes the others rather than stacking, since two panels competing for the
+same tight chat margin would leave less room for either.
+
+### Checkout notes (`N`)
+
+In the coding profile the working directory is a checkout, so its
+`AGENTS.md` and `CLAUDE.md` are written by whoever wrote the repository —
+a dependency, a fork, a branch someone pushed. The model therefore reads
+them **as data about the repository, never as orders**: they are delivered
+inside a fence, after the rules, and nothing in them can change the
+tools, the profile or what needs your approval.
+
+`N` lists them with each one's state. `t` trusts the selected file: the
+record (path plus the SHA-256 of the exact bytes you were shown) is
+written to `trusted_checkout_notes.json` beside your `config.yaml`, never
+inside the checkout, and only that key writes it. A trusted file is
+delivered as your own instruction. If the file changes afterwards — a
+pull, a fork's PR — the hash no longer matches, the next start delivers it
+as data again, and the TUI says so. Trust takes effect at the next start,
+since a running session's system prompt is fixed.
+
+The mesh-only profile is unchanged: there the working directory is usually
+your own workspace, so its `CLAUDE.md` is read as your own instructions.
 
 A status block (position configurable via `status_bar_position:
 top\|bottom` in config, default bottom) is always visible whether the chat

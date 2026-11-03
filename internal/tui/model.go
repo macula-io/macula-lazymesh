@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/contactpolicy"
 	"github.com/macula-io/macula-lazymesh/internal/frontend"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
@@ -76,6 +77,12 @@ const (
 	// ModeApprovalPopup: answering a per-action approval prompt (G9) --
 	// the tool call waits, nothing else proceeds until y/n lands.
 	ModeApprovalPopup
+	// ModeNotesPanel: reading a checkout's note in full before trusting it
+	// (macula-io/macula-lazymesh#44). Its own mode because t means trust
+	// only here, the scroll keys move the note's content rather than the
+	// chat, and esc closes the panel instead of leaving whatever was
+	// underneath.
+	ModeNotesPanel
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -152,6 +159,19 @@ type Options struct {
 	MaculaMCPVersion  string
 	RealmIdentityFile string
 
+	// CheckoutNotes is what the working directory's AGENTS.md/CLAUDE.md
+	// said at start, with each one's trust state; CheckoutRefused is every
+	// such file that was not delivered and why. CheckoutDir is the working
+	// directory the panel re-reads before recording trust, and
+	// CheckoutTrustPath is the record the `t` key writes (beside the
+	// operator's config.yaml, never in the checkout). Empty in the
+	// mesh-only profile, which keeps reading those files as the operator's
+	// own instructions.
+	CheckoutNotes     []checkoutnotes.Note
+	CheckoutRefused   []checkoutnotes.Refused
+	CheckoutDir       string
+	CheckoutTrustPath string
+
 	// LogPath is the append-mode agent log. The `l` key opens it in
 	// $EDITOR rather than rendering it: the file already exists, and an
 	// editor already has search, jumping, copy and highlighting that an
@@ -189,10 +209,21 @@ type Model struct {
 	meshServicesExpanded bool // `s` -- see Options.MeshServices and renderMeshServicesOverlay
 	meshServicesCursor   int  // selected row in the `s` panel's table -- clamped in handleKey's Up/Down cases, not here, since this field alone doesn't know the current entry count
 	realmExpanded        bool // `r` -- see renderRealmsOverlay
-	detailsExpanded      bool // global expand/collapse for tool-call detail in chat
-	muted                bool
-	statusBarPosition    string // "top" or "bottom"
-	agentModel           string // see Options.AgentModel
+	// `N` -- the checkout-notes panel (macula-io/macula-lazymesh#44), and
+	// the notes as read at start. Deliberately never re-read while
+	// running: the content the operator trusts must be the bytes the model
+	// was actually given, not whatever the file says by the time they press
+	// t.
+	notesPanel        *notesPanel
+	notesCursor       int
+	checkoutNotes     []checkoutnotes.Note
+	refusedNotes      []checkoutnotes.Refused
+	checkoutDir       string
+	checkoutTrustPath string
+	detailsExpanded   bool // global expand/collapse for tool-call detail in chat
+	muted             bool
+	statusBarPosition string // "top" or "bottom"
+	agentModel        string // see Options.AgentModel
 
 	// showChatter controls whether routine tool-call activity (mesh
 	// operations) reaches the conversation pane at all. Off by default:
@@ -302,7 +333,7 @@ func New(client toolCaller, opts Options) Model {
 		statusBarPosition = "bottom"
 	}
 
-	return Model{
+	m := Model{
 		mcp:                  client,
 		attachMode:           opts.Attached,
 		meshServices:         opts.MeshServices,
@@ -328,8 +359,27 @@ func New(client toolCaller, opts Options) Model {
 		// wedged agent looks identical to a healthy one on screen: a cue
 		// that's off by default would silently defeat its own purpose for
 		// anyone who doesn't know to turn it on first.
-		muted: false,
+		muted:             false,
+		checkoutNotes:     append([]checkoutnotes.Note{}, opts.CheckoutNotes...),
+		refusedNotes:      append([]checkoutnotes.Refused{}, opts.CheckoutRefused...),
+		checkoutDir:       opts.CheckoutDir,
+		checkoutTrustPath: opts.CheckoutTrustPath,
 	}
+	// A file the operator trusted that has changed since is announced
+	// rather than quietly demoted: the next start delivers it as data, and
+	// the operator should hear that from the TUI, not discover it by
+	// wondering why the model ignored their notes.
+	for _, n := range m.checkoutNotes {
+		if !n.Changed {
+			continue
+		}
+		m.chatEntries = append(m.chatEntries, chatEntry{
+			kind: chatSystem,
+			at:   time.Now(),
+			text: fmt.Sprintf("%s changed since you trusted it: it reaches the model as data until you trust this version again (N to review).", n.Name),
+		})
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -635,6 +685,10 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleErrorPopupKey(msg)
 	}
 
+	if m.mode == ModeNotesPanel {
+		return m.handleNotesPanelKey(msg)
+	}
+
 	// Works from either Normal or Insert -- composing in $EDITOR is useful
 	// as a way INTO a message (from Normal) just as much as a way to
 	// finish one already started (from Insert), and always lands in
@@ -793,6 +847,11 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.meshServicesCursor = 0
 		}
 		return m, nil
+	case key.Matches(msg, DefaultKeyMap.ToggleNotes):
+		m.openNotes()
+		return m, nil
+	case key.Matches(msg, DefaultKeyMap.TrustNote):
+		return m.trustSelectedNote()
 	case key.Matches(msg, DefaultKeyMap.ToggleRealm):
 		m.realmExpanded = !m.realmExpanded
 		if m.realmExpanded {
@@ -837,21 +896,23 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// point of keeping the list at all.
 		return m.openErrorPopup(len(m.errorHistory) - 1), nil
 	case key.Matches(msg, DefaultKeyMap.Up):
-		if m.meshServicesExpanded {
+		switch {
+		case m.meshServicesExpanded:
 			if m.meshServicesCursor > 0 {
 				m.meshServicesCursor--
 			}
-		} else if !m.meshExpanded && !m.realmExpanded {
+		case !m.meshExpanded && !m.realmExpanded:
 			m.chatViewport.LineUp(1)
 		}
 		return m, nil
 	case key.Matches(msg, DefaultKeyMap.Down):
-		if m.meshServicesExpanded {
+		switch {
+		case m.meshServicesExpanded:
 			entries, _ := m.meshServiceEntries()
 			if m.meshServicesCursor < len(entries)-1 {
 				m.meshServicesCursor++
 			}
-		} else if !m.meshExpanded && !m.realmExpanded {
+		case !m.meshExpanded && !m.realmExpanded:
 			m.chatViewport.LineDown(1)
 		}
 		return m, nil
@@ -1178,6 +1239,17 @@ func (m Model) View() string {
 		return strings.Join([]string{popup, status}, "\n")
 	}
 
+	// The checkout-notes panel takes the whole body: trust is given to the
+	// note's content, so the content is what has to be readable, whole and
+	// scrolled, before t can act on it.
+	if m.mode == ModeNotesPanel && m.notesPanel != nil {
+		popup := m.renderNotesPanel()
+		if m.statusBarPosition == "top" {
+			return strings.Join([]string{status, popup}, "\n")
+		}
+		return strings.Join([]string{popup, status}, "\n")
+	}
+
 	var body string
 	switch {
 	case m.meshExpanded:
@@ -1264,7 +1336,7 @@ func (m Model) renderHintLines() []string {
 		if m.meshServicesExpanded && m.meshServices != nil {
 			insertHint = "↑↓: select  i: call selected"
 		}
-		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
+		return []string{mode + "  " + dimStyle.Render("m: mesh view  s: mesh services  r: realms  N: checkout notes  "+insertHint+"  y: copy answer  x: interrupt  ctrl+e: $EDITOR  v: verbose  e: expand  b: mute  q: quit  shift+drag: select")}
 	}
 }
 

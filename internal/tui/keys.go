@@ -38,6 +38,13 @@ type KeyMap struct {
 	OlderError key.Binding // p -- step back through the error history
 	NewerError key.Binding // n -- step forward again
 
+	// The checkout-notes panel (macula-io/macula-lazymesh#44): N opens it,
+	// t trusts the selected file. t is bound twice deliberately -- the ring
+	// pop-up's own t means "answer + trust" there, and neither can fire
+	// outside its own panel.
+	ToggleNotes key.Binding
+	TrustNote   key.Binding
+
 	Interrupt key.Binding // x -- cancel the in-flight turn (normal mode)
 
 	CopyChat key.Binding // y -- copy the last agent answer to the clipboard (normal mode)
@@ -67,6 +74,8 @@ var DefaultKeyMap = KeyMap{
 	Copy:               key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 	OlderError:         key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "older error")),
 	NewerError:         key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "newer error")),
+	ToggleNotes:        key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "checkout notes")),
+	TrustNote:          key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "trust this note")),
 	Interrupt:          key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "interrupt the running turn")),
 	CopyChat:           key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy last agent answer")),
 }
