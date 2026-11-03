@@ -12,6 +12,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/mattn/go-runewidth"
 )
@@ -1420,6 +1421,35 @@ func TestStreamingDeltasMergeIntoOneEntry(t *testing.T) {
 	}
 	if entry.text != "hello" {
 		t.Fatalf("entry text = %q, want %q", entry.text, "hello")
+	}
+}
+
+// TestStreamedCutReplyIsMarkedOnTheFinishedEntry: on the streaming path the
+// stop reason only exists on the completing message, so the entry the deltas
+// grew must pick it up -- otherwise the one path Raf's agent actually uses
+// would be the one without a marker (#77).
+func TestStreamedCutReplyIsMarkedOnTheFinishedEntry(t *testing.T) {
+	m := newTestModel(t)
+	update := func(ev agent.Event) {
+		next, _ := m.Update(agentEventMsg(ev))
+		m = next.(Model)
+	}
+	update(agent.Event{Kind: agent.EventAssistantDelta, Text: "the answer "})
+	update(agent.Event{Kind: agent.EventAssistantDelta, Text: "stops mid"})
+	update(agent.Event{Kind: agent.EventAssistantMessage, Text: "the answer stops mid", Stop: provider.Stop{Reason: provider.StopOutputLimit}})
+
+	if len(m.chatEntries) != 1 {
+		t.Fatalf("chat entries = %d, want 1", len(m.chatEntries))
+	}
+	entry := m.chatEntries[0]
+	if entry.stop.Reason != provider.StopOutputLimit {
+		t.Fatalf("entry stop = %+v, want %q", entry.stop, provider.StopOutputLimit)
+	}
+	if !strings.Contains(entry.render(false, 80), "reply cut: output limit reached") {
+		t.Fatalf("finished entry render lacks the cut marker: %q", entry.render(false, 80))
+	}
+	if text, ok := lastAssistantText(m.chatEntries); !ok || text != "the answer stops mid" {
+		t.Fatalf("lastAssistantText = (%q, %v), want the cut text kept whole", text, ok)
 	}
 }
 

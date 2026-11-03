@@ -92,7 +92,10 @@ type antUsage struct {
 type antMessagesResponse struct {
 	Content []antContentBlock `json:"content"`
 	Usage   antUsage          `json:"usage"`
-	Error   *struct {
+	// StopReason is why the turn ended: "end_turn" normally, "max_tokens"
+	// when the output budget ran out (#77).
+	StopReason string `json:"stop_reason"`
+	Error      *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -168,6 +171,7 @@ func fromAntResponse(resp antMessagesResponse) ChatResponse {
 			CompletionTokens: resp.Usage.OutputTokens,
 			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		},
+		Stop: stopFromReason(resp.StopReason),
 	}
 }
 
@@ -258,6 +262,10 @@ func (a *Anthropic) ChatCompletionStream(ctx context.Context, req ChatRequest, o
 	blocks := make(map[int]*blockState)
 	var text strings.Builder
 	var usage Usage
+	// message_stop is the terminal event; a stream that ends without it is
+	// a cut connection, not a finished turn (#77).
+	var stop Stop
+	terminal := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -285,6 +293,8 @@ func (a *Anthropic) ChatCompletionStream(ctx context.Context, req ChatRequest, o
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				PartialJSON string `json:"partial_json"`
+				// StopReason rides on the message_delta event (#77).
+				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -311,12 +321,18 @@ func (a *Anthropic) ChatCompletionStream(ctx context.Context, req ChatRequest, o
 			}
 		case "message_delta":
 			usage.CompletionTokens = event.Usage.OutputTokens
+			if event.Delta.StopReason != "" {
+				stop = stopFromReason(event.Delta.StopReason)
+			}
 		case "message_stop":
-			// terminal event
+			terminal = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return ChatResponse{}, fmt.Errorf("read stream: %w", err)
+	}
+	if !terminal {
+		stop = Stop{Reason: StopStreamEndedEarly}
 	}
 
 	out := Message{Role: RoleAssistant, Content: text.String()}
@@ -326,7 +342,7 @@ func (a *Anthropic) ChatCompletionStream(ctx context.Context, req ChatRequest, o
 		}
 	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	return ChatResponse{Message: out, Usage: usage}, nil
+	return ChatResponse{Message: out, Usage: usage, Stop: stop}, nil
 }
 
 // anthropicClaudeContextWindow is Claude's established context length for

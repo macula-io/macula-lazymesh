@@ -1608,6 +1608,10 @@ func metricsReader(n gen.Node, sessPid gen.PID, runtimeCounters *counters.Regist
 // many tokens of tool schemas they resent, with that as a share of the
 // cycle's prompt tokens (G17): the whole tool array travels on every
 // round, so this is the part of the bill that grows with rounds.
+//
+// stop= is the backend's own reason for ending its last round (#77): a
+// reply cut by an output cap reads "stop=output_limit" here instead of
+// looking like the model simply stopped talking.
 func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 	prompt := after.Usage.PromptTokens - before.Usage.PromptTokens
 	schemaTokens := estimateTokens(after.ToolSchemaBytes - before.ToolSchemaBytes)
@@ -1616,7 +1620,7 @@ func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 		share = schemaTokens * 100 / prompt
 	}
 	agentLog.Printf(
-		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens",
+		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens; stop=%s",
 		prompt,
 		after.Usage.CompletionTokens-before.Usage.CompletionTokens,
 		after.Usage.TotalTokens-before.Usage.TotalTokens,
@@ -1626,6 +1630,7 @@ func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 		schemaTokens,
 		share,
 		after.Usage.TotalTokens,
+		after.Stop.String(),
 	)
 }
 
@@ -2007,6 +2012,12 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
 		agentLog.Printf("[agent] %s", ev.Text)
+		// #77: a cut names itself next to the reply it truncated, so a
+		// reader does not have to match a short answer against the cycle's
+		// usage line to find out whether it was cut.
+		if ev.Stop.Cut() {
+			agentLog.Printf("[cut] %s", ev.Stop)
+		}
 	case agent.EventToolCall:
 		agentLog.Printf("[tool call] %s(%s)", ev.ToolName, ev.Text)
 	case agent.EventToolResult:
