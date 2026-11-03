@@ -2,7 +2,11 @@
 // drives, and the concrete backends that satisfy it.
 package provider
 
-import "context"
+import (
+	"context"
+	"strings"
+	"unicode"
+)
 
 // Role is a chat message's role, matching OpenAI-compatible chat completions.
 type Role string
@@ -123,21 +127,46 @@ func (s Stop) String() string {
 }
 
 // stopFromReason normalizes a backend's own stop word. OpenAI-compatible
-// backends say "stop"/"length"; Anthropic's Messages API says "end_turn",
+// backends say "stop"/"length", and -- easily missed, since it is not in
+// their own prose -- "tool_calls" ("function_call" on the legacy shape) at
+// the end of every round that asks for tools: that is the model finishing a
+// normal turn, not a cut. Anthropic's Messages API says "end_turn",
 // "stop_sequence", "tool_use", "max_tokens", "pause_turn", "refusal". A word
-// not in the table above is kept verbatim as StopOther's detail rather than
-// guessed at.
+// not in the table above is kept verbatim (control runes stripped, since it
+// reaches a terminal) as StopOther's detail rather than guessed at.
 func stopFromReason(reason string) Stop {
 	switch reason {
 	case "":
 		return Stop{Reason: StopUnspecified}
-	case "stop", "end_turn", "stop_sequence", "tool_use", "pause_turn":
+	case "stop", "tool_calls", "function_call", "end_turn", "stop_sequence", "tool_use":
 		return Stop{Reason: StopNormal}
 	case "length", "max_tokens":
 		return Stop{Reason: StopOutputLimit}
 	default:
-		return Stop{Reason: StopOther, Detail: reason}
+		// pause_turn lands here on purpose: the server paused a long turn
+		// and expects the caller to continue, so the reply is NOT complete
+		// and belongs with the other cuts rather than with a finished turn.
+		return Stop{Reason: StopOther, Detail: printableReason(reason)}
 	}
+}
+
+// printableReason keeps a backend's own word safe to put on one terminal
+// line: escape and control runes are dropped, and an over-long word is cut.
+// The word is remote input rendered into agent.log and the chat pane, so it
+// must not be able to move the cursor, clear the screen or forge a line.
+func printableReason(reason string) string {
+	const maxLen = 40
+	var b strings.Builder
+	for _, r := range reason {
+		if unicode.IsControl(r) || !unicode.IsPrint(r) && r != ' ' {
+			continue
+		}
+		if b.Len() >= maxLen {
+			return b.String() + "..."
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // ChatResponse is the assistant's reply to a ChatRequest.

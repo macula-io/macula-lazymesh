@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -232,6 +233,43 @@ func TestAnthropic_Stream_ReportsOutputLimit(t *testing.T) {
 	}
 }
 
+// TestOpenAICompat_Stream_ToolCallRoundIsNotACut is R1 at the wire: the real
+// shape of a round that answers with text AND asks for a tool ends with
+// finish_reason "tool_calls". It must arrive with no marker, or every such
+// round looks truncated.
+func TestOpenAICompat_Stream_ToolCallRoundIsNotACut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`data: {"choices":[{"delta":{"content":"let me look"}}]}`,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"mesh_say","arguments":"{}"}}]}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+		}
+		for _, c := range chunks {
+			if _, err := w.Write([]byte(c + "\n\n")); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	d := NewDeepSeek(srv.URL, "deepseek-v4-flash", "test-key", nil)
+	resp, err := d.ChatCompletionStream(context.Background(), ChatRequest{}, func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatCompletionStream returned error: %v", err)
+	}
+	if resp.Stop.Cut() {
+		t.Fatalf("stop = %+v, a tool-call round is a normal end", resp.Stop)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+}
+
 func TestStopFromReason(t *testing.T) {
 	cases := []struct {
 		reason string
@@ -244,6 +282,15 @@ func TestStopFromReason(t *testing.T) {
 		{"length", Stop{Reason: StopOutputLimit}},
 		{"max_tokens", Stop{Reason: StopOutputLimit}},
 		{"content_filter", Stop{Reason: StopOther, Detail: "content_filter"}},
+		// R1 (Pluto, r=1): every OpenAI-compatible tool-call round ends with
+		// one of these. They are a finished turn, and treating them as a cut
+		// put "reply cut: stopped early (tool_calls)" under every round that
+		// carried text beside its tool calls.
+		{"tool_calls", Stop{Reason: StopNormal}},
+		{"function_call", Stop{Reason: StopNormal}},
+		// Anthropic's pause_turn is the server pausing a long turn for the
+		// caller to continue: the reply is not complete, so it is a cut.
+		{"pause_turn", Stop{Reason: StopOther, Detail: "pause_turn"}},
 	}
 	for _, c := range cases {
 		if got := stopFromReason(c.reason); got != c.want {
@@ -266,5 +313,32 @@ func TestStopString(t *testing.T) {
 		if got := c.stop.String(); got != c.want {
 			t.Errorf("%+v.String() = %q, want %q", c.stop, got, c.want)
 		}
+	}
+}
+
+// TestProbeToolCallsFinishIsNotACut is the failing probe from the r=1 review,
+// kept as a regression check. A tool-call round is how a normal turn that
+// asks for tools ends; marking it cost every such round a false cut marker.
+func TestProbeToolCallsFinishIsNotACut(t *testing.T) {
+	for _, reason := range []string{"tool_calls", "function_call"} {
+		if s := stopFromReason(reason); s.Cut() {
+			t.Errorf("stopFromReason(%q) = %v, Cut() = true; a tool-call stop is a normal end", reason, s)
+		}
+	}
+}
+
+// TestUnclassifiedReasonIsPrintable: the backend's own word goes to a
+// terminal (agent.log, the chat pane), so a control rune in it must not be
+// able to move the cursor, clear the screen or forge a log line.
+func TestUnclassifiedReasonIsPrintable(t *testing.T) {
+	got := stopFromReason("bad\x1b[2Jreason\nnext").Detail
+	if strings.ContainsAny(got, "\x1b\n\r") {
+		t.Fatalf("detail = %q, want control runes stripped", got)
+	}
+	if !strings.Contains(got, "reason") || !strings.Contains(got, "next") {
+		t.Fatalf("detail = %q, want the printable characters kept", got)
+	}
+	if long := stopFromReason(strings.Repeat("x", 200)).Detail; len(long) > 48 {
+		t.Fatalf("detail of a 200-byte word = %d bytes, want it bounded", len(long))
 	}
 }
