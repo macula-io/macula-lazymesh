@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
 // Controller is the controller side of the control plane: it dials one
@@ -297,23 +298,25 @@ func (c *Controller) failPending() {
 // catch — it showed an operator every approval with empty arguments.
 func parseEvent(line []byte) (agent.Event, bool) {
 	var raw struct {
-		Type    string `json:"type"`
-		Text    string `json:"text"`
-		Tool    string `json:"tool"`
-		Args    string `json:"args"`
-		Result  string `json:"result"`
-		Error   string `json:"error"`
-		ID      string `json:"id"`
-		RingID  string `json:"ring_id"`
-		From    string `json:"from"`
-		Purpose string `json:"purpose"`
+		Type       string `json:"type"`
+		Text       string `json:"text"`
+		Tool       string `json:"tool"`
+		Args       string `json:"args"`
+		Result     string `json:"result"`
+		Error      string `json:"error"`
+		ID         string `json:"id"`
+		RingID     string `json:"ring_id"`
+		From       string `json:"from"`
+		Purpose    string `json:"purpose"`
+		Stop       string `json:"stop"`
+		StopDetail string `json:"stop_detail"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return agent.Event{}, false
 	}
 	switch raw.Type {
 	case "assistant":
-		return agent.Event{Kind: agent.EventAssistantMessage, Text: raw.Text}, true
+		return agent.Event{Kind: agent.EventAssistantMessage, Text: raw.Text, Stop: provider.Stop{Reason: provider.StopReason(raw.Stop), Detail: raw.StopDetail}}, true
 	case "delta":
 		return agent.Event{Kind: agent.EventAssistantDelta, Text: raw.Text}, true
 	case "tool_call":

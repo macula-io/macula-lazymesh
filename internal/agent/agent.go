@@ -88,6 +88,10 @@ type Event struct {
 	ID       string // set for EventApprovalRequested (the approval id) and EventRingPending (the ring id)
 	From     string // set for EventRingPending (the caller's petname)
 	Err      error  // set for EventError
+	// Stop is why the reply ended, set on the completed
+	// EventAssistantMessage (#77). Zero when the backend reported nothing;
+	// a consumer shows a cut marker only when Stop.Cut() is true.
+	Stop provider.Stop
 }
 
 // Loop is one running conversation against a provider, with some
@@ -106,6 +110,11 @@ type Loop struct {
 	// once.
 	rounds          int
 	toolSchemaBytes int
+	// lastStop is why the most recent completion round ended (#77): the
+	// backend's own finish_reason, normalized. Reported with the cycle's
+	// usage so a reply that was cut names itself in agent.log instead of
+	// looking like a short answer.
+	lastStop provider.Stop
 	// appended records exactly the messages the current Say call added,
 	// in order — the persistence delta. A position-based diff against a
 	// pre-Say count would break under compaction: trimHistory evicts old
@@ -131,6 +140,12 @@ func (l *Loop) Usage() provider.Usage {
 // many bytes of tool schemas those rounds sent in total.
 func (l *Loop) Rounds() (rounds, toolSchemaBytes int) {
 	return l.rounds, l.toolSchemaBytes
+}
+
+// LastStopReason reports why the most recent completion round ended. Zero
+// (StopUnspecified) means the backend reported nothing.
+func (l *Loop) LastStopReason() provider.Stop {
+	return l.lastStop
 }
 
 // MessageCount returns how many messages are currently in this Loop's own
@@ -298,6 +313,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		l.usage.TotalTokens += resp.Usage.TotalTokens
 		l.usage.PromptCacheHitTokens += resp.Usage.PromptCacheHitTokens
 		l.usage.PromptCacheMissTokens += resp.Usage.PromptCacheMissTokens
+		l.lastStop = resp.Stop
 
 		if len(resp.Message.ToolCalls) == 0 {
 			return nil
@@ -354,7 +370,7 @@ func (l *Loop) completionRound(ctx context.Context, toolSpecs []provider.ToolSpe
 			return provider.ChatResponse{}, err
 		}
 		if resp.Message.Content != "" {
-			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
+			emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content, Stop: resp.Stop})
 		}
 		return resp, nil
 	}
@@ -363,7 +379,7 @@ func (l *Loop) completionRound(ctx context.Context, toolSpecs []provider.ToolSpe
 		return provider.ChatResponse{}, err
 	}
 	if resp.Message.Content != "" {
-		emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content})
+		emit(events, Event{Kind: EventAssistantMessage, Text: resp.Message.Content, Stop: resp.Stop})
 	}
 	return resp, nil
 }

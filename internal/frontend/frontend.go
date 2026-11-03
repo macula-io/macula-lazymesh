@@ -611,7 +611,10 @@ func marshalEvent(ev agent.Event) ([]byte, error) {
 	var err error
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
-		line, err = json.Marshal(map[string]any{"type": "assistant", "text": ev.Text})
+		// stop/stop_detail (#77): an attached TUI renders the cut marker
+		// from these, so dropping them here would leave the marker working
+		// only for an in-process TUI -- the setup nobody debugs.
+		line, err = json.Marshal(map[string]any{"type": "assistant", "text": ev.Text, "stop": ev.Stop.Reason, "stop_detail": ev.Stop.Detail})
 	case agent.EventAssistantDelta:
 		line, err = json.Marshal(map[string]any{"type": "delta", "text": ev.Text})
 	case agent.EventToolCall:
