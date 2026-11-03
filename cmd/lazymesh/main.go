@@ -237,6 +237,14 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// already established for exactly this reason.
 	waiterMgr := roomwaiter.New(client, "")
 	defer waiterMgr.StopAll()
+	// roomChanged is the one door for room membership (#97): the event
+	// bridge for the model's tool calls, the TUI for a ring the operator
+	// answers, and the --room joined below all report through it, so the
+	// waiter watches a room whichever route joined it.
+	roomChanged := func(ev agent.Event) {
+		logEvent(agentLog, ev)
+		waiterMgr.Apply(ctx, ev)
+	}
 	var policy toolchain.Policy
 	var shell codingShell
 	var gitTool *gittools.Source
@@ -325,6 +333,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		if err := joinOperatorRoom(ctx, client, room); err != nil {
 			return err
 		}
+		roomChanged(agent.Event{Kind: agent.EventRoomJoined, Room: room})
 	}
 	initialRooms, err := seedInitialRooms(ctx, client)
 	if err != nil {
@@ -441,7 +450,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	}
 	defer sessionhost.StopSession(node, sessPid)
 	runtimeCounters := counters.New()
-	bridgePid, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, runtimeCounters)
+	bridgePid, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, roomChanged, runtimeCounters)
 	if err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
@@ -568,6 +577,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		Leader:             leader,
 		ContactPolicyFile:  cfg.ContactPolicyFile,
 		AutoAcceptKnown:    config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
+		RoomChanged:        roomChanged,
 		AgentModel:         agentModelLabel,
 		MeshServices:       meshSvc, // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices' own doc
 		// The l key opens this file in $EDITOR. The same logPath the file
@@ -1866,38 +1876,6 @@ func parseJoinedRooms(resultJSON string) []string {
 	return rooms
 }
 
-// parseRoomTopic extracts a top-level "room_topic" string field --
-// mesh_join_room/mesh_leave_room/mesh_ring's own result shape (unlike
-// mesh_rooms's own {"joined": [...]} array, each of these reports exactly
-// one room). "" on anything unparseable or absent, e.g. an error result
-// from a failed call -- never misfires waiterMgr.Add/Remove on those.
-func parseRoomTopic(resultJSON string) string {
-	var parsed struct {
-		RoomTopic string `json:"room_topic"`
-	}
-	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil {
-		return ""
-	}
-	return parsed.RoomTopic
-}
-
-// parseAnsweredRingRoom extracts mesh_answer_ring's own room_topic, but
-// only when answer 1 (accept) actually joined it -- ring_service.ts's
-// answerPendingRing always reports room_topic in its result, accept or
-// decline, but only calls joinRoom on accept. Reporting a decline's
-// room_topic here would tell waiterMgr to watch a room this agent was
-// never actually added to.
-func parseAnsweredRingRoom(resultJSON string) (string, bool) {
-	var parsed struct {
-		Answer    int    `json:"answer"`
-		RoomTopic string `json:"room_topic"`
-	}
-	if err := json.Unmarshal([]byte(resultJSON), &parsed); err != nil || parsed.Answer != 1 || parsed.RoomTopic == "" {
-		return "", false
-	}
-	return parsed.RoomTopic, true
-}
-
 // buildRosterGate builds the roster gate the configuration asks for: an
 // enforcing one in the coding profile, which requires a roster; an
 // observing one in the mesh profile when a roster is set, so the filter
@@ -1947,7 +1925,7 @@ func joinOperatorRoom(ctx context.Context, client rostergate.Caller, room string
 	if err != nil {
 		return fmt.Errorf("join room %s: %w", room, err)
 	}
-	if parseRoomTopic(result) != room {
+	if agent.RoomTopicOf(result) != room {
 		return fmt.Errorf("join room %s: the mesh did not confirm the join: %s", room, result)
 	}
 	return nil
@@ -2083,6 +2061,10 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 		agentLog.Printf("[stopped] agent stopped after repeated failures")
 	case agent.EventListening:
 		agentLog.Printf("[listening] waiting for the next human message, room arrival, or periodic check")
+	case agent.EventRoomJoined:
+		agentLog.Printf("[room] joined %s, now watched", ev.Room)
+	case agent.EventRoomLeft:
+		agentLog.Printf("[room] left %s, no longer watched", ev.Room)
 	}
 }
 

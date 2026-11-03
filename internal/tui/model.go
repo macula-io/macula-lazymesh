@@ -160,6 +160,12 @@ type Options struct {
 	ContactPolicyFile string
 	AutoAcceptKnown   bool
 
+	// RoomChanged is the session's one door for room membership (#97):
+	// a ring the operator answers, or one auto-accepted, is reported to it
+	// as agent.EventRoomJoined, so the room-waiter watches that room. nil
+	// reports nothing (an attached TUI answers no rings itself).
+	RoomChanged func(agent.Event)
+
 	// AgentModel is shown in the status strip (e.g. "deepseek/deepseek-v4-flash")
 	// so an operator watching live can see which provider/model is actually
 	// driving the agent, rather than having to go read config.yaml. Leave
@@ -243,6 +249,7 @@ type Model struct {
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
+	roomChanged       func(agent.Event)
 	seenRingIDs       map[string]bool // rings already auto-accepted, answered via the pop-up, or dismissed -- never re-surfaced
 
 	state   meshState
@@ -491,6 +498,7 @@ func New(client toolCaller, opts Options) Model {
 		approvalResolvedCh:   opts.ApprovalResolvedCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
+		roomChanged:          opts.RoomChanged,
 		seenRingIDs:          make(map[string]bool),
 		mode:                 ModeCompose,
 		statusBarPosition:    statusBarPosition,
@@ -1403,7 +1411,7 @@ func (m *Model) processPendingRings() []tea.Cmd {
 				at:   time.Now(),
 				text: termTextOf(fmt.Sprintf("auto-accepted ring from %s (trusted)", displayName(ring.Peer, ring.PeerPetname))),
 			})
-			cmds = append(cmds, answerRingCmd(m.mcp, ring.RingID, answerAccept, false, ""))
+			cmds = append(cmds, answerRingCmd(m.mcp, m.roomChanged, ring.RingID, answerAccept, false, ""))
 			continue
 		}
 		if m.personIdle() && m.pendingRingPopup == nil {

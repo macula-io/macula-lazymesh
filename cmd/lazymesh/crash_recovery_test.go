@@ -133,7 +133,7 @@ func TestCrashRecovery_NoResendAfterACrashFollowingMeshSay(t *testing.T) {
 	tuiOut := agent.NewOutlet(ctx.Done(), events)
 	frontendOut := agent.NewOutlet(ctx.Done(), nil)
 	agentLog := log.New(io.Discard, "", 0)
-	bridge, err := startEventBridge(n, ctx, sess, tuiOut, frontendOut, agentLog, roomwaiter.New(nil, ""), counters.New())
+	bridge, err := startEventBridge(n, ctx, sess, tuiOut, frontendOut, agentLog, roomwaiter.New(nil, ""), func(agent.Event) {}, counters.New())
 	if err != nil {
 		t.Fatal(err)
 	}

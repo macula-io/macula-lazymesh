@@ -75,6 +75,12 @@ func TestEventBridge_ApprovalSurvivesADeltaFlood(t *testing.T) {
 // stops it when the test ends.
 func spawnBridge(t *testing.T, tuiEvents, frontendEvents chan agent.Event) (gen.Node, gen.PID) {
 	t.Helper()
+	return spawnBridgeWith(t, tuiEvents, frontendEvents, func(agent.Event) {})
+}
+
+// spawnBridgeWith is spawnBridge with the membership door the test watches.
+func spawnBridgeWith(t *testing.T, tuiEvents, frontendEvents chan agent.Event, roomChanged func(agent.Event)) (gen.Node, gen.PID) {
+	t.Helper()
 	node, err := sessionhost.Node(io.Discard)
 	if err != nil {
 		t.Fatalf("boot node: %v", err)
@@ -83,7 +89,7 @@ func spawnBridge(t *testing.T, tuiEvents, frontendEvents chan agent.Event) (gen.
 	t.Cleanup(cancel)
 	bridge, err := node.Spawn(eventBridgeFactory, gen.ProcessOptions{},
 		ctx, agent.NewOutlet(ctx.Done(), tuiEvents), agent.NewOutlet(ctx.Done(), frontendEvents),
-		log.New(io.Discard, "", 0), (*roomwaiter.Manager)(nil), counters.New())
+		log.New(io.Discard, "", 0), (*roomwaiter.Manager)(nil), roomChanged, counters.New())
 	if err != nil {
 		t.Fatalf("spawn bridge: %v", err)
 	}
@@ -118,5 +124,39 @@ func TestEventBridge_AnUnreadTUIDoesNotHoldBackTheSocket(t *testing.T) {
 		case <-timeout:
 			t.Fatalf("with the TUI not reading, the socket got %d events and never the approval", got)
 		}
+	}
+}
+
+// #97: a membership tool result reaches the one roomChanged door as a
+// membership event; a declined ring does not.
+func TestEventBridge_MembershipToolResultsGoThroughRoomChanged(t *testing.T) {
+	changes := make(chan agent.Event, 4)
+	node, bridge := spawnBridgeWith(t, make(chan agent.Event, 8), make(chan agent.Event, 8), func(ev agent.Event) { changes <- ev })
+
+	results := []agent.Event{
+		{Kind: agent.EventToolResult, ToolName: "mesh_answer_ring", Text: `{"answer":2,"room_topic":"agents.room.declined"}`},
+		{Kind: agent.EventToolResult, ToolName: "mesh_join_room", Text: `{"room_topic":"agents.room.a"}`},
+		{Kind: agent.EventToolResult, ToolName: "mesh_leave_room", Text: `{"room_topic":"agents.room.a"}`},
+	}
+	for _, ev := range results {
+		if err := node.Send(bridge, sessionhost.Event{Event: ev}); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	}
+	want := []agent.Event{{Kind: agent.EventRoomJoined, Room: "agents.room.a"}, {Kind: agent.EventRoomLeft, Room: "agents.room.a"}}
+	for _, w := range want {
+		select {
+		case got := <-changes:
+			if got.Kind != w.Kind || got.Room != w.Room {
+				t.Fatalf("roomChanged got %+v, want %+v", got, w)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("roomChanged never got %+v", w)
+		}
+	}
+	select {
+	case extra := <-changes:
+		t.Fatalf("unexpected membership change %+v", extra)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

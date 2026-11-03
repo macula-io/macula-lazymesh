@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
 // mesh_answer_ring's own answer values (mirrors the mesh tool's own
@@ -28,12 +30,20 @@ type ringAnsweredMsg struct {
 // right after a successful accept) through the same MCP connection the
 // mesh-state polling uses. peerNodeID is only needed when alsoTrust is
 // set -- mesh_trust_agent is keyed by node_id, never by ring_id.
-func answerRingCmd(mcp toolCaller, ringID string, answer int, alsoTrust bool, peerNodeID string) tea.Cmd {
+//
+// An accept that joined the ring's room is reported to roomChanged before
+// anything else (#97): the answer made this node a member, whatever the
+// trust call does next, and the room-waiter must watch the room for the
+// caller's next message to wake the agent.
+func answerRingCmd(mcp toolCaller, roomChanged func(agent.Event), ringID string, answer int, alsoTrust bool, peerNodeID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		_, err := mcp.CallTool(ctx, "mesh_answer_ring", map[string]any{"ring_id": ringID, "answer": answer})
+		result, err := mcp.CallTool(ctx, "mesh_answer_ring", map[string]any{"ring_id": ringID, "answer": answer})
+		if ev, joined := agent.RoomChangeOf("mesh_answer_ring", result); err == nil && joined && roomChanged != nil {
+			roomChanged(ev)
+		}
 		if err == nil && alsoTrust {
 			if _, trustErr := mcp.CallTool(ctx, "mesh_trust_agent", map[string]any{"node_id": peerNodeID}); trustErr != nil {
 				err = fmt.Errorf("answered but failed to trust: %w", trustErr)
@@ -76,21 +86,21 @@ func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.ringArm = popupArm{}
 		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
-		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, false, "")
+		return m, answerRingCmd(m.mcp, m.roomChanged, r.RingID, answerAccept, false, "")
 	case key.Matches(msg, DefaultKeyMap.Decline):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.ringArm = popupArm{}
 		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
-		return m, answerRingCmd(m.mcp, r.RingID, answerDecline, false, "")
+		return m, answerRingCmd(m.mcp, m.roomChanged, r.RingID, answerDecline, false, "")
 	case key.Matches(msg, DefaultKeyMap.Trust):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
 		m.ringArm = popupArm{}
 		m = m.refocus(m.ringReturnTo)
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
-		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, true, r.Peer)
+		return m, answerRingCmd(m.mcp, m.roomChanged, r.RingID, answerAccept, true, r.Peer)
 	case key.Matches(msg, DefaultKeyMap.Normal): // Esc
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
