@@ -16,14 +16,15 @@ import (
 // each side) costs 4 columns total, so subtracting them here is what makes
 // the panel's OVERALL rendered width equal m.width -- the same full-width
 // goal chatViewport already achieves directly by setting its own width to
-// m.width with no wrapper. The floor guards the pre-first-WindowSizeMsg
-// state (m.width == 0) and pathologically narrow terminals.
+// m.width with no wrapper. There is no floor: a floor wider than the
+// terminal is exactly how a panel ends up wider than the screen it is shown
+// on, which the terminal then wraps (#113 review of #86's class). A width
+// of zero (before the first resize) wraps nothing.
 func (m Model) panelInnerWidth() int {
-	w := m.width - 4
-	if w < 20 {
-		w = 20
+	if m.width <= 0 {
+		return 1 << 20
 	}
-	return w
+	return max(m.width-4, 1)
 }
 
 // columnWidths distributes width across len(spec) bubbles/table columns.
@@ -110,6 +111,24 @@ func distributeColumnWidths(width int, spec []int, overhead int) []int {
 	widths[flexIdx] += budget - assigned // remainder from integer division, keeps the sum exact
 	if widths[flexIdx] < 1 {
 		widths[flexIdx] = 1
+	}
+	// Rounding every column UP to one cell can still leave the total above
+	// the budget at an extremely narrow width -- found at nine cells, where
+	// three columns rendered ten and the panel was one cell wider than the
+	// terminal (#113). Take the difference back off the widest columns,
+	// never below the same floor of one.
+	for {
+		total, widest := 0, -1
+		for i, w := range widths {
+			total += w
+			if w > 1 && (widest < 0 || w > widths[widest]) {
+				widest = i
+			}
+		}
+		if total <= budget || widest < 0 {
+			break
+		}
+		widths[widest]--
 	}
 	return widths
 }
@@ -419,13 +438,22 @@ func (m Model) renderMeshServices() string {
 	// procedure name can hide which of several similarly-prefixed
 	// procedures (e.g. mcl-rag/search_chunks_semantic vs.
 	// mcl-rag/get_source_by_id) a row actually is.
-	widths := columnWidths(inner, []int{-1, 11, 40})
+	//
+	// Which of the columns are shown at all follows the width (#113): the
+	// description goes first, then the status, and on a terminal too narrow
+	// for even one table column the rows are written as plain lines. A table
+	// that cannot fit is a table the terminal wraps, one row taller per
+	// line.
+	cols, widths := meshServiceColumns(inner)
+	if cols == nil {
+		b.WriteString(meshServicePlainRows(entries, inner, enabled, discovered))
+		return strings.TrimRight(b.String(), "\n")
+	}
+	for i := range cols {
+		cols[i].Width = widths[i]
+	}
 	t := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "Procedure", Width: widths[0]},
-			{Title: "Status", Width: widths[1]},
-			{Title: "Description", Width: widths[2]},
-		}),
+		table.WithColumns(cols),
 		table.WithWidth(inner),
 		table.WithHeight(len(entries)+1),
 		// meshServiceTableStyles, not the shared tableStyles() every OTHER
@@ -443,11 +471,7 @@ func (m Model) renderMeshServices() string {
 	)
 	rows := make([]table.Row, 0, len(entries))
 	for _, e := range entries {
-		rows = append(rows, table.Row{
-			e.Procedure(),
-			meshServiceStatusLabel(enabled, discovered, e.Live),
-			e.Description,
-		})
+		rows = append(rows, meshServiceRow(e, len(cols), enabled, discovered))
 	}
 	t.SetRows(rows)
 	if len(entries) > 0 {
@@ -455,6 +479,57 @@ func (m Model) renderMeshServices() string {
 	}
 	b.WriteString(t.View())
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// meshServiceColumns is the table this panel can show at inner cells of
+// content width, with the widths already distributed across them. It is a
+// list of what FITS, not of what fits ideally: bubbles/table spends two
+// cells of padding per column on top of the column's own width, so three
+// columns need nine cells, two need six, one needs three, and below three
+// there is no table at all (#113). The order the columns go in is the order
+// an operator reads them in reverse: the description is dropped first, the
+// status second, and the procedure's name is the last thing to go.
+func meshServiceColumns(inner int) ([]table.Column, []int) {
+	switch {
+	case inner >= 9:
+		return []table.Column{{Title: "Procedure"}, {Title: "Status"}, {Title: "Description"}},
+			columnWidths(inner, []int{-1, 11, 40})
+	case inner >= 6:
+		return []table.Column{{Title: "Procedure"}, {Title: "Status"}},
+			columnWidths(inner, []int{-1, 11})
+	case inner >= 3:
+		return []table.Column{{Title: "Procedure"}}, columnWidths(inner, []int{-1})
+	}
+	return nil, nil
+}
+
+// meshServiceRow is one table row with as many cells as the panel is
+// showing columns (#113).
+func meshServiceRow(e meshservices.ServiceStatus, columns int, enabled, discovered bool) table.Row {
+	row := table.Row{e.Procedure()}
+	if columns > 1 {
+		row = append(row, meshServiceStatusLabel(enabled, discovered, e.Live))
+	}
+	if columns > 2 {
+		row = append(row, e.Description)
+	}
+	return row
+}
+
+// meshServicePlainRows is the list at a width where no table fits: each
+// entry is its procedure's name, wrapped, with its status on the line
+// after. Nothing is dropped that the panel can still show -- the
+// description is, because a description cut to one or two cells says
+// nothing (#113).
+func meshServicePlainRows(entries []meshservices.ServiceStatus, inner int, enabled, discovered bool) string {
+	var b strings.Builder
+	for _, e := range entries {
+		for _, line := range wrapCells(termTextOf(e.Procedure()), inner) {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString(fitCells(meshServiceStatusLabel(enabled, discovered, e.Live), inner) + "\n")
+	}
+	return b.String()
 }
 
 // meshServiceTableStyles is tableStyles() with a real Selected style --
@@ -477,7 +552,11 @@ func (m Model) renderMeshServiceCallInput() string {
 		b.WriteString(titleStyle.Render(line) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.meshServiceCallInput.View())
+	// The field is one row that has to fit the panel: its prompt and its
+	// cursor can together take a cell more than the width it was given
+	// (#113). Cutting the last cell is the difference between a box the
+	// terminal wraps and one it does not.
+	b.WriteString(fitCells(m.meshServiceCallInput.View(), m.panelInnerWidth()))
 	return b.String()
 }
 

@@ -1725,6 +1725,18 @@ var (
 	summaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8"))
 )
 
+// panelFrame draws a panel's content in its box: the rounded border with its
+// padding while the terminal can hold one, the bare content when it cannot.
+// The border and padding cost four cells, so below five columns a box is
+// wider than the screen and the terminal wraps it -- the class #86 closed for
+// the status strip and #112 for the ring pop-up (#113).
+func (m Model) panelFrame(content string) string {
+	if m.width > 0 && m.width <= 4 {
+		return content
+	}
+	return panelStyle.Render(content)
+}
+
 func (m Model) View() string {
 	status := m.renderStatusStrip()
 
@@ -2142,9 +2154,9 @@ func (m Model) renderInputLine() string {
 
 func (m Model) renderExpandedMesh() string {
 	var b strings.Builder
-	b.WriteString(panelStyle.Render(m.renderRooms()) + "\n")
-	b.WriteString(panelStyle.Render(m.renderPendingRings()) + "\n")
-	b.WriteString(panelStyle.Render(m.renderPresence()))
+	b.WriteString(m.panelFrame(m.renderRooms()) + "\n")
+	b.WriteString(m.panelFrame(m.renderPendingRings()) + "\n")
+	b.WriteString(m.panelFrame(m.renderPresence()))
 	return b.String()
 }
 
@@ -2229,13 +2241,13 @@ func (m Model) renderMeshOverlay() string {
 // stack's own pin-to-top layout already has just enough margin left for
 // the chat pane without a 4th panel competing for it.
 func (m Model) renderMeshServicesOverlay() string {
-	return m.renderOverlay(panelStyle.Render(m.renderMeshServices()))
+	return m.renderOverlay(m.panelFrame(m.renderMeshServices()))
 }
 
 // renderRealmsOverlay is the `r` panel's own overlay, same shape as `m`/
 // `s` and mutually exclusive with both.
 func (m Model) renderRealmsOverlay() string {
-	return m.renderOverlay(panelStyle.Render(m.renderRealms()))
+	return m.renderOverlay(m.panelFrame(m.renderRealms()))
 }
 
 // chatContentLines is the chat pane's actual content, one entry per
