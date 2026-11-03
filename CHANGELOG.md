@@ -120,6 +120,14 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Changed
 
+- **The agent can explain how a realm is joined (#73).** Its system prompt now
+  says that realms are joined by the operator, never by it: the configured
+  leader then `r` opens the realms view, `Enter` on an empty message box opens
+  the join input, and the realm name is typed there. Asked "are you in
+  io.macula?" or "why can't you join a realm?", it names that route instead of
+  stopping at "someone configured this node". The leader is the configured one
+  (#63), and the agent is still given no way to join a realm itself. Both
+  profiles carry the line — the standard one and the coding profile.
 - **The leader key is configurable (#63).** `leader_key` in `config.yaml`
   moves the key that arms the command leader; the default stays `ctrl+x`.
   Only a ctrl key and one lowercase letter is accepted. A key the message
