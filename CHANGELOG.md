@@ -13,6 +13,25 @@ goreleaser from a `v*` tag; this file records what each one changes.
   arrives under you. The key is read from the keymap and the configured
   leader, so it is always the one that works. The marker goes as soon as
   you are back at the bottom, by that key, a page key or the wheel.
+
+- **Context use and spend on the summary line (#78 gap 4).** After each
+  completion round that reports token usage, the summary line shows what
+  the conversation holds against the model's window and what this run has
+  used, beside the model: `context 12.3k/200k (6%) · 48.1k this run`. A
+  backend that reports no usage shows nothing, one without a known window
+  shows the tokens without a share, and a terminal too narrow for the
+  whole figure shows none of it. The figure travels on the
+  control socket as `{"type":"usage"}`, so `lazymesh attach` shows it too;
+  a controller older than this skips the line.
+
+- **Prompt history (#78 gap 5).** Up in an empty message box gives back
+  the last prompt you sent, further ups walk back through the last 50, and
+  down walks forward again to an empty box. A recalled prompt you edit is
+  your draft, and a draft is never replaced. The list is kept per checkout
+  in `history/<fingerprint>.jsonl` beside the session logs, prompt text
+  only, created `0600` in a `0700` directory; a symlink or a file others
+  can read at that path is refused. `forget_prompts: true` turns it off.
+
 - **Read, search and patch inside the checkout (#46, #38 slice D).** Two
   new local tools for the coding profile. `search` finds a literal string
   or a regular expression and returns `path:line:text` per match,
@@ -126,6 +145,14 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Changed
 
+- **The agent can explain how a realm is joined (#73).** Its system prompt now
+  says that realms are joined by the operator, never by it: the configured
+  leader then `r` opens the realms view, `Enter` on an empty message box opens
+  the join input, and the realm name is typed there. Asked "are you in
+  io.macula?" or "why can't you join a realm?", it names that route instead of
+  stopping at "someone configured this node". The leader is the configured one
+  (#63), and the agent is still given no way to join a realm itself. Both
+  profiles carry the line — the standard one and the coding profile.
 - **The leader key is configurable (#63).** `leader_key` in `config.yaml`
   moves the key that arms the command leader; the default stays `ctrl+x`.
   Only a ctrl key and one lowercase letter is accepted. A key the message

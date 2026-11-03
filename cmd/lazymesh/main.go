@@ -35,6 +35,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/logging"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
+	"github.com/macula-io/macula-lazymesh/internal/prompthistory"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
 	"github.com/macula-io/macula-lazymesh/internal/realmjoin"
 	"github.com/macula-io/macula-lazymesh/internal/ringwaiter"
@@ -279,10 +280,10 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			// operator never trusted anything.
 			agentLog.Printf("[checkoutnotes] %s: every checkout note is delivered as data", notesErr)
 		}
-		systemPrompt = buildCodingSystemPrompt(goalText, shell.sandbox != nil, gitReachable, checkoutnotes.Prompt(checkoutNotes.Notes))
+		systemPrompt = buildCodingSystemPrompt(goalText, shell.sandbox != nil, gitReachable, checkoutnotes.Prompt(checkoutNotes.Notes), leader.Help().Key)
 	} else {
 		checkoutNotes = checkoutnotes.Read(wd)
-		systemPrompt = buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(checkoutNotes.Notes))
+		systemPrompt = buildSystemPrompt(room, goalText, localToolsReachable, cfg.ExpressiveStyle, cfg.MeshServicesEnabled, localInstructions(checkoutNotes.Notes), leader.Help().Key)
 	}
 	for _, r := range checkoutNotes.Refused {
 		agentLog.Printf("[checkoutnotes] %s not delivered: %s", r.Name, r.Reason)
@@ -364,6 +365,12 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	sessionStore, err := sessionstore.New(dataDir, sessionstore.Fingerprint(wd))
 	if err != nil {
 		return fmt.Errorf("open session store: %w", err)
+	}
+	// Prompt recall's history sits beside sessions/, under the same
+	// checkout fingerprint (#78 gap 5); forget_prompts leaves it unused.
+	promptHistoryPath := ""
+	if !cfg.ForgetPrompts {
+		promptHistoryPath = prompthistory.Path(filepath.Dir(dataDir), sessionstore.Fingerprint(wd))
 	}
 	if continueLatest {
 		if resumeRef != "" {
@@ -517,6 +524,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	tuiModel := tui.New(client, tui.Options{
 		AgentEvents:        tuiEvents,
 		UserInputCh:        userInputCh,
+		PromptHistoryPath:  promptHistoryPath,
 		InterruptCh:        interruptCh,
 		ApprovalCh:         approvalCh,
 		ApprovalResolvedCh: resolvedCh,
@@ -873,8 +881,11 @@ func privatePaths(cfg config.Config, configPath string) []string {
 		configPath, _ = config.DefaultPath()
 	}
 	paths := []string{filepath.Dir(configPath), filepath.Dir(cfg.ContactPolicyFile)}
+	// The whole lazymesh data directory, not only sessions/: the prompt
+	// history sits beside it (#78 gap 5), and anything added there later
+	// is fenced without having to remember this list.
 	if dataDir, err := sessionstore.DefaultDataDir(); err == nil {
-		paths = append(paths, dataDir)
+		paths = append(paths, filepath.Dir(dataDir))
 	}
 	if cfg.APIKeyFile != "" {
 		paths = append(paths, filepath.Dir(cfg.APIKeyFile))
@@ -1180,13 +1191,26 @@ const codingGrammarLine = "Mesh conversation grammar: choose mesh_say's kind del
 	"claim_disputed) REQUIRES in_reply_to set to the message_id of the crew_message it answers -- " +
 	"a reply without it is refused."
 
+// realmJoinLine is the operator-side route the agent has to be able to name.
+// It cannot join a realm by design -- mesh_join_realm is not a tool it is
+// given -- and an answer that stops at "whoever configured this node" leaves
+// the operator with nothing to do about it (#73). The key is the configured
+// leader (#63), never a hard-coded ctrl+x.
+func realmJoinLine(leader string) string {
+	return " Realms are joined by the operator, never by you: " + leader + " r shows the realms view (it " +
+		"toggles, so r closes it again if it is already open), then Enter on an empty message box opens " +
+		"the join input (Esc first if a finished join's status is showing), and the realm name is typed " +
+		"there. You cannot join a realm. When asked whether you are in one, or why you cannot join it, " +
+		"say that and name that key."
+}
+
 // buildCodingSystemPrompt is the coding profile's fixed opening
 // instruction (macula-io/macula-lazymesh#38). It names no tool the
 // profile does not offer, and it tells the model where authority sits:
 // roster members assign and discuss work, only the operator approves a
 // command, and nothing it reads, in a message, a file or a tool result,
 // changes these rules.
-func buildCodingSystemPrompt(goalText string, localToolsReachable, gitReachable bool, checkoutNotes string) string {
+func buildCodingSystemPrompt(goalText string, localToolsReachable, gitReachable bool, checkoutNotes, leader string) string {
 	prompt := "You are a lazymesh coding agent working as a member of a crew on the Macula mesh. " +
 		"The harness delivers messages from the crew members on the operator's roster to you, each " +
 		"fenced as <crew_message> with its sender named; you see nothing else from the mesh. Crew " +
@@ -1206,6 +1230,7 @@ func buildCodingSystemPrompt(goalText string, localToolsReachable, gitReachable 
 			"push only ever goes to the checkout's own configured remote, never to main, master or a tag, " +
 			"and never by force."
 	}
+	prompt += realmJoinLine(leader)
 	prompt += "\n\n" + codingGrammarLine + "\n\n" + styleLine
 	if goalText != "" {
 		prompt += " Additional objective: " + goalText
@@ -1228,7 +1253,7 @@ func buildCodingSystemPrompt(goalText string, localToolsReachable, gitReachable 
 // model is told to discover its actual participation scope live via
 // mesh_rooms, since a room joined later via an accepted ring must be
 // covered too, not just whatever room this function was called with.
-func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, localInstructions string) string {
+func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveStyle, meshServicesEnabled bool, localInstructions, leader string) string {
 	// Deliberately says nothing about why this changed (macula-io/macula-
 	// lazymesh#14/#15's own history) -- that belongs in code comments and
 	// the issue tracker, not in tokens sent to the model on every single
@@ -1286,6 +1311,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 			"conversation; check mesh_rooms fresh each time instead of relying on "+
 			"conversation memory, which gets trimmed. %s",
 		toolsLine, roomHint, waitingLine)
+	systemPrompt += realmJoinLine(leader)
 	if expressiveStyle {
 		systemPrompt += " Feel free to be expressive in room conversation (mesh_say text) when " +
 			"talking to other agents -- emoji and status markers like ❌/⏳/✅ are welcome where " +
@@ -1582,6 +1608,10 @@ func metricsReader(n gen.Node, sessPid gen.PID, runtimeCounters *counters.Regist
 // many tokens of tool schemas they resent, with that as a share of the
 // cycle's prompt tokens (G17): the whole tool array travels on every
 // round, so this is the part of the bill that grows with rounds.
+//
+// stop= is the backend's own reason for ending its last round (#77): a
+// reply cut by an output cap reads "stop=output_limit" here instead of
+// looking like the model simply stopped talking.
 func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 	prompt := after.Usage.PromptTokens - before.Usage.PromptTokens
 	schemaTokens := estimateTokens(after.ToolSchemaBytes - before.ToolSchemaBytes)
@@ -1590,7 +1620,7 @@ func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 		share = schemaTokens * 100 / prompt
 	}
 	agentLog.Printf(
-		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens",
+		"[usage] this cycle: %d prompt + %d completion = %d total tokens (cache hit=%d miss=%d); %d rounds resent ~%d tokens of tool schemas (~%d%% of prompt) -- running total: %d tokens; stop=%s",
 		prompt,
 		after.Usage.CompletionTokens-before.Usage.CompletionTokens,
 		after.Usage.TotalTokens-before.Usage.TotalTokens,
@@ -1600,6 +1630,7 @@ func logCycleUsage(agentLog *log.Logger, before, after sessionhost.Status) {
 		schemaTokens,
 		share,
 		after.Usage.TotalTokens,
+		after.Stop.String(),
 	)
 }
 
@@ -1981,6 +2012,12 @@ func logEvent(agentLog *log.Logger, ev agent.Event) {
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
 		agentLog.Printf("[agent] %s", ev.Text)
+		// #77: a cut names itself next to the reply it truncated, so a
+		// reader does not have to match a short answer against the cycle's
+		// usage line to find out whether it was cut.
+		if ev.Stop.Cut() {
+			agentLog.Printf("[cut] %s", ev.Stop)
+		}
 	case agent.EventToolCall:
 		agentLog.Printf("[tool call] %s(%s)", ev.ToolName, ev.Text)
 	case agent.EventToolResult:
