@@ -109,6 +109,13 @@ type Config struct {
 	// and the reason -- see tui.LeaderBinding, which owns the list because
 	// it owns the keymap.
 	LeaderKey string `yaml:"leader_key,omitempty"`
+	// ForgetPrompts turns prompt recall's history off (#78 gap 5): with it
+	// set, sent prompts are neither read from nor written to
+	// history/<fingerprint>.jsonl in the lazymesh data directory, and the
+	// up key in an empty composer recalls nothing. A prompt can hold a
+	// secret; the session log keeps it either way, this only stops the
+	// separate short list. Deleting that file removes what it holds.
+	ForgetPrompts bool `yaml:"forget_prompts,omitempty"`
 	// MaculaMCPVersion pins the exact @macula-io/mcp release Spawn and
 	// realmjoin.Join run. Empty (Default()'s own value, since 2026-09-10)
 	// means no pin: both float to npm's latest published release on every

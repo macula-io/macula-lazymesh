@@ -27,9 +27,11 @@ type dsChatStreamRequest struct {
 }
 
 // dsStreamChoice is one choice in a streamed chunk: deltas carry content
-// and tool-call fragments instead of complete messages.
+// and tool-call fragments instead of complete messages, and FinishReason
+// arrives non-empty on the chunk that ends the turn (#77).
 type dsStreamChoice struct {
-	Delta dsStreamDelta `json:"delta"`
+	Delta        dsStreamDelta `json:"delta"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type dsStreamDelta struct {
@@ -128,6 +130,7 @@ func callOpenAICompatChatCompletions(ctx context.Context, httpClient *http.Clien
 			PromptCacheHitTokens:  parsed.Usage.PromptCacheHitTokens,
 			PromptCacheMissTokens: parsed.Usage.PromptCacheMissTokens,
 		},
+		Stop: stopFromReason(parsed.Choices[0].FinishReason),
 	}, nil
 }
 
@@ -139,7 +142,10 @@ func callOpenAICompatChatCompletions(ctx context.Context, httpClient *http.Clien
 // chunks, so fragments are accumulated per index and assembled into the
 // final message's ToolCalls. Usage is taken from the final chunk's usage
 // object (zero when the backend didn't report one, same zero-as-fact
-// posture as the non-streaming path).
+// posture as the non-streaming path). The reply's Stop comes from the
+// chunk carrying finish_reason; a stream that ends without [DONE] and
+// without a finish_reason is reported as StopStreamEndedEarly instead of
+// passing a partial reply off as a complete one (#77).
 func callOpenAICompatChatCompletionsStream(ctx context.Context, httpClient *http.Client, baseURL, model, apiKey string, req ChatRequest, onDelta func(chunk string) error) (ChatResponse, error) {
 	body := dsChatStreamRequest{
 		dsChatRequest: dsChatRequest{
@@ -182,6 +188,12 @@ func callOpenAICompatChatCompletionsStream(ctx context.Context, httpClient *http
 	var content strings.Builder
 	toolCalls := make(map[int]*ToolCall)
 	var usage Usage
+	// stop is why the backend said it stopped; terminal records that the
+	// stream reached a real end ([DONE] or a finish_reason). A stream that
+	// ends with neither is a cut connection, not a finished turn -- the
+	// distinction #77 exists to draw.
+	var stop Stop
+	terminal := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -191,6 +203,7 @@ func callOpenAICompatChatCompletionsStream(ctx context.Context, httpClient *http
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			terminal = true
 			break
 		}
 		var chunk dsStreamChunk
@@ -198,6 +211,10 @@ func callOpenAICompatChatCompletionsStream(ctx context.Context, httpClient *http
 			return ChatResponse{}, fmt.Errorf("decode stream chunk %q: %w", data, err)
 		}
 		for _, choice := range chunk.Choices {
+			if choice.FinishReason != "" {
+				stop = stopFromReason(choice.FinishReason)
+				terminal = true
+			}
 			if choice.Delta.Content != "" {
 				content.WriteString(choice.Delta.Content)
 				if err := onDelta(choice.Delta.Content); err != nil {
@@ -226,10 +243,13 @@ func callOpenAICompatChatCompletionsStream(ctx context.Context, httpClient *http
 	if err := scanner.Err(); err != nil {
 		return ChatResponse{}, fmt.Errorf("read stream: %w", err)
 	}
+	if !terminal {
+		stop = Stop{Reason: StopStreamEndedEarly}
+	}
 
 	msg := Message{Role: RoleAssistant, Content: content.String()}
 	for _, acc := range toolCalls {
 		msg.ToolCalls = append(msg.ToolCalls, *acc)
 	}
-	return ChatResponse{Message: msg, Usage: usage}, nil
+	return ChatResponse{Message: msg, Usage: usage, Stop: stop}, nil
 }

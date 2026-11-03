@@ -796,6 +796,28 @@ func TestLogCycleUsage_ReportsRoundsAndToolSchemaCost(t *testing.T) {
 	}
 }
 
+// TestLogCycleUsage_NamesACutReply: the line an operator reads after a
+// surprise must say WHY the reply ended (#77) -- a capped reply is
+// "stop=output_limit", not an unexplained short answer.
+func TestLogCycleUsage_NamesACutReply(t *testing.T) {
+	cases := []struct {
+		stop provider.Stop
+		want string
+	}{
+		{provider.Stop{Reason: provider.StopOutputLimit}, "stop=output_limit"},
+		{provider.Stop{Reason: provider.StopStreamEndedEarly}, "stop=stream_ended_early"},
+		{provider.Stop{Reason: provider.StopOther, Detail: "content_filter"}, "stop=other(content_filter)"},
+		{provider.Stop{}, "stop=unspecified"},
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		logCycleUsage(log.New(&buf, "", 0), sessionhost.Status{}, sessionhost.Status{Stop: c.stop})
+		if line := buf.String(); !strings.Contains(line, c.want) {
+			t.Errorf("usage line for %+v = %q, want %q", c.stop, line, c.want)
+		}
+	}
+}
+
 // TestFirstPrompt_IdleStartWaitsForTheFirstEvent: a session started with
 // --idle-start runs no startup turn; its first turn is whatever arrives
 // first (here a controller's input), so a parent driving it as a worker
@@ -809,6 +831,28 @@ func TestFirstPrompt_IdleStartWaitsForTheFirstEvent(t *testing.T) {
 	}
 	if got, ok := firstPrompt(context.Background(), false, make(chan string), nil, nil, nil, nil, nil); !ok || got != agentInitialPrompt {
 		t.Fatalf("default start: first prompt = %q, %v", got, ok)
+	}
+}
+
+// TestLogEvent_NamesACutBesideTheReply: agent.log is where Raf looks after a
+// surprise, and a truncated reply has to say so on the line next to itself
+// (#77) -- the cycle's usage line is a different line and a different cadence.
+func TestLogEvent_NamesACutBesideTheReply(t *testing.T) {
+	var buf bytes.Buffer
+	logEvent(log.New(&buf, "", 0), agent.Event{Kind: agent.EventAssistantMessage, Text: "the answer stops mid", Stop: provider.Stop{Reason: provider.StopOutputLimit}})
+	logged := buf.String()
+	if !strings.Contains(logged, "[agent] the answer stops mid") || !strings.Contains(logged, "[cut] output_limit") {
+		t.Fatalf("agent.log = %q, want the reply and its cut reason", logged)
+	}
+}
+
+// TestLogEvent_QuietOnANormalReply: a finished turn logs exactly what it did
+// before #77, with no cut line to sort through.
+func TestLogEvent_QuietOnANormalReply(t *testing.T) {
+	var buf bytes.Buffer
+	logEvent(log.New(&buf, "", 0), agent.Event{Kind: agent.EventAssistantMessage, Text: "done", Stop: provider.Stop{Reason: provider.StopNormal}})
+	if logged := buf.String(); strings.Contains(logged, "[cut]") {
+		t.Fatalf("agent.log = %q, want no cut line for a normal stop", logged)
 	}
 }
 

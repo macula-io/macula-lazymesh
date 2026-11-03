@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/provider"
 )
 
 type chatEntryKind int
@@ -49,6 +50,16 @@ type chatEntry struct {
 	// operator straight away (#46) -- a change they did not see is not a
 	// review, and hunting for it behind a toggle is how it gets missed.
 	alwaysDetail bool
+	// raw is a tool result's text as the tool answered it; detail may hold
+	// only the diff decoded from it (#46).
+	raw string
+	// outcome is a tool call's result or error, folded into the call's
+	// entry when it arrives so the two read as one (#78 gap 1).
+	outcome *chatEntry
+	// stop is why the reply ended (#77). Kept beside text, never inside
+	// it: the entry's text is what scrollback and copy return, so the
+	// marker is rendered from this and the answer stays whole.
+	stop provider.Stop
 }
 
 // workingTreeDiffOf returns the diff a shell_exec result carries, and
@@ -71,13 +82,13 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	now := time.Now()
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
-		return chatEntry{kind: chatAssistant, at: now, text: ev.Text}
+		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, stop: ev.Stop}
 	case agent.EventAssistantDelta:
 		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, streaming: true}
 	case agent.EventToolCall:
 		return chatEntry{kind: chatToolCall, at: now, tool: ev.ToolName, text: fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 	case agent.EventToolResult:
-		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text, raw: ev.Text}
 		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
 		// A command that changed the checkout carries its diff (#46): the
 		// operator is shown the diff itself, decoded, not the result JSON
@@ -150,7 +161,29 @@ var (
 	chatErrorStyleTUI = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	chatSystemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
 	chatTimeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	// chatCutStyle marks a reply that ended before the model was done
+	// (#77): amber and bold, because a silently truncated answer reads as
+	// complete and an operator skimming scrollback must not have to.
+	chatCutStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 )
+
+// chatCutMarker is the visible marker under a reply that stopped for a
+// reason other than the model finishing. It is one place so the words
+// cannot drift between the pane and its tests.
+func chatCutMarker(s provider.Stop) string {
+	switch s.Reason {
+	case provider.StopOutputLimit:
+		return "reply cut: output limit reached"
+	case provider.StopStreamEndedEarly:
+		return "reply cut: stream ended early"
+	case provider.StopOther:
+		if s.Detail != "" {
+			return "reply cut: stopped early (" + s.Detail + ")"
+		}
+		return "reply cut: stopped early"
+	}
+	return ""
+}
 
 // render returns this entry's line(s), in expanded form if detailsExpanded
 // is on and this entry actually has separate detail to show. Assistant
@@ -161,11 +194,12 @@ var (
 // rendering in md.
 func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
+	if e.kind == chatToolCall {
+		return e.renderToolCall(ts, detailsExpanded, width)
+	}
 	text := e.text
 	if (detailsExpanded || e.alwaysDetail) && e.detail != "" && e.detail != e.text {
 		switch e.kind {
-		case chatToolCall:
-			text = fmt.Sprintf("→ %s(%s)", e.tool, e.detail)
 		case chatToolResult:
 			text = fmt.Sprintf("← %s: %s", e.tool, e.detail)
 		case chatError:
@@ -177,11 +211,15 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	case chatYou:
 		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
 	case chatAssistant:
-		return fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
-	case chatToolCall, chatToolResult:
-		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
+		body := fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
+		if marker := chatCutMarker(e.stop); marker != "" {
+			return body + "\n" + chatCutStyle.Render(marker)
+		}
+		return body
+	case chatToolResult:
+		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(neutralise(text)))
 	case chatError:
-		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(text))
+		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(neutralise(text)))
 	case chatSystem:
 		return fmt.Sprintf("%s %s", ts, chatSystemStyle.Render(text))
 	default:
