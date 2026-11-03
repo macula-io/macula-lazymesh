@@ -1434,15 +1434,13 @@ func runAgent(ctx context.Context, n gen.Node, root gen.PID, sess *currentSessio
 			// The session died before this turn even started. Reattach
 			// and start over with the same prompt — Say never ran, so
 			// nothing was answered twice.
-			newPid, rerr := reattachAndSubscribe(ctx, n, root, sessPid, bridge, agentLog)
-			if rerr != nil {
+			if rerr := reattachAndSubscribe(ctx, n, root, bridge, sess, agentLog); rerr != nil {
 				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
 				}
 				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
 				continue
 			}
-			sess.MoveTo(newPid)
 			continue
 		}
 
@@ -1451,15 +1449,13 @@ func runAgent(ctx context.Context, n gen.Node, root gen.PID, sess *currentSessio
 			// The session died mid-turn. Its replacement restored the
 			// crashed turn from the log; the operator is told which steps
 			// ran and decides whether to send the prompt again.
-			newPid, rerr := recoverFromCrash(ctx, n, root, sessPid, bridge, tuiEvents, frontendEvents, agentLog)
-			if rerr != nil {
+			if rerr := recoverFromCrash(ctx, n, root, bridge, sess, tuiEvents, frontendEvents, agentLog); rerr != nil {
 				if !failCycle(ctx, &consecutiveErrors, &backoff, agentLog, tuiEvents, frontendEvents, rerr) {
 					return
 				}
 				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
 				continue
 			}
-			sess.MoveTo(newPid)
 			var ok bool
 			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
 			if !ok {
@@ -1660,7 +1656,9 @@ func emitTui(tuiEvents, frontendEvents *agent.Outlet, ev agent.Event) {
 // totals for one scrape. The session actor answers status only between
 // turns, so a scrape during a long turn can time out reaching it; it then
 // reports the last totals it read, which are behind but never wrong in
-// direction (they only grow).
+// direction while one session lives. After a crash they restart from
+// zero: the replacement counts its own tokens and rounds (#107), which a
+// scraper sees as a counter reset.
 func metricsReader(n gen.Node, sess *currentSession, runtimeCounters *counters.Registry) func() (counters.Snapshot, counters.Totals) {
 	var mu sync.Mutex
 	var last counters.Totals

@@ -7,6 +7,7 @@ import (
 	"log"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/counters"
@@ -15,6 +16,7 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/roomwaiter"
 	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 	"github.com/macula-io/macula-lazymesh/internal/sessionstore"
+	"github.com/macula-io/macula-lazymesh/internal/toolchain"
 )
 
 // crashThenAskThenHangProvider crashes the first turn, asks for an
@@ -65,8 +67,8 @@ func TestCurrentSession_OperatorActsReachTheReplacementAfterACrash(t *testing.T)
 	}
 	p := &crashThenAskThenHangProvider{hanging: make(chan struct{})}
 	first, err := sessionhost.StartSession(n, root, sessionhost.SessionArgs{
-		Provider: p, Tools: &countingMeshTools{}, SystemPrompt: "test",
-		Store: store, SessionID: "s1", AskTools: []string{"git_push"},
+		Provider: p, SystemPrompt: "test", Store: store, SessionID: "s1",
+		Toolchain: toolchain.Policy{Base: &countingMeshTools{}, Allowlist: []string{"git_push"}, Ask: []string{"git_push"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,10 +81,15 @@ func TestCurrentSession_OperatorActsReachTheReplacementAfterACrash(t *testing.T)
 	frontendOut := agent.NewOutlet(ctx.Done(), nil)
 	agentLog := log.New(io.Discard, "", 0)
 	runtimeCounters := counters.New()
-	bridge, err := startEventBridge(n, ctx, first, tuiOut, frontendOut, agentLog, roomwaiter.New(nil, ""), runtimeCounters)
+	bridge, err := startEventBridge(n, ctx, first, tuiOut, frontendOut, agentLog, roomwaiter.New(nil, ""), func(agent.Event) {}, runtimeCounters)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The session must have moved before the operator is told the turn
+	// ended: delaying what follows the notice makes a late move fail the
+	// check below every time, not only when the scheduler says so.
+	afterCrashReported = func() { time.Sleep(100 * time.Millisecond) }
+	t.Cleanup(func() { afterCrashReported = func() {} })
 	interrupt := interruptCurrent(sess)
 	approve := approveCurrent(sess)
 	query := buildQueryHandler(n, sess, nil, runtimeCounters)
@@ -99,7 +106,7 @@ func TestCurrentSession_OperatorActsReachTheReplacementAfterACrash(t *testing.T)
 
 	awaitEvent(t, events, agent.EventTurnCrashed, nil)
 	if sess.Pid() == first {
-		t.Fatalf("the driver reattached but the current session is still the dead %s", first)
+		t.Fatalf("the crash was announced while the current session was still the dead %s", first)
 	}
 
 	userInput <- "push it"
