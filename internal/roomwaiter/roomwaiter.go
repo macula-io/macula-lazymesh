@@ -72,6 +72,9 @@ type Manager struct {
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	pending map[string]bool
+	// joined holds the rooms Add was told about: joined on purpose, so
+	// only Remove stops watching them, never a listing (#97 O1).
+	joined map[string]bool
 
 	arrivals chan Arrival
 }
@@ -85,6 +88,7 @@ func New(client Caller, host string) *Manager {
 		host:     host,
 		cancels:  make(map[string]context.CancelFunc),
 		pending:  make(map[string]bool),
+		joined:   make(map[string]bool),
 		arrivals: make(chan Arrival, 64),
 	}
 }
@@ -104,7 +108,10 @@ func (m *Manager) Ack(room string) {
 }
 
 // Sync starts a waiter for every room in joined not already watched, and
-// stops the waiter for every watched room no longer in joined.
+// stops the waiter for every watched room no longer in joined -- except a
+// room Add was told about. A mesh_rooms result can be older than the ring
+// the operator accepted while it ran (#97 O1); a room joined on purpose
+// leaves the watched set only through Remove.
 //
 // Reactive, not polling (macula-io/macula-lazymesh#14, Vega's flagged
 // requirement): callers feed this room lists observed from the agent
@@ -129,7 +136,7 @@ func (m *Manager) Sync(ctx context.Context, joined []string) {
 		go m.watch(roomCtx, room)
 	}
 	for room, cancel := range m.cancels {
-		if !want[room] {
+		if !want[room] && !m.joined[room] {
 			cancel()
 			delete(m.cancels, room)
 			delete(m.pending, room)
@@ -160,6 +167,7 @@ func (m *Manager) Sync(ctx context.Context, joined []string) {
 func (m *Manager) Add(ctx context.Context, room string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.joined[room] = true
 	if _, ok := m.cancels[room]; ok {
 		return
 	}
@@ -174,6 +182,7 @@ func (m *Manager) Add(ctx context.Context, room string) {
 func (m *Manager) Remove(room string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.joined, room)
 	if cancel, ok := m.cancels[room]; ok {
 		cancel()
 		delete(m.cancels, room)
