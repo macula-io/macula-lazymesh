@@ -7,6 +7,22 @@ import (
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
+// errorPopups: the popup shows, and its copy key copies, the error
+// history's text; the summary line shows the newest error.
+func TestChatText_ErrorPopupAndSummaryAreNeutralised(t *testing.T) {
+	m := newTestModelWithEvents(t)
+	m.recordError(errString(hostileText), m.clock())
+	assertNoTerminalControl(t, "error history (popup text and its copy)", m.errorHistory[0].text)
+	m = m.openErrorPopup(0)
+	assertNoTerminalControl(t, "error popup", m.renderErrorPopup())
+
+	summary := formatSummaryError("ctrl+x", errString(hostileText))
+	assertNoTerminalControl(t, "summary error", summary)
+	if strings.Contains(summary, "\n") {
+		t.Fatalf("the summary error is more than one row:\n%q", summary)
+	}
+}
+
 // hostileText carries what a model, or a peer through the model, could
 // write to make the operator's terminal act: an OSC 52 clipboard write,
 // an OSC 0 title write, a CSI clear screen, a C1 CSI, and a carriage
@@ -16,9 +32,13 @@ const hostileText = "fine " +
 	"\x1b]0;owned\x1b\\" +
 	"\x1b[2J" +
 	"\u009b2J" +
+	"\u202e" + // bidi override (Trojan Source)
 	"rm -rf ~\rls and the rest"
 
-var hostileBytes = []string{"]52;", "]0;", "\x07", "\r", "[2J", "\u009b", "cm0gLXJmIH4=", "owned"}
+// hostileBytes are what must never reach the terminal raw. The text of a
+// sequence ("]52;c;...") may: it is shown, with its ESC as ␛, because
+// deleting a control is how what follows it gets hidden (#83 review).
+var hostileBytes = []string{"\x1b]", "\x1b\\", "\x1b[2J", "\x07", "\r", "\u009b", "\u202e"}
 
 func assertNoTerminalControl(t *testing.T, what, got string) {
 	t.Helper()
