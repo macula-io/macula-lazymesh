@@ -72,3 +72,47 @@ func TestViewFitsTheTerminalScrolledUp(t *testing.T) {
 		})
 	}
 }
+
+// TestHeldApprovalLineKeepsTheToolName pins the one status line whose tail
+// was the part that mattered: clipped from the right it read "...cancel
+// ctrl+x) to ans" at 80 columns and "...or c" at 60, so an operator knew a
+// call was waiting but not which one (#86 review r=2). The banner and the
+// tool's name always survive; the explanation is what a narrow terminal
+// drops.
+func TestHeldApprovalLineKeepsTheToolName(t *testing.T) {
+	for _, width := range []int{60, 80, 140} {
+		t.Run(strconv.Itoa(width), func(t *testing.T) {
+			m := modelAt(t, width, 20)
+			m.deferredApproval = &ApprovalRequestEvent{Tool: "shell_exec", ID: "1", Args: `{"command":"id"}`}
+
+			var held string
+			for _, line := range m.statusLines() {
+				if strings.Contains(line, "APPROVAL WAITING") {
+					held = line
+				}
+			}
+			if held == "" {
+				t.Fatal("no held-approval line while a request was deferred")
+			}
+			if !strings.Contains(held, "shell_exec") {
+				t.Fatalf("at width %d the line does not name the waiting tool: %q", width, held)
+			}
+			if got := lipgloss.Width(held); got > width {
+				t.Fatalf("at width %d the line is %d cells: %q", width, got, held)
+			}
+		})
+	}
+
+	// Wide enough for the sentence, it says why the answer is held.
+	m := modelAt(t, 140, 20)
+	m.deferredApproval = &ApprovalRequestEvent{Tool: "shell_exec", ID: "1"}
+	var held string
+	for _, line := range m.statusLines() {
+		if strings.Contains(line, "APPROVAL WAITING") {
+			held = line
+		}
+	}
+	if !strings.Contains(held, "to answer") {
+		t.Fatalf("at 140 columns the explanation was dropped too: %q", held)
+	}
+}

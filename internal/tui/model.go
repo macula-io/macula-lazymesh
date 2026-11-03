@@ -1798,12 +1798,30 @@ func (m Model) statusLines() []string {
 // refused by its own timeout with nothing ever having asked (macula-lazymesh#62
 // review r=2, probe P3). It is one line, present only while something is held,
 // so the reserved-height math in resizeComponents follows it for free.
+//
+// The banner and the tool's name are what the line exists to say, so a
+// narrow terminal drops the sentence that explains *why* the answer is
+// held, never the name: the longest form that fits is the one shown, and
+// the shortest form is the banner with the name (#86 review r=2 -- cutting
+// this line from the tail hid exactly the part that mattered).
 func (m Model) renderHeldApprovalLine() (string, bool) {
 	if m.deferredApproval == nil {
 		return "", false
 	}
-	return statusStripStyle.Render("-- APPROVAL WAITING -- ") +
-		dimStyle.Render("stop typing (or close the panel, or cancel "+m.leaderLabel()+") to answer: "+m.deferredApproval.Tool), true
+	banner := statusStripStyle.Render("-- APPROVAL WAITING -- ")
+	tool := m.deferredApproval.Tool
+	explain := "stop typing (or close the panel, or cancel " + m.leaderLabel() + ") to answer: "
+	for _, form := range []string{
+		banner + dimStyle.Render(explain+tool),
+		banner + dimStyle.Render(tool),
+	} {
+		if m.width <= 0 || lipgloss.Width(form) <= m.width {
+			return form, true
+		}
+	}
+	// A tool name longer than the whole terminal: the name is still what
+	// the line says, and clipStatusLine cuts it as the last resort.
+	return banner + dimStyle.Render(tool), true
 }
 
 // renderHintLines is the shortcuts row. While the leader is pending it shows
