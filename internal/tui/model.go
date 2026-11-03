@@ -305,6 +305,10 @@ type Model struct {
 	leaderPending bool
 	leader        key.Binding
 
+	// usage is the latest usage report from the agent loop (#78 gap 4),
+	// the zero value until the first one: see usageSegment.
+	usage agent.UsageReport
+
 	// promptHistoryPath, prompts and recallAt are prompt recall (#78 gap
 	// 5, prompthistory.go): the file, the prompts it holds oldest first,
 	// and which one the composer shows -- len(prompts) when none.
@@ -1406,6 +1410,13 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		m.lastListeningAt = time.Now()
 	}
 
+	if ev.Kind == agent.EventUsageReported {
+		// A status figure, never a chat line: it arrives after every
+		// round and would bury the conversation.
+		m.usage = ev.Usage
+		return m, waitForAgentEvent(m.agentEvents)
+	}
+
 	if ev.Kind == agent.EventApprovalRequested {
 		next, cmd := m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
 		// A held request is a tool call waiting on a person who may never see
@@ -1806,9 +1817,6 @@ func (m Model) renderSummaryLine() string {
 	if !m.lastListeningAt.IsZero() {
 		tail += " · listening " + m.lastListeningAt.Format("15:04:05")
 	}
-	if tail != "" {
-		out += summaryStyle.Render(tail)
-	}
 
 	// Leads with "who am I" when known -- the dual-instance identity bug
 	// (two lazymesh instances silently sharing one mesh node_id, fixed in
@@ -1819,6 +1827,17 @@ func (m Model) renderSummaryLine() string {
 		identity := identityKey(self.NodeID, self.Petname)
 		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
 		out = name + summaryStyle.Render(" · ") + out
+	}
+	// The context figure sits beside the model it describes, ahead of the
+	// tail, and only when it fits whole in what the width leaves: the cut
+	// below would otherwise end it mid-number, and "context 64" or "(6"
+	// reads as a different figure (#78 gap 4 review).
+	if seg := summaryStyle.Render(" · " + usageSegment(m.usage)); m.usage.ContextTokens > 0 &&
+		(m.width == 0 || lipgloss.Width(out)+lipgloss.Width(seg) <= m.width) {
+		out += seg
+	}
+	if tail != "" {
+		out += summaryStyle.Render(tail)
 	}
 	if m.lastErr != nil {
 		out += "  " + formatSummaryError(m.leaderLabel(), m.lastErr)

@@ -75,7 +75,26 @@ const (
 	// ringing (#19): ID is the ring id an answer must carry, From the
 	// caller's petname, Text the ring's purpose.
 	EventRingPending
+	// EventUsageReported is emitted by Say after every completion round
+	// whose response reported token usage (#78 gap 4): Usage says what the
+	// conversation now holds, how large the model's window is, and what
+	// this run has used so far, so the TUI can show context use and
+	// spend without summing anything itself. A backend that reports no
+	// usage gets no event: zero would read as an empty context.
+	EventUsageReported
 )
+
+// UsageReport is the figure an EventUsageReported carries. ContextTokens
+// is the last round's prompt plus completion -- what the next request
+// carries at least. ContextWindow is the provider's own number, 0 when it
+// does not know one. RunTokens is what this Loop has used since this
+// process started it: a restored session's earlier rounds are not in it,
+// because their usage was never recorded with them.
+type UsageReport struct {
+	ContextTokens int
+	ContextWindow int
+	RunTokens     int
+}
 
 // Event is one step the loop took, emitted as it happens so a caller (the
 // TUI in particular) can render progress live instead of only seeing the
@@ -83,11 +102,12 @@ const (
 // one (an approval request's approval id); it is empty otherwise.
 type Event struct {
 	Kind     EventKind
-	Text     string // assistant content, or a tool's result text
-	ToolName string // set for EventToolCall / EventToolResult
-	ID       string // set for EventApprovalRequested (the approval id) and EventRingPending (the ring id)
-	From     string // set for EventRingPending (the caller's petname)
-	Err      error  // set for EventError
+	Text     string      // assistant content, or a tool's result text
+	ToolName string      // set for EventToolCall / EventToolResult
+	ID       string      // set for EventApprovalRequested (the approval id) and EventRingPending (the ring id)
+	From     string      // set for EventRingPending (the caller's petname)
+	Err      error       // set for EventError
+	Usage    UsageReport // set for EventUsageReported
 }
 
 // Loop is one running conversation against a provider, with some
@@ -125,6 +145,20 @@ type Loop struct {
 // otherwise -- see provider.Usage's own doc comment).
 func (l *Loop) Usage() provider.Usage {
 	return l.usage
+}
+
+// reportUsage emits the round's EventUsageReported, or nothing when the
+// backend reported no usage for it.
+func (l *Loop) reportUsage(round provider.Usage, events chan<- Event) {
+	held := round.PromptTokens + round.CompletionTokens
+	if held == 0 {
+		return
+	}
+	emit(events, Event{Kind: EventUsageReported, Usage: UsageReport{
+		ContextTokens: held,
+		ContextWindow: l.Provider.ContextWindow(),
+		RunTokens:     l.usage.PromptTokens + l.usage.CompletionTokens,
+	}})
 }
 
 // Rounds returns how many completion rounds this Loop has run and how
@@ -298,6 +332,7 @@ func (l *Loop) Say(ctx context.Context, userText string, events chan<- Event) er
 		l.usage.TotalTokens += resp.Usage.TotalTokens
 		l.usage.PromptCacheHitTokens += resp.Usage.PromptCacheHitTokens
 		l.usage.PromptCacheMissTokens += resp.Usage.PromptCacheMissTokens
+		l.reportUsage(resp.Usage, events)
 
 		if len(resp.Message.ToolCalls) == 0 {
 			return nil

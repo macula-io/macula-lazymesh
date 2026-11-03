@@ -307,6 +307,10 @@ func parseEvent(line []byte) (agent.Event, bool) {
 		RingID  string `json:"ring_id"`
 		From    string `json:"from"`
 		Purpose string `json:"purpose"`
+
+		ContextTokens int `json:"context_tokens"`
+		ContextWindow int `json:"context_window"`
+		RunTokens     int `json:"run_tokens"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return agent.Event{}, false
@@ -332,6 +336,8 @@ func parseEvent(line []byte) (agent.Event, bool) {
 		return agent.Event{Kind: agent.EventListening}, true
 	case "ring_pending":
 		return agent.Event{Kind: agent.EventRingPending, ID: raw.RingID, From: raw.From, Text: raw.Purpose}, true
+	case "usage":
+		return agent.Event{Kind: agent.EventUsageReported, Usage: agent.UsageReport{ContextTokens: raw.ContextTokens, ContextWindow: raw.ContextWindow, RunTokens: raw.RunTokens}}, true
 	default:
 		return agent.Event{}, false
 	}
