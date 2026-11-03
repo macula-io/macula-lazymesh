@@ -85,6 +85,9 @@ type dsChatRequest struct {
 
 type dsChoice struct {
 	Message dsMessage `json:"message"`
+	// FinishReason is why the backend stopped: "stop" normally, "length" when
+	// its output cap fired (#77).
+	FinishReason string `json:"finish_reason"`
 }
 
 type dsUsage struct {
