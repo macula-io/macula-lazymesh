@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -73,7 +74,8 @@ type Say struct {
 // SayReply is the answer to a Say: Err is nil on a completed turn, and
 // carries the loop's own error on a failed one. It travels as a normal
 // reply value — the driver decides what a failure means; the session
-// itself survives it.
+// itself survives it. A turn that panics is answered with sayCrashed
+// instead, which SayTurn reports as the session gone.
 type SayReply struct {
 	Err error
 }
@@ -383,6 +385,9 @@ func (s *session) reportCrash(from gen.PID, ref gen.Ref) {
 	if r == nil {
 		return
 	}
+	// Ergo's own panic line would point here, at the re-panic: log where
+	// the turn actually crashed first.
+	s.Log().Error("sessionhost: turn panicked: %v\n%s", r, debug.Stack())
 	_ = s.SendResponse(from, ref, sayCrashed{Reason: fmt.Sprint(r)})
 	panic(r)
 }
