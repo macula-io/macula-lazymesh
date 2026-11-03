@@ -226,7 +226,7 @@ func TestEscPrecedence(t *testing.T) {
 	t.Run("a running turn is interrupted", func(t *testing.T) {
 		interruptCh := make(chan struct{}, 1)
 		m := New(nil, Options{UserInputCh: make(chan string, 4), InterruptCh: interruptCh})
-		m.lastInputAt = time.Now() // sent, no listening beat since
+		m.turnStartedAt = time.Now() // sent, no listening beat since
 		updated, _ := m.Update(typeKey(tea.KeyEsc))
 		m = updated.(Model)
 		select {
