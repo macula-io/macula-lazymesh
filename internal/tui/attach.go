@@ -37,6 +37,16 @@ func RunAttached(ctx context.Context, ctrl *frontend.Controller, opts Options) e
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 		tea.WithInput(termkeys.New(os.Stdin)),
+		// This program owns its signal handling (the ctx goroutine below), so
+		// bubbletea must not install a second one. It does otherwise, and its
+		// handler sends InterruptMsg/QuitMsg on an UNBUFFERED p.msgs with no
+		// ctx case: when the ctx path's Quit() is the send that ends the event
+		// loop, bubbletea's handler is left blocked on that channel forever,
+		// Run's shutdown waits for it, and an attach whose stdin is not a
+		// terminal (so ctrl+c arrives as a real SIGINT, not a keystroke) could
+		// not be interrupted -- measured live 2026-11-03: 3 of 8 SIGINTs and 1
+		// of 8 SIGTERMs needed SIGKILL (#49).
+		tea.WithoutSignalHandler(),
 	)
 	go func() {
 		<-ctx.Done()

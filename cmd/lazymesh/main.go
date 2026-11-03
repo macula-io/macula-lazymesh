@@ -1813,5 +1813,15 @@ func runAttach(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Release the handler as soon as the first signal has been taken. Until
+	// then a second ctrl+c is swallowed -- NotifyContext keeps the signals
+	// registered, and the channel it diverted them to has one reader that has
+	// already returned -- so an operator whose first ctrl+c is stuck in
+	// bubbletea's shutdown has no second one to press. Releasing the handler
+	// restores the default action, which ends the process (#49 review).
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	return tui.RunAttached(ctx, ctrl, tui.Options{})
 }
