@@ -1390,9 +1390,14 @@ func (m *Model) processPendingRings() []tea.Cmd {
 // needs to see them there. EventListening joins the chatter set for the
 // same reason ToolCall/ToolResult are here: it fires every cycle
 // (#13/#15's liveness signal), and would drown out real conversation if
-// it went to the main pane instead of the status strip.
-func isChatter(kind agent.EventKind) bool {
-	return kind == agent.EventToolCall || kind == agent.EventToolResult || kind == agent.EventListening
+// it went to the main pane instead of the status strip. A coding tool's
+// call and result are not chatter: in a coding session they are what the
+// agent is doing, and the operator reads them in the chat (#78 gap 1).
+func isChatter(ev agent.Event) bool {
+	if ev.Kind == agent.EventToolCall || ev.Kind == agent.EventToolResult {
+		return !isCodingTool(ev.ToolName)
+	}
+	return ev.Kind == agent.EventListening
 }
 
 func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
@@ -1430,7 +1435,7 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		return next, tea.Batch(cmd, rearm)
 	}
 
-	if isChatter(ev.Kind) && !m.showChatter {
+	if isChatter(agent.Event(ev)) && !m.showChatter {
 		// Routine tool-call activity, suppressed by default (see
 		// isChatter's own doc comment) -- genuinely dropped now, not
 		// shown elsewhere either. 'v' still shows it inline in the chat
@@ -1461,6 +1466,14 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	}
 
 	entry := chatEntryFromAgentEvent(agent.Event(ev))
+	if open := m.openToolCall(ev.ToolName); open != nil && (ev.Kind == agent.EventToolResult || ev.Kind == agent.EventError) {
+		// A call's result or error joins the call's entry: the agent
+		// runs its calls one at a time, so the newest open call of the
+		// same tool is the one this answers (#78 gap 1).
+		open.outcome = &entry
+		m.syncViewport()
+		return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
+	}
 	m.chatEntries = append(m.chatEntries, entry)
 	m.syncViewport()
 	return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
@@ -1556,10 +1569,7 @@ func (m *Model) syncViewport() {
 	// delta) arrive below — SetContent preserves the offset on its own,
 	// so only the already-at-bottom case re-anchors.
 	atBottom := m.chatViewport.AtBottom()
-	lines := make([]string, 0, len(m.chatEntries))
-	for i := range m.chatEntries {
-		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
-	}
+	lines := renderChatEntries(m.chatEntries, m.detailsExpanded, m.width)
 	m.chatViewport.SetContent(strings.Join(lines, "\n"))
 	if atBottom {
 		m.chatViewport.GotoBottom()
@@ -1995,10 +2005,7 @@ func (m Model) renderRealmsOverlay() string {
 // construction exactly, so it's always consistent with what the normal
 // (non-overlay) chat pane would show.
 func (m Model) chatContentLines() []string {
-	lines := make([]string, 0, len(m.chatEntries))
-	for i := range m.chatEntries {
-		lines = append(lines, m.chatEntries[i].render(m.detailsExpanded, m.width))
-	}
+	lines := renderChatEntries(m.chatEntries, m.detailsExpanded, m.width)
 	joined := strings.Join(lines, "\n")
 	if joined == "" {
 		return nil
