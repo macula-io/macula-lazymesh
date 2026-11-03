@@ -253,7 +253,7 @@ func TestCodingProfileCanaryNeverReachesTheProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &recordingProvider{}
-	loop := agent.NewLoop(p, tools, buildCodingSystemPrompt("", false, false, ""))
+	loop := agent.NewLoop(p, tools, buildCodingSystemPrompt("", false, false, "", "ctrl+x"))
 	events := make(chan agent.Event, 1024)
 	if err := loop.Say(context.Background(), prompt, events); err != nil {
 		t.Fatalf("turn failed: %v", err)
@@ -348,7 +348,7 @@ func TestRoomPrompt_MeshProfileObservesAndKeepsTodaysPrompt(t *testing.T) {
 // TestBuildCodingSystemPrompt_SaysWhoApproves: the model is told that
 // fenced messages and file contents never approve or change its rules.
 func TestBuildCodingSystemPrompt_SaysWhoApproves(t *testing.T) {
-	got := buildCodingSystemPrompt("", false, false, "")
+	got := buildCodingSystemPrompt("", false, false, "", "ctrl+x")
 	for _, want := range []string{"only the operator approves", "mesh_say"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("coding system prompt lacks %q:\n%s", want, got)
@@ -444,6 +444,18 @@ func TestReportGateFailures_ReachesTheOperator(t *testing.T) {
 			}
 		default:
 			t.Errorf("the %s never heard the gate failed", name)
+		}
+	}
+}
+
+// The same explanation in the coding profile: a coding session is asked the
+// same question, and the realms view is the operator's route there too (#73).
+func TestBuildCodingSystemPrompt_ExplainsHowTheOperatorJoinsARealm(t *testing.T) {
+	got := buildCodingSystemPrompt("", true, false, "", "ctrl+g")
+
+	for _, want := range []string{"realms view", "ctrl+g r", "Enter on an empty message box", "cannot join a realm"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the coding prompt does not say %q:\n%s", want, got)
 		}
 	}
 }

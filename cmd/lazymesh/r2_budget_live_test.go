@@ -72,7 +72,7 @@ func TestLiveR2FixedPrefixStaysUnderRegressionCeiling(t *testing.T) {
 		t.Fatalf("marshal tool specs: %v", err)
 	}
 
-	systemPrompt := buildSystemPrompt("", "", false, false, false)
+	systemPrompt := buildSystemPrompt("", "", false, false, false, "", "ctrl+x")
 	fixedPrefixTokens := estimateTokens(len(systemPrompt) + len(toolsJSON))
 
 	t.Logf("fixed prefix: %d tools, system prompt %d bytes, tools JSON %d bytes, ~%d tokens total (design target <%d, regression ceiling %d)",
@@ -123,7 +123,7 @@ func TestLiveR2ToolSelectionMeshServicesEnabledStillFitsRegressionCeiling(t *tes
 		t.Fatalf("marshal tool specs: %v", err)
 	}
 
-	systemPrompt := buildSystemPrompt("", "", false, false, true)
+	systemPrompt := buildSystemPrompt("", "", false, false, true, "", "ctrl+x")
 	fixedPrefixTokens := estimateTokens(len(systemPrompt) + len(toolsJSON))
 
 	t.Logf("fixed prefix (mesh_services_enabled): %d tools, system prompt %d bytes, tools JSON %d bytes, ~%d tokens total (regression ceiling %d)",
