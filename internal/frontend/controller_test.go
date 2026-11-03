@@ -378,3 +378,32 @@ func TestTheLocalTUIHearsAnAttachedFrontendAnswer(t *testing.T) {
 		t.Fatal("the session's own TUI was never told the approval was answered")
 	}
 }
+
+// The handshake carries the session's leader as well as its identity (#63):
+// an attached TUI arms the key the session answers, not the one the attaching
+// side's own config happens to hold.
+func TestControllerLearnsTheSessionsLeader(t *testing.T) {
+	path := tempSocket(t)
+	s, err := Start(Options{
+		Path:      path,
+		Input:     make(chan string, 4),
+		Events:    make(chan agent.Event, 4),
+		SessionID: "leader-session",
+		Model:     "testmodel/1",
+		Leader:    "ctrl+g",
+	})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c, err := Dial(path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	if got := c.Session().Leader; got != "ctrl+g" {
+		t.Fatalf("the controller read leader %q, want ctrl+g", got)
+	}
+}

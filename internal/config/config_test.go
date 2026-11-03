@@ -381,3 +381,27 @@ func TestLoad_NeverReadsTheWorkingDirectory(t *testing.T) {
 		t.Fatalf("Dir = %q, want the operator's config directory %q", cfg.Dir, filepath.Dir(operatorPath))
 	}
 }
+
+// The leader everyone gets unless they ask for another one (#63). The key
+// itself is validated by the TUI, which owns the keymap; here the only
+// question is that config carries the choice through.
+func TestDefault_LeaderKeyIsCtrlX(t *testing.T) {
+	if got := Default().LeaderKey; got != "ctrl+x" {
+		t.Fatalf("expected default leader_key ctrl+x, got %q", got)
+	}
+}
+
+func TestLoad_OverridesLeaderKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("leader_key: ctrl+g\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.LeaderKey != "ctrl+g" {
+		t.Fatalf("expected leader_key ctrl+g, got %q", cfg.LeaderKey)
+	}
+}

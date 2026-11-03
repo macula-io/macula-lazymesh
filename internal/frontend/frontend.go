@@ -131,6 +131,7 @@ type Server struct {
 type sessionInfo struct {
 	SessionID string `json:"session_id"`
 	Model     string `json:"model"`
+	Leader    string `json:"leader,omitempty"`
 }
 
 // Options wires the server onto the lazymesh bus.
@@ -167,6 +168,13 @@ type Options struct {
 	SessionID string
 	// Model labels the running provider/model pair.
 	Model string
+	// Leader is the session's configured leader key (config's leader_key,
+	// resolved -- "ctrl+x" unless moved). An attached TUI arms this key,
+	// because the session is the thing that will answer it: reading the
+	// attaching side's own config would let a session started with
+	// --config other.yaml be attached with a different key armed than the
+	// one its operator configured (#63).
+	Leader string
 	// Log receives lifecycle lines; nil means silent.
 	Log *log.Logger
 }
@@ -227,7 +235,7 @@ func startFor(opts Options, ownUID int) (*Server, error) {
 		approve:    opts.Approve,
 		schedule:   opts.Schedule,
 		hook:       opts.PreToolHook,
-		session:    sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
+		session:    sessionInfo{SessionID: opts.SessionID, Model: opts.Model, Leader: opts.Leader},
 		ownUID:     ownUID,
 		log:        opts.Log,
 		ln:         ln,
@@ -310,7 +318,7 @@ func (s *Server) accept() {
 		s.conns[conn] = c
 		s.mu.Unlock()
 
-		line, _ := json.Marshal(map[string]any{"type": "session", "session_id": s.session.SessionID, "model": s.session.Model})
+		line, _ := json.Marshal(map[string]any{"type": "session", "session_id": s.session.SessionID, "model": s.session.Model, "leader": s.session.Leader})
 		go s.serve(conn, c, append(line, '\n'))
 	}
 }

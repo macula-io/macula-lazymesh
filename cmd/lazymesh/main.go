@@ -100,6 +100,15 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// The leader is refused here, before anything opens: a key the message
+	// box uses, ctrl+c, or anything that is not ctrl and one letter would
+	// otherwise leave a TUI whose hint row names a key that arms nothing
+	// (#63). LeaderBinding names the key and the reason in its error.
+	leader, err := tui.LeaderBinding(cfg.LeaderKey)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -466,7 +475,11 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			PreToolHook: preToolHook,
 			SessionID:   resolvedSessionID,
 			Model:       providerLabel(cfg) + "/" + cfg.Model,
-			Log:         logStack.StdFor("frontend"),
+			// The leader this session answers (#63). An attached TUI arms
+			// this one, not whatever the attaching side's config holds:
+			// the session is what will handle the key.
+			Leader: leader.Help().Key,
+			Log:    logStack.StdFor("frontend"),
 		})
 		if err != nil {
 			return fmt.Errorf("start control plane: %w", err)
@@ -508,6 +521,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 		ApprovalCh:         approvalCh,
 		ApprovalResolvedCh: resolvedCh,
 		StatusBarPosition:  cfg.StatusBarPosition,
+		Leader:             leader,
 		ContactPolicyFile:  cfg.ContactPolicyFile,
 		AutoAcceptKnown:    config.RingPolicyAutoAcceptsKnown(cfg.RingPolicy),
 		AgentModel:         agentModelLabel,
@@ -2013,6 +2027,16 @@ func runAttach(args []string) error {
 		return fmt.Errorf("no session to attach to at %s: %w", path, err)
 	}
 
+	// The attached TUI arms the session's own leader, learned over the
+	// control socket (#63): a session started with --config other.yaml has
+	// a leader this machine's ~/.config need not agree with, and the
+	// session is the thing that will handle the key. It also means attach
+	// reads no config of its own, so a malformed one cannot stop it.
+	leader, err := tui.LeaderBinding(ctrl.Session().Leader)
+	if err != nil {
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Release the handler as soon as the first signal has been taken. Until
@@ -2025,5 +2049,5 @@ func runAttach(args []string) error {
 		<-ctx.Done()
 		stop()
 	}()
-	return tui.RunAttached(ctx, ctrl, tui.Options{})
+	return tui.RunAttached(ctx, ctrl, tui.Options{Leader: leader})
 }
