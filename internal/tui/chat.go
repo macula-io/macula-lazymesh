@@ -324,11 +324,29 @@ func (e *chatEntry) markdownBody(width int) string {
 	if err != nil {
 		return text
 	}
+	rendered = neutraliseRendered(rendered)
 	if !e.streaming {
 		e.md = rendered
 		e.mdWidth = width
 	}
 	return rendered
+}
+
+// neutraliseRendered passes glamour's own colour codes (SGR) and shows
+// everything else a terminal would act on. Neutralising the input is not
+// enough: glamour decodes HTML entities after it, so "&#27;]52;...&#7;" in
+// an answer would come out as a whole OSC 52 clipboard write (#89 review).
+func neutraliseRendered(rendered string) string {
+	var b strings.Builder
+	b.Grow(len(rendered))
+	prev := 0
+	for _, span := range sgrStripper.FindAllStringIndex(rendered, -1) {
+		b.WriteString(neutralise(rendered[prev:span[0]]))
+		b.WriteString(rendered[span[0]:span[1]])
+		prev = span[1]
+	}
+	b.WriteString(neutralise(rendered[prev:]))
+	return b.String()
 }
 
 // flattenWideTables rewrites pipe tables whose rendered width would

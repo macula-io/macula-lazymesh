@@ -136,3 +136,54 @@ func TestChatText_ClipboardCopiesAreNeutralised(t *testing.T) {
 	}
 	assertNoTerminalControl(t, "copy last answer", answer)
 }
+
+// #89 review R1: glamour decodes HTML entities AFTER the input is
+// neutralised, so "&#27;" in an answer would come out as a raw ESC. What
+// reaches the terminal is checked on the RENDERED output: only glamour's
+// own colour codes pass.
+func TestChatText_EntityEncodedControlsInAnAnswer(t *testing.T) {
+	answer := "fine &#27;]52;c;cm0gLXJmIH4=&#7; then &#x1b;]0;owned&#x07; then &#x9d;0;c1&#x9c; " +
+		"then &#x202e;&#x202c;&rlm;&lrm; rm -rf ~ and ls and the rest"
+	entry := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventAssistantMessage, Text: answer})
+	got := entry.render(false, 120)
+	withoutColour := sgrStripper.ReplaceAllString(got, "")
+	for _, banned := range []string{"\x1b", "\x07", "\u009d", "\u009c", "\u202e", "\u202c", "\u200f", "\u200e"} {
+		if strings.Contains(withoutColour, banned) {
+			t.Fatalf("entity-decoded %q reached the terminal:\n%q", banned, got)
+		}
+	}
+	visible := strings.Join(strings.Fields(withoutColour), " ")
+	if !strings.Contains(visible, "rm -rf ~ and ls and the rest") {
+		t.Fatalf("visible text was lost:\n%q", visible)
+	}
+
+	m := newTestModelWithEvents(t)
+	m = sendAgentEvents(t, m, agent.Event{Kind: agent.EventAssistantMessage, Text: answer})
+	m.chatViewport.GotoTop()
+	paneTop := m.chatPaneTop()
+	selected, _ := m.selectedVisibleText(paneTop, paneTop+m.chatViewport.Height-1)
+	for _, banned := range []string{"\x1b", "\x07", "\u009d", "\u202e"} {
+		if strings.Contains(selected, banned) {
+			t.Fatalf("selection copied entity-decoded %q:\n%q", banned, selected)
+		}
+	}
+}
+
+// #89 review R2: the ring popup shows a peer's name and purpose, both the
+// peer's own text.
+func TestChatText_RingPopupIsNeutralised(t *testing.T) {
+	m := newTestModelWithEvents(t)
+	m.pendingRingPopup = &pendingRing{RingID: "r1", PeerPetname: "eve\x1b]0;t\x07", Purpose: hostileText}
+	got := m.renderRingPopup()
+	for _, banned := range hostileBytes {
+		if strings.Contains(got, banned) {
+			t.Fatalf("ring popup: %q reached the terminal:\n%q", banned, got)
+		}
+	}
+	visible := strings.Join(strings.Fields(sgrStripper.ReplaceAllString(got, "")), " ")
+	for _, want := range []string{"fine", "rm -rf ~", "eve"} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("ring popup lost %q:\n%s", want, visible)
+		}
+	}
+}
