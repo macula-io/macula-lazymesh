@@ -294,10 +294,14 @@ type Model struct {
 	// middle of a word (#62).
 	lastKeyAt time.Time
 
-	// deferredApprovals are approval requests that arrived while the person
-	// was typing. They are shown in order once the composer goes idle, rather
-	// than dropped: the tool call is waiting on the answer either way.
-	deferredApprovals []ApprovalRequestEvent
+	// deferredApproval is the one approval request that arrived while the
+	// person was busy, held until they are free to see it (nil when none is).
+	// One, not a queue: the session has at most one question outstanding
+	// (sessionhost's approvalSlot), so a newer request means the held one is
+	// dead and is replaced -- showing the dead one first would put a prompt on
+	// screen for a call nobody is waiting on any more, and then swap it for
+	// the live one under the person's eyes (macula-lazymesh#62 review r=2).
+	deferredApproval *ApprovalRequestEvent
 
 	// lastInputAt is when this TUI last sent a message to the agent.
 	// lastListeningAt (below) is its other half: the agent emits a listening
@@ -985,33 +989,46 @@ func (m Model) runLeader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// personIdle reports whether a pop-up may take the screen: nothing the operator
-// asked for is showing (an overlay, a focused panel, an armed leader, a panel's
-// own draft), and no key has arrived for popupIdleDelay. A prompt appearing
-// mid-word is exactly what #59 is about; this is the other half of that fix --
-// it does not appear mid-word at all, so the arming guard has less to catch.
+// personIdle reports whether a pop-up may take the screen: nobody is typing
+// into anything (the composer, a panel's own input, an armed leader), and no
+// key has arrived for popupIdleDelay. A prompt appearing mid-word is exactly
+// what #59 is about; this is the other half of that fix -- it does not appear
+// mid-word at all, so the arming guard has less to catch.
 //
-// Another pop-up does not count as "busy": the keys that reach one are handled
-// (and guarded) there, never typed into anything, so a ring arriving while an
-// approval waits is still shown rather than stacking up behind it.
+// Neither a read-only overlay nor another pop-up counts as "busy". An overlay
+// has no draft to protect and gives its screen back when the prompt closes,
+// and keys that reach a pop-up are handled (and guarded) there, never typed
+// into anything -- so a ring arriving while an approval waits is shown rather
+// than queued behind a question nobody may answer.
 func (m Model) personIdle() bool {
 	switch m.mode {
 	case ModeCompose, ModeRingPopup, ModeApprovalPopup, ModeErrorPopup:
 	default:
 		return false
 	}
-	if m.meshExpanded || m.realmExpanded || m.meshServicesExpanded || m.leaderPending {
+	if m.meshServicesExpanded || m.notesPanel != nil || m.leaderPending {
 		return false
 	}
 	return m.lastKeyAt.IsZero() || m.clock().Sub(m.lastKeyAt) >= popupIdleDelay
 }
 
-// composerIdle is personIdle with the composer itself in front. An error may
-// only pop over the composer: over an open pop-up it would replace a question
-// the operator is already answering (the ring or approval underneath), and
-// closing it would leave that pop-up with nothing showing it.
+// composerIdle is personIdle with the composer itself in front and nothing
+// overlaid on it. An error may only pop over the composer: over an open
+// pop-up it would replace a question the operator is already answering (the
+// ring or approval underneath), and closing it would leave that pop-up with
+// nothing showing it.
 func (m Model) composerIdle() bool {
-	return m.mode == ModeCompose && m.personIdle()
+	return m.mode == ModeCompose && !m.meshExpanded && !m.realmExpanded && m.personIdle()
+}
+
+// approvalMayOpen adds the approval's own rule to personIdle: it never
+// replaces a prompt that is already on screen. A second request would put
+// different arguments under a person already reading the first, with a fresh
+// guard, so a y meant for the call they read would approve the one they have
+// not. The session has at most one question outstanding, so the held one is
+// the newest and the older is dead (macula-lazymesh#62 review r=2).
+func (m Model) approvalMayOpen() bool {
+	return m.pendingApproval == nil && m.personIdle()
 }
 
 // composerFocus hands the keyboard back to the composer if it has not got it.
@@ -1027,16 +1044,15 @@ func (m *Model) composerFocus() tea.Cmd {
 	return m.input.Focus()
 }
 
-// maybeShowDeferredApproval shows the oldest approval request that arrived
-// while the person was typing, once they have stopped. The tool call is
-// waiting on the answer either way; showing it a moment later is the whole
-// difference.
+// maybeShowDeferredApproval shows the approval request that arrived while the
+// person was busy, once they are not. The tool call is waiting on the answer
+// either way; showing it a moment later is the whole difference.
 func (m Model) maybeShowDeferredApproval() (Model, tea.Cmd) {
-	if len(m.deferredApprovals) == 0 || !m.personIdle() {
+	if m.deferredApproval == nil || !m.approvalMayOpen() {
 		return m, nil
 	}
-	ev := m.deferredApprovals[0]
-	m.deferredApprovals = m.deferredApprovals[1:]
+	ev := *m.deferredApproval
+	m.deferredApproval = nil
 	return m.showApprovalNow(ev)
 }
 
@@ -1285,14 +1301,12 @@ func (m Model) handleRefresh(msg refreshMsg) (Model, tea.Cmd) {
 // ever called from within handleRefresh, which already holds its own
 // value-receiver copy.
 //
-// Never force-switches OUT of ModeCompose: found live 2026-09-06 -- an
-// incoming ring while the operator was mid-composition silently yanked
-// them into ModeRingPopup, and the in-progress input just vanished from
-// view (the pop-up's own render path doesn't touch or preserve m.input at
-// all). A not-yet-shown ring simply stays in m.state.pending/not yet in
-// seenRingIDs -- still visible in the status strip's own "pending rings"
-// count the whole time -- and this same function picks it up on a later
-// refresh tick once the operator leaves ModeCompose on their own. Trusted
+// Never takes the keyboard from someone typing: found live 2026-09-06 -- an
+// incoming ring while the operator was mid-composition silently yanked them
+// into ModeRingPopup, and the in-progress input just vanished from view. A
+// ring that cannot be shown yet stays in m.state.pending and out of
+// seenRingIDs -- still counted in the status strip the whole time -- and this
+// same function picks it up on a later tick once the person is idle. Trusted
 // auto-accepts are unaffected either way: they were never interactive.
 func (m *Model) processPendingRings() []tea.Cmd {
 	var cmds []tea.Cmd
@@ -1315,7 +1329,6 @@ func (m *Model) processPendingRings() []tea.Cmd {
 			*m = m.rememberFocus(ModeRingPopup)
 			m.pendingRingPopup = &r
 			m.ringArm = popupArm{shownAt: m.clock()}
-			m.leaderPending = false
 			m.mode = ModeRingPopup
 			m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Ring)
 		}
@@ -1355,7 +1368,16 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	}
 
 	if ev.Kind == agent.EventApprovalRequested {
-		return m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
+		next, cmd := m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
+		// A held request is a tool call waiting on a person who may never see
+		// it: say so with the same double bell a ring gets, and reopen the
+		// listener -- every other branch does, and dropping it here would end
+		// this TUI's agent events at the first approval.
+		rearm := waitForAgentEvent(m.agentEvents)
+		if next.deferredApproval != nil {
+			return next, tea.Batch(cmd, ringBell(bellDouble, m.muted), rearm)
+		}
+		return next, tea.Batch(cmd, rearm)
 	}
 
 	if isChatter(ev.Kind) && !m.showChatter {
@@ -1605,7 +1627,24 @@ func (m Model) View() string {
 // and what's actually on screen drift apart.
 func (m Model) statusLines() []string {
 	lines := m.renderHintLines()
+	if line, ok := m.renderHeldApprovalLine(); ok {
+		lines = append(lines, line)
+	}
 	return append(lines, m.renderSummaryLine())
+}
+
+// renderHeldApprovalLine says a tool call is waiting on an answer that is not
+// on screen yet. Without it a request held behind a focused panel, an armed
+// leader or someone typing for two minutes is invisible, and the call is then
+// refused by its own timeout with nothing ever having asked (macula-lazymesh#62
+// review r=2, probe P3). It is one line, present only while something is held,
+// so the reserved-height math in resizeComponents follows it for free.
+func (m Model) renderHeldApprovalLine() (string, bool) {
+	if m.deferredApproval == nil {
+		return "", false
+	}
+	return statusStripStyle.Render("-- APPROVAL WAITING -- ") +
+		dimStyle.Render("stop typing (or close the panel, or cancel ctrl+x) to answer: "+m.deferredApproval.Tool), true
 }
 
 // renderHintLines is the shortcuts row. While the leader is pending it shows

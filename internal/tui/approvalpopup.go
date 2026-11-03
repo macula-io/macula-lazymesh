@@ -32,6 +32,12 @@ type approvalResolvedMsg frontend.ApprovalResolved
 // else, and records who decided it. The chat line matters more than the
 // popup closing: a human who pressed a key must be able to see that
 // another frontend's answer is the one that took effect.
+//
+// A request that was still HELD for later is dropped here too. It is the same
+// question, and the session has already stopped waiting for an answer: showing
+// it when the person next pauses would put a dead question in front of them
+// and offer a decision that cannot be delivered (macula-lazymesh#62 review
+// r=2, probe P1).
 func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) {
 	closed := false
 	if m.pendingApproval != nil && m.pendingApproval.id == msg.ID {
@@ -40,6 +46,11 @@ func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) 
 		m = m.refocus(m.approvalReturnTo)
 		m.resizeComponents()
 		closed = true
+	}
+	dropped := false
+	if m.deferredApproval != nil && m.deferredApproval.ID == msg.ID {
+		m.deferredApproval = nil
+		dropped = true
 	}
 
 	var text string
@@ -54,8 +65,11 @@ func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) 
 		}
 		text = "approval " + msg.ID + " was answered by " + by
 	}
-	if closed && msg.Note == "" {
+	switch {
+	case closed && msg.Note == "":
 		text += " (this popup's answer was not the one used)"
+	case dropped:
+		text += " (it was still waiting to be shown)"
 	}
 	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: text})
 
@@ -90,16 +104,16 @@ var (
 	approvalHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
 )
 
-// showApproval surfaces one approval prompt (G9): it takes over the
-// screen exactly like a ring popup does — the tool call waits, nothing
-// else proceeds until a decision lands.
-// showApproval surfaces one approval prompt (G9) unless the person is in the
-// middle of something: a prompt that appears mid-word is the situation #59
-// exists to survive, and the better answer is not to appear. It is held, in
-// order, and shown on the first tick or keypress that finds the composer idle.
+// showApproval surfaces one approval prompt (G9) unless the person is busy or
+// a prompt is already up: taking the screen mid-word is the situation #59
+// exists to survive, and the better answer is not to appear. The request is
+// held -- the newest one only -- and shown on the first tick or key that finds
+// the person free. Nothing but approvalMayOpen decides this, so a request can
+// never replace a prompt someone is already reading.
 func (m Model) showApproval(ev ApprovalRequestEvent) (Model, tea.Cmd) {
-	if !m.personIdle() {
-		m.deferredApprovals = append(m.deferredApprovals, ev)
+	if !m.approvalMayOpen() {
+		held := ev
+		m.deferredApproval = &held
 		return m, nil
 	}
 	return m.showApprovalNow(ev)
