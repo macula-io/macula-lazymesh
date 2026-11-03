@@ -168,7 +168,7 @@ var (
 func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
 	if e.kind == chatToolCall {
-		return e.renderToolCall(ts, detailsExpanded)
+		return e.renderToolCall(ts, detailsExpanded, width)
 	}
 	text := e.text
 	if (detailsExpanded || e.alwaysDetail) && e.detail != "" && e.detail != e.text {
