@@ -41,6 +41,18 @@
 //	  {"type":"backoff"}
 //	  {"type":"max_failures"}
 //	  {"type":"approval_request","id":"<approval-id>","tool":"<name>","args":"<preview>"}
+//	  {"type":"approval_resolved","id":"<approval-id>","by":"<frontend>"}
+//	                             (broadcast to EVERY attached frontend when an
+//	                              approval is answered, naming who answered it, so a
+//	                              popup that lost the race closes itself)
+//	  {"type":"approval_answer","id":"<approval-id>","accepted":1}
+//	  {"type":"approval_answer","id":"<approval-id>","accepted":0,"error":"..."}
+//	                             (to the one frontend that sent the approve, and only
+//	                              it: 1 means its answer is the one the session used,
+//	                              0 means another frontend answered first. This is a
+//	                              separate message from approval_resolved on purpose —
+//	                              a frontend must never read someone else's resolution
+//	                              as its own success)
 //	  {"type":"ring_pending","ring_id":"<id>","from":"<petname>","purpose":"..."}
 //	                             (a ring still awaiting an answer, sent as it arrives)
 //	  {"type":"pre_tool","id":"<hook-id>","tool":"<name>","args":"<full JSON>"}
@@ -79,8 +91,11 @@ type Server struct {
 	// interrupt cancels the in-flight turn (the caller's own ctx-cancel
 	// mechanism -- see sessionhost.Interrupt); nil means not wired.
 	interrupt func()
-	// approve answers an approval request; nil means not wired.
-	approve func(id string, allow bool)
+	// approve answers an approval request; nil means not wired. It reports
+	// whether this call's answer was the one the session used: with more
+	// than one frontend attached, answering is a race and exactly one
+	// answer is delivered.
+	approve func(id string, allow bool) bool
 	// schedule arms a deferred prompt; nil means not wired.
 	schedule func(at time.Time, prompt string) error
 	hook     *PreToolHook
@@ -96,6 +111,14 @@ type Server struct {
 	closed  bool
 	shutCh  chan struct{}
 	closeFn func()
+
+	// connSeq labels connections in accept order (controller-1, ...).
+	connSeq int
+	// answeredBy records, per approval id, the frontend whose answer the
+	// session used. It is bounded by the session's own rule that at most
+	// one approval is outstanding: every new approval request prunes the
+	// ids that came before it.
+	answeredBy map[string]string
 }
 
 // sessionInfo is what every connecting controller learns on connect.
@@ -122,8 +145,11 @@ type Options struct {
 	// interrupt control message; nil means not wired.
 	Interrupt func()
 	// Approve answers an approval request (G9) when a controller sends an
-	// approve control message; nil means not wired.
-	Approve func(id string, allow bool)
+	// approve control message; nil means not wired. It reports whether the
+	// answer was the one delivered: two frontends can answer the same
+	// approval, and the loser must be told rather than left believing it
+	// decided the call.
+	Approve func(id string, allow bool) bool
 	// Schedule arms a deferred prompt (G13) when a controller sends a
 	// schedule control message; nil means not wired.
 	Schedule func(at time.Time, prompt string) error
@@ -144,6 +170,10 @@ type Options struct {
 type connection struct {
 	out  chan []byte
 	conn net.Conn
+	// label names this frontend in approval attributions. It is assigned
+	// by the server from the accept order, never read from the wire: a
+	// control message must not be able to claim to be another frontend.
+	label string
 }
 
 // outBuffer bounds how many unsent output lines one controller may have
@@ -183,20 +213,21 @@ func startFor(opts Options, ownUID int) (*Server, error) {
 	}
 
 	s := &Server{
-		path:      opts.Path,
-		inputCh:   opts.Input,
-		events:    opts.Events,
-		query:     opts.Query,
-		interrupt: opts.Interrupt,
-		approve:   opts.Approve,
-		schedule:  opts.Schedule,
-		hook:      opts.PreToolHook,
-		session:   sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
-		ownUID:    ownUID,
-		log:       opts.Log,
-		ln:        ln,
-		conns:     make(map[net.Conn]*connection),
-		shutCh:    make(chan struct{}),
+		path:       opts.Path,
+		inputCh:    opts.Input,
+		events:     opts.Events,
+		query:      opts.Query,
+		interrupt:  opts.Interrupt,
+		approve:    opts.Approve,
+		schedule:   opts.Schedule,
+		hook:       opts.PreToolHook,
+		session:    sessionInfo{SessionID: opts.SessionID, Model: opts.Model},
+		ownUID:     ownUID,
+		log:        opts.Log,
+		ln:         ln,
+		conns:      make(map[net.Conn]*connection),
+		answeredBy: make(map[string]string),
+		shutCh:     make(chan struct{}),
 	}
 	go s.accept()
 	go s.broadcast()
@@ -267,6 +298,8 @@ func (s *Server) accept() {
 			conn.Close()
 			return
 		}
+		s.connSeq++
+		c.label = fmt.Sprintf("controller-%d", s.connSeq)
 		s.conns[conn] = c
 		s.mu.Unlock()
 
@@ -283,6 +316,12 @@ func (s *Server) broadcast() {
 			continue
 		}
 		s.mu.Lock()
+		// At most one approval is outstanding per session, so a new
+		// request makes every earlier id's attribution stale: drop them
+		// rather than grow a map that never shrinks.
+		if ev.Kind == agent.EventApprovalRequested {
+			s.answeredBy = make(map[string]string)
+		}
 		for _, c := range s.conns {
 			select {
 			case c.out <- line:
@@ -390,7 +429,7 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 			reply(map[string]any{"type": "error", "error": "approve requires an approval id"})
 			return true
 		}
-		s.approve(msg.ID, msg.Allow == 1)
+		s.answerApproval(c, msg.ID, msg.Allow == 1, reply)
 		return true
 	case "hook", "unhook":
 		if s.hook == nil {
@@ -466,6 +505,69 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 	default:
 		reply(map[string]any{"type": "error", "error": "unknown control type " + msg.Type})
 		return true
+	}
+}
+
+// answerApproval records one frontend's answer and tells the frontends
+// how it was resolved. The session decides which answer counts (Approve
+// reports it); this only makes that decision visible.
+//
+// The losing frontend is refused explicitly. Before this existed the
+// second answer vanished into a select/default, so a human could press
+// deny, see nothing at all, and reasonably believe they had stopped a
+// call that had already run.
+func (s *Server) answerApproval(c *connection, id string, allow bool, reply func(any)) {
+	by := "tui"
+	if c != nil {
+		by = c.label
+	}
+	if !s.approve(id, allow) {
+		s.mu.Lock()
+		winner, known := s.answeredBy[id]
+		s.mu.Unlock()
+		if !known || winner == "" {
+			winner = "another frontend"
+		}
+		reply(map[string]any{"type": "approval_answer", "id": id, "accepted": 0,
+			"error": "approval " + id + " was already answered by " + winner})
+		return
+	}
+	reply(map[string]any{"type": "approval_answer", "id": id, "accepted": 1})
+	s.mu.Lock()
+	s.answeredBy[id] = by
+	resolved, err := json.Marshal(map[string]any{"type": "approval_resolved", "id": id, "by": by})
+	if err == nil {
+		resolved = append(resolved, '\n')
+		for _, conn := range s.conns {
+			select {
+			case conn.out <- resolved:
+			default:
+			}
+		}
+	}
+	s.mu.Unlock()
+}
+
+// AnswerLocal answers an approval on behalf of the session's own
+// in-process TUI, which is not one of this server's connections. It runs
+// the same accounting as a controller's answer, so a frontend attached
+// over the socket that loses the race is told the TUI answered rather
+// than being left to assume its own answer landed.
+func (s *Server) AnswerLocal(id string, allow bool) error {
+	s.answerApproval(nil, id, allow, func(v any) {
+		msg, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		if e, ok := msg["error"].(string); ok {
+			s.logf("%s", e)
+		}
+	})
+	return nil
+} // logf writes one lifecycle line when a logger is wired.
+func (s *Server) logf(format string, args ...any) {
+	if s.log != nil {
+		s.log.Printf(format, args...)
 	}
 }
 

@@ -7,6 +7,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -94,6 +95,14 @@ type Options struct {
 	// own approval timeout then refuses the call).
 	ApprovalCh chan<- ApprovalAnswer
 
+	// ApprovalResolvedCh reports approvals answered while this TUI is
+	// open — including ones another frontend answered first. nil when
+	// unwired (the in-process TUI is the only frontend that can answer).
+	// An attached TUI needs it so a popup that lost the race closes
+	// itself instead of sitting there looking like a decision still to be
+	// made (macula-io/macula-lazymesh#40's threat model).
+	ApprovalResolvedCh <-chan ApprovalResolved
+
 	StatusBarPosition string // "top" or "bottom"
 
 	// ContactPolicyFile and AutoAcceptKnown together drive the ring
@@ -149,11 +158,12 @@ type Model struct {
 	mcp          toolCaller
 	meshServices *meshservices.Source // nil when cfg.MeshServicesEnabled is false -- see Options.MeshServices
 
-	agentEvents     <-chan agent.Event
-	userInputCh     chan<- string
-	interruptCh     chan<- struct{}
-	approvalCh      chan<- ApprovalAnswer
-	pendingApproval *pendingApproval
+	agentEvents        <-chan agent.Event
+	userInputCh        chan<- string
+	interruptCh        chan<- struct{}
+	approvalCh         chan<- ApprovalAnswer
+	approvalResolvedCh <-chan ApprovalResolved
+	pendingApproval    *pendingApproval
 
 	contactPolicyFile string
 	autoAcceptKnown   bool
@@ -289,6 +299,7 @@ func New(client toolCaller, opts Options) Model {
 		userInputCh:          opts.UserInputCh,
 		interruptCh:          opts.InterruptCh,
 		approvalCh:           opts.ApprovalCh,
+		approvalResolvedCh:   opts.ApprovalResolvedCh,
 		contactPolicyFile:    opts.ContactPolicyFile,
 		autoAcceptKnown:      opts.AutoAcceptKnown,
 		seenRingIDs:          make(map[string]bool),
@@ -320,6 +331,9 @@ func (m Model) Init() tea.Cmd {
 	if m.agentEvents != nil {
 		cmds = append(cmds, waitForAgentEvent(m.agentEvents))
 	}
+	if m.approvalResolvedCh != nil {
+		cmds = append(cmds, waitForApprovalResolved(m.approvalResolvedCh))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -337,6 +351,16 @@ func tick() tea.Cmd {
 
 func (m Model) refreshCmd() tea.Cmd {
 	client := m.mcp
+	if client == nil {
+		// An attached TUI (lazymesh attach) has no macula-mcp of its own:
+		// the session it is watching owns the mesh connection. Report
+		// that rather than dereferencing a nil client; the model already
+		// collapses a repeating refresh failure into one counted entry,
+		// so this is one line, not one per tick.
+		return func() tea.Msg {
+			return refreshMsg{err: errNoMeshWhenAttached}
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -345,6 +369,11 @@ func (m Model) refreshCmd() tea.Cmd {
 	}
 }
 
+// errNoMeshWhenAttached explains an absent mesh panel on an attached TUI.
+// The session owns the mesh connection; the TUI over the socket is only
+// watching the conversation.
+var errNoMeshWhenAttached = errors.New("mesh state is not available over attach: the session owns the mesh connection")
+
 func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
@@ -352,6 +381,18 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 			return nil
 		}
 		return agentEventMsg(ev)
+	}
+}
+
+// waitForApprovalResolved is waitForAgentEvent for the approval
+// resolution stream an attached TUI reads from its control socket.
+func waitForApprovalResolved(ch <-chan ApprovalResolved) tea.Cmd {
+	return func() tea.Msg {
+		r, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return approvalResolvedMsg(r)
 	}
 }
 
@@ -532,6 +573,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentEventMsg:
 		return m.handleAgentEvent(msg)
+
+	case approvalResolvedMsg:
+		return m.handleApprovalResolved(msg)
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)

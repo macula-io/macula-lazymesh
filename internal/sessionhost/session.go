@@ -144,14 +144,30 @@ var approvals sync.Map // gen.PID -> *approvalSlot
 // question, or one whose question's id no longer matches, is a no-op
 // (never delivered to the wrong call).
 func AnswerApproval(session gen.PID, id string, allow bool) {
-	if slot, ok := approvals.Load(session); ok {
-		s := slot.(*approvalSlot)
-		if s.id == id {
-			select {
-			case s.ch <- approvalAnswer{allow: allow}:
-			default:
-			}
-		}
+	TryAnswerApproval(session, id, allow)
+}
+
+// TryAnswerApproval is AnswerApproval reporting whether this answer was
+// the one delivered. More than one frontend can be attached to a session,
+// so several may answer the same question; exactly one answer reaches the
+// session, and only that caller may be told its decision counted. A false
+// return means the question was already answered, is no longer
+// outstanding, or belongs to a different call — never that it was ignored
+// silently by the session.
+func TryAnswerApproval(session gen.PID, id string, allow bool) bool {
+	slot, ok := approvals.Load(session)
+	if !ok {
+		return false
+	}
+	s := slot.(*approvalSlot)
+	if s.id != id {
+		return false
+	}
+	select {
+	case s.ch <- approvalAnswer{allow: allow}:
+		return true
+	default:
+		return false
 	}
 }
 
