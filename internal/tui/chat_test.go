@@ -124,3 +124,25 @@ func TestCollapseNewlines_HandlesAllLineEndings(t *testing.T) {
 		t.Fatalf("expected %q, got %q", "a b c d", got)
 	}
 }
+
+// TestChatEntry_ApplyPatchShowsTheDiffWithoutExpanding pins #46's rule
+// that an applied patch is visible in the chat stream: the operator sees
+// what changed without having to toggle details, because a change they
+// did not see is not a review.
+func TestChatEntry_ApplyPatchShowsTheDiffWithoutExpanding(t *testing.T) {
+	diff := "applied 1 hunk(s) to 1 file: a.txt\n\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n"
+	entry := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventToolResult, ToolName: "apply_patch", Text: diff})
+
+	rendered := entry.render(false, 80)
+	for _, want := range []string{"+three", "-two", "a.txt"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("apply_patch's diff is hidden without expanding details (missing %q):\n%s", want, rendered)
+		}
+	}
+
+	// Other tools keep the collapsed-by-default behaviour.
+	other := chatEntryFromAgentEvent(agent.Event{Kind: agent.EventToolResult, ToolName: "mesh_rooms", Text: diff})
+	if strings.Contains(other.render(false, 80), "+three") {
+		t.Fatalf("an ordinary tool result expanded itself")
+	}
+}

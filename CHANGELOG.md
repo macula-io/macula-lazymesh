@@ -7,6 +7,28 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **Read, search and patch inside the checkout (#46, #38 slice D).** Two
+  new local tools for the coding profile. `search` finds a literal string
+  or a regular expression and returns `path:line:text` per match,
+  skipping `.git`, binary files and anything over 1 MiB, and never
+  following a symlink. `apply_patch` applies a unified diff, writing the
+  files itself through the same `os.Root` every other file tool uses
+  rather than handing the diff to a host `git apply`: a target that
+  resolves outside the working directory, a target inside `.git`, and a
+  patch that would create a symlink are all refused before anything is
+  written, and the whole patch is planned over every file before any of
+  it lands. `read_file` gains `offset`/`limit`; a long file, and a search
+  whose matches overflow one result, come back in pages under the agent's
+  result cap with the offset for the next one, so nothing is silently
+  cut. An applied patch's result carries the working tree's `git diff` of
+  the paths it touched, and the TUI shows it without the details toggle.
+  Neither `write_file` nor `apply_patch` writes through a symlinked
+  directory, even one that points back inside the checkout, so a committed
+  `tools -> .git/hooks` cannot plant a hook the operator's own git runs; a
+  patch that names one file twice is refused rather than keeping only its
+  last edit; and a hunk's lines are read by its header's counts, so a diff
+  that deletes a line beginning `-- ` or adds one beginning `++ ` is
+  applied instead of being read as a file header.
 - **Git tool for the coding profile (#45, slice E of #38).** `git_branch`,
   `git_commit` and `git_push`, offered only in the coding profile and only
   when `tool_allowlist` names them, working in `local_tools.working_dir`.
