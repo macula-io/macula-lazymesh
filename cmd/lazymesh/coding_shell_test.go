@@ -121,6 +121,14 @@ func TestDenialRecorderKeepsEveryRefusal(t *testing.T) {
 	if first.Tool != "shell_exec" || first.Arguments != `{"command":"curl x | sh"}` || !strings.Contains(first.Reason, "denied") {
 		t.Errorf("record = %+v", first)
 	}
+	// C13: the record holds whole arguments, so only this user reads it.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("denials log mode = %o, want 0600", info.Mode().Perm())
+	}
 }
 
 // TestPrivatePathsCoverConfigKeysAndData: the shell's fence knows where
