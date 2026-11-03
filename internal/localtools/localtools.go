@@ -329,15 +329,36 @@ func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, er
 	ctx, cancel := context.WithTimeout(ctx, s.shellTimeout)
 	defer cancel()
 
-	res, err := s.shell.Run(ctx, command)
-	if err != nil {
-		return "", fmt.Errorf("shell_exec: %w", err)
-	}
+	// A command may change the checkout -- a formatter, a test that writes
+	// an artifact -- so the tree is read before and after it: the diff the
+	// operator is shown has to be the checkout as it now stands, not the
+	// patch's snapshot from earlier (#46).
+	before, beforeOK := s.treeDiff(ctx, nil)
+	res, runErr := s.shell.Run(ctx, command)
 	fields := map[string]any{"stdout": res.Stdout, "stderr": res.Stderr, "exit_code": res.ExitCode}
 	if s.outputDir != "" && len(res.Stdout)+len(res.Stderr) > shellPageBytes {
-		if fields, err = s.pagedOutput(res); err != nil {
-			return "", err
+		paged, pageErr := s.pagedOutput(res)
+		if pageErr != nil {
+			return "", pageErr
 		}
+		fields = paged
+	}
+	// The after-read gets its own budget: a command that outlived the
+	// timeout leaves ctx expired, and a read made under it would answer
+	// nothing -- which is how a change became invisible (#46 review r=2).
+	readCtx, cancelRead := context.WithTimeout(context.WithoutCancel(ctx), diffReadTimeout)
+	after, afterOK := s.treeDiff(readCtx, nil)
+	cancelRead()
+	switch {
+	case afterOK && after != before && strings.TrimSpace(after) != "":
+		fields["working_tree_diff"] = s.capDiff(after)
+	case beforeOK && !afterOK:
+		fields["working_tree_diff_unread"] = "git could not read the checkout after this command, so any change it made is not shown here"
+	}
+	if runErr != nil {
+		// The command failed or timed out; the tree may still have
+		// changed, so the result is returned rather than only an error.
+		fields["error"] = runErr.Error()
 	}
 	result, err := json.Marshal(fields)
 	if err != nil {
@@ -369,6 +390,39 @@ func (s *Source) createOutputFile() (*os.File, error) {
 // shellPageBytes is the most output one shell_exec result carries; it
 // leaves room under the agent's 20 KB result cap for the JSON around it.
 const shellPageBytes = 16_000
+
+// diffReadTimeout is the budget for the after-command diff read, which
+// runs on its own context: the shell's is expired exactly when a command
+// outlives it, which is when the tree most needs reading (#46 review r=2).
+const diffReadTimeout = 5 * time.Second
+
+// capDiff keeps a working-tree diff under the result budget. A diff has
+// no offset the model could page with, so the whole of it is written to
+// the output directory when there is one, and the page says where.
+func (s *Source) capDiff(diff string) string {
+	if len(diff) <= shellPageBytes {
+		return diff
+	}
+	cut := shellPageBytes
+	for cut > 0 && diff[cut] != '\n' {
+		cut--
+	}
+	if cut == 0 {
+		cut = shellPageBytes
+	}
+	note := fmt.Sprintf("[diff cut at %d of %d bytes", cut, len(diff))
+	if s.outputDir != "" {
+		if f, err := s.createOutputFile(); err == nil {
+			_, writeErr := f.WriteString(diff)
+			path := f.Name()
+			f.Close()
+			if writeErr == nil {
+				note += "; the whole diff is in " + path
+			}
+		}
+	}
+	return diff[:cut+1] + note + "]\n"
+}
 
 // pagedOutput writes a long output whole to a file in the output
 // directory and returns its first page, its size and its path.
@@ -1339,15 +1393,55 @@ func (s *Source) commitPatchPlan(plan patchPlan) error {
 // operator is shown: the change as the checkout now holds it, not the patch
 // as the model wrote it. Read-only: nothing here writes.
 func (s *Source) workingTreeDiff(ctx context.Context, targets []string) string {
-	args := append([]string{"--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--"}, targets...)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = s.workingDir
-	out, err := cmd.Output()
-	if err != nil {
+	out, ok := s.treeDiff(ctx, targets)
+	if !ok {
 		return "[no working-tree diff: this checkout is not a git repository]\n"
 	}
-	if strings.TrimSpace(string(out)) == "" {
+	if strings.TrimSpace(out) == "" {
 		return "[the working tree shows no change in those paths]\n"
 	}
-	return string(out)
+	return out
+}
+
+// treeDiff runs git's own diff in the checkout and says whether git
+// answered at all. The arguments and the environment are pinned so a
+// checkout cannot make this read run code on the host: --no-ext-diff and
+// --no-textconv (a diff driver), core.fsmonitor=false and
+// --ignore-submodules=all (a nested repository's own config, which the
+// sandbox leaves writable -- #46 review r=2), no inherited GIT_*
+// variables, and no global or system config to read a filter or a
+// fsmonitor from.
+func (s *Source) treeDiff(ctx context.Context, targets []string) (string, bool) {
+	args := append([]string{
+		"-c", "core.fsmonitor=false",
+		"--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+		"--ignore-submodules=all", "--",
+	}, targets...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = s.workingDir
+	cmd.Env = hostGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// hostGitEnv is the environment a host git invocation gets: none of the
+// caller's GIT_* variables (GIT_DIR would point it at another repository)
+// and no global or system config, so only the checkout's own tracked
+// configuration applies.
+func hostGitEnv() []string {
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GIT_") || strings.HasPrefix(kv, "GIT_CONFIG") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_TERMINAL_PROMPT=0",
+	)
 }

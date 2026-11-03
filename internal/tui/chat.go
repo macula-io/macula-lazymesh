@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -50,6 +51,19 @@ type chatEntry struct {
 	alwaysDetail bool
 }
 
+// workingTreeDiffOf returns the diff a shell_exec result carries, and
+// whether it carries one -- what makes its entry worth showing without the
+// details toggle (#46).
+func workingTreeDiffOf(text string) (string, bool) {
+	var res struct {
+		Diff string `json:"working_tree_diff"`
+	}
+	if json.Unmarshal([]byte(text), &res) != nil || strings.TrimSpace(res.Diff) == "" {
+		return "", false
+	}
+	return res.Diff, true
+}
+
 // chatEntryFromAgentEvent converts one agent.Event into a chat line. Plain
 // EventBackoff/EventMaxFailuresReached is handled by the caller separately
 // (it also needs to trigger a bell), not here.
@@ -65,6 +79,15 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	case agent.EventToolResult:
 		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
+		// A command that changed the checkout carries its diff (#46): the
+		// operator is shown the diff itself, decoded, not the result JSON
+		// around it -- the model's own stdout must not be mistaken for it.
+		if ev.ToolName == "shell_exec" {
+			if diff, ok := workingTreeDiffOf(ev.Text); ok {
+				entry.detail = diff
+				entry.alwaysDetail = true
+			}
+		}
 		return entry
 	case agent.EventError:
 		msg := ""
