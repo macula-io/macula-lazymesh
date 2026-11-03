@@ -703,15 +703,14 @@ func gitAllowlisted(cfg config.Config) bool {
 
 // gitToolConfig is the one place the git tool's absence is decided: the
 // mesh profile never gets it, and the coding profile gets it only when the
-// operator's own allowlist names a git tool.
+// operator's own allowlist names a git tool. It keeps its own command
+// timeout (gittools' default) rather than borrowing shell_exec's: a push
+// over a slow link is not a hung shell command.
 func gitToolConfig(cfg config.Config) (gittools.Config, bool) {
 	if !cfg.CodingProfile() || !gitAllowlisted(cfg) {
 		return gittools.Config{}, false
 	}
-	return gittools.Config{
-		Checkout: cfg.LocalTools.WorkingDir,
-		Timeout:  time.Duration(cfg.LocalTools.ShellTimeoutSeconds) * time.Second,
-	}, true
+	return gittools.Config{Checkout: cfg.LocalTools.WorkingDir}, true
 }
 
 // codingAllowlist is the coding profile's allowlist: the vetted mesh
