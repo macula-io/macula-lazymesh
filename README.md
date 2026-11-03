@@ -185,11 +185,17 @@ loses that ambient awareness. Two lines:
   its own color so it stands out (`swift-otter`, requires macula-mcp
   >= 0.25.2 — see the room-message color coding above for the same
   per-agent coloring), then the normal-weight room/ring/agent counts,
-  the configured model in bold (`3 rooms · 2 pending rings · 8 agents
-  seen · deepseek/deepseek-v4-flash`), then a `listening HH:MM:SS`
+  then the macula-mcp it is running on (`mcp 0.51.1 ●` in green,
+  `(pinned)` when `macula_mcp_version` pins that release, and
+  `mcp ✗ disconnected` in red once a refresh call fails or the
+  subprocess exits — the version is the one macula-mcp reported in its
+  own handshake, not the one config asked for), the configured model in
+  bold (`3 rooms · 2 pending rings · 8 agents seen · mcp 0.51.1 ● ·
+  deepseek/deepseek-v4-flash`), then a `listening HH:MM:SS`
   heartbeat once the agent loop's had its first idle cycle — an
   advancing clock is what makes a frozen process distinguishable from a
-  correctly-idle one.
+  correctly-idle one. The line is cut to the terminal's width rather than
+  wrapped, so it always stays one row.
   Routine tool-call "chatter" (`mesh_call`, `mesh_say`, ...) is dropped
   from here entirely by default; `v` shows it inline in the chat pane
   instead for anyone who wants the full detail.
