@@ -39,12 +39,12 @@ const (
 type chatEntry struct {
 	kind      chatEntryKind
 	at        time.Time
-	tool      string // set for chatToolCall / chatToolResult
-	text      string // collapsed-form text
-	detail    string // full text, shown only when details are expanded
-	streaming bool   // assistant entry still accumulating deltas
-	md        string // glamour rendering, cached once finished
-	mdWidth   int    // the width md was rendered at
+	tool      termText // set for chatToolCall / chatToolResult
+	text      termText // collapsed-form text
+	detail    termText // full text, shown only when details are expanded
+	streaming bool     // assistant entry still accumulating deltas
+	md        string   // glamour rendering, cached once finished
+	mdWidth   int      // the width md was rendered at
 	// alwaysDetail renders detail even when details are collapsed. Set for
 	// apply_patch: a patch that was applied to the checkout is shown to the
 	// operator straight away (#46) -- a change they did not see is not a
@@ -82,20 +82,33 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	now := time.Now()
 	switch ev.Kind {
 	case agent.EventAssistantMessage:
-		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, stop: ev.Stop}
+		return chatEntry{kind: chatAssistant, at: now, text: termTextOf(ev.Text), stop: ev.Stop}
 	case agent.EventAssistantDelta:
-		return chatEntry{kind: chatAssistant, at: now, text: ev.Text, streaming: true}
+		return chatEntry{kind: chatAssistant, at: now, text: termTextOf(ev.Text), streaming: true}
 	case agent.EventToolCall:
-		return chatEntry{kind: chatToolCall, at: now, tool: ev.ToolName, text: fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		return chatEntry{
+			kind:   chatToolCall,
+			at:     now,
+			tool:   termTextOf(ev.ToolName),
+			text:   termTextOf(fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60))),
+			detail: termTextOf(ev.Text),
+		}
 	case agent.EventToolResult:
-		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text, raw: ev.Text}
+		entry := chatEntry{
+			kind:   chatToolResult,
+			at:     now,
+			tool:   termTextOf(ev.ToolName),
+			text:   termTextOf(fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60))),
+			detail: termTextOf(ev.Text),
+			raw:    ev.Text,
+		}
 		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
 		// A command that changed the checkout carries its diff (#46): the
 		// operator is shown the diff itself, decoded, not the result JSON
 		// around it -- the model's own stdout must not be mistaken for it.
 		if ev.ToolName == "shell_exec" {
 			if diff, ok := workingTreeDiffOf(ev.Text); ok {
-				entry.detail = diff
+				entry.detail = termTextOf(diff)
 				entry.alwaysDetail = true
 			}
 		}
@@ -105,7 +118,13 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 		if ev.Err != nil {
 			msg = ev.Err.Error()
 		}
-		return chatEntry{kind: chatError, at: now, tool: ev.ToolName, text: fmt.Sprintf("error (%s): %s", ev.ToolName, truncateForChat(msg, 80)), detail: msg}
+		return chatEntry{
+			kind:   chatError,
+			at:     now,
+			tool:   termTextOf(ev.ToolName),
+			text:   termTextOf(fmt.Sprintf("error (%s): %s", ev.ToolName, truncateForChat(msg, 80))),
+			detail: termTextOf(msg),
+		}
 	case agent.EventBackoff:
 		return chatEntry{kind: chatSystem, at: now, text: "agent hit an error, backing off before retrying"}
 	case agent.EventMaxFailuresReached:
@@ -121,14 +140,14 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 		// clock time is what makes it a genuine liveness cue rather than
 		// static text: a frozen process would show the same timestamp
 		// forever, a working one keeps advancing it.
-		return chatEntry{kind: chatSystem, at: now, text: fmt.Sprintf("listening (%s)", now.Format("15:04:05"))}
+		return chatEntry{kind: chatSystem, at: now, text: termTextOf(fmt.Sprintf("listening (%s)", now.Format("15:04:05")))}
 	default:
 		return chatEntry{kind: chatSystem, at: now, text: "(unrecognized event)"}
 	}
 }
 
 func youChatEntry(text string) chatEntry {
-	return chatEntry{kind: chatYou, at: time.Now(), text: text}
+	return chatEntry{kind: chatYou, at: time.Now(), text: termTextOf(text)}
 }
 
 // directMeshServiceCallEntry converts a meshServiceCallResultMsg (a human,
@@ -143,9 +162,21 @@ func directMeshServiceCallEntry(msg meshServiceCallResultMsg) chatEntry {
 	tool := "[direct] " + msg.procedure
 	if msg.err != nil {
 		errText := msg.err.Error()
-		return chatEntry{kind: chatError, at: now, tool: tool, text: fmt.Sprintf("error (%s): %s", tool, truncateForChat(errText, 80)), detail: errText}
+		return chatEntry{
+			kind:   chatError,
+			at:     now,
+			tool:   termTextOf(tool),
+			text:   termTextOf(fmt.Sprintf("error (%s): %s", tool, truncateForChat(errText, 80))),
+			detail: termTextOf(errText),
+		}
 	}
-	return chatEntry{kind: chatToolResult, at: now, tool: tool, text: fmt.Sprintf("← %s: %s", tool, truncateForChat(msg.result, 60)), detail: msg.result}
+	return chatEntry{
+		kind:   chatToolResult,
+		at:     now,
+		tool:   termTextOf(tool),
+		text:   termTextOf(fmt.Sprintf("← %s: %s", tool, truncateForChat(msg.result, 60))),
+		detail: termTextOf(msg.result),
+	}
 }
 
 // Colors match the macula brand palette (macula-artwork's own documented
@@ -201,19 +232,19 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	if (detailsExpanded || e.alwaysDetail) && e.detail != "" && e.detail != e.text {
 		switch e.kind {
 		case chatToolResult:
-			text = fmt.Sprintf("← %s: %s", e.tool, e.detail)
+			text = termTextOf(fmt.Sprintf("← %s: %s", e.tool, e.detail))
 		case chatError:
-			text = fmt.Sprintf("error (%s): %s", e.tool, e.detail)
+			text = termTextOf(fmt.Sprintf("error (%s): %s", e.tool, e.detail))
 		}
 	}
-	// The one door every non-tool entry's text passes to the terminal: an
-	// answer, a peer's ring purpose, a provider's error are none of them
-	// lazymesh's own text (#81). The assistant's goes in markdownBody.
-	text = neutralise(text)
+	// The one door every non-tool entry's text passes to the terminal is
+	// where it was built: termTextOf, at construction (#95) -- an answer, a
+	// peer's ring purpose, a provider's error are none of them lazymesh's
+	// own text (#81). The assistant's goes on to glamour in markdownBody.
 
 	switch e.kind {
 	case chatYou:
-		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text)
+		return fmt.Sprintf("%s %s %s", ts, chatYouStyle.Render("you:"), text.String())
 	case chatAssistant:
 		body := fmt.Sprintf("%s %s\n%s", ts, chatAssistantStyl.Render("agent:"), e.markdownBody(width))
 		if marker := chatCutMarker(e.stop); marker != "" {
@@ -221,13 +252,13 @@ func (e *chatEntry) render(detailsExpanded bool, width int) string {
 		}
 		return body
 	case chatToolResult:
-		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text))
+		return fmt.Sprintf("%s %s", ts, chatToolStyle.Render(text.String()))
 	case chatError:
-		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(text))
+		return fmt.Sprintf("%s %s", ts, chatErrorStyleTUI.Render(text.String()))
 	case chatSystem:
-		return fmt.Sprintf("%s %s", ts, chatSystemStyle.Render(text))
+		return fmt.Sprintf("%s %s", ts, chatSystemStyle.Render(text.String()))
 	default:
-		return fmt.Sprintf("%s %s", ts, text)
+		return fmt.Sprintf("%s %s", ts, text.String())
 	}
 }
 
@@ -346,7 +377,7 @@ func (e *chatEntry) markdownBody(width int) string {
 	if !e.streaming && e.md != "" && e.mdWidth == width {
 		return e.md
 	}
-	text := neutralise(e.text)
+	text := e.text.String()
 	renderer := markdownRenderer(width)
 	if renderer == nil {
 		return text
@@ -372,11 +403,11 @@ func neutraliseRendered(rendered string) string {
 	b.Grow(len(rendered))
 	prev := 0
 	for _, span := range sgrStripper.FindAllStringIndex(rendered, -1) {
-		b.WriteString(neutralise(rendered[prev:span[0]]))
+		b.WriteString(termTextOf(rendered[prev:span[0]]).String())
 		b.WriteString(rendered[span[0]:span[1]])
 		prev = span[1]
 	}
-	b.WriteString(neutralise(rendered[prev:]))
+	b.WriteString(termTextOf(rendered[prev:]).String())
 	return b.String()
 }
 

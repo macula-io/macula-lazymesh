@@ -96,7 +96,7 @@ func lastChatSays(m Model, want string) bool {
 	if len(m.chatEntries) == 0 {
 		return false
 	}
-	return strings.Contains(m.chatEntries[len(m.chatEntries)-1].text, want)
+	return strings.Contains(m.chatEntries[len(m.chatEntries)-1].text.String(), want)
 }
 
 func TestLeaderReachesEveryCommand(t *testing.T) {

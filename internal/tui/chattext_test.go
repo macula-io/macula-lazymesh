@@ -12,7 +12,7 @@ import (
 func TestChatText_ErrorPopupAndSummaryAreNeutralised(t *testing.T) {
 	m := newTestModelWithEvents(t)
 	m.recordError(errString(hostileText), m.clock())
-	assertNoTerminalControl(t, "error history (popup text and its copy)", m.errorHistory[0].text)
+	assertNoTerminalControl(t, "error history (popup text and its copy)", m.errorHistory[0].text.String())
 	m = m.openErrorPopup(0)
 	assertNoTerminalControl(t, "error popup", m.renderErrorPopup())
 
@@ -71,12 +71,16 @@ func TestChatText_AssistantAnswerCannotDriveTheTerminal(t *testing.T) {
 
 // Every other entry kind renders through the same door: a system line can
 // carry a peer's ring purpose, an error a tool's or a provider's message.
+// Since #95 the door is termTextOf at construction -- a chatEntry's text is
+// a termText, so the only way in is the constructor -- and these entries
+// exercise what each kind then does with it (glamour, the tool renderers,
+// the clipboard paths).
 func TestChatText_EveryEntryKindIsNeutralised(t *testing.T) {
 	for name, entry := range map[string]chatEntry{
 		"you":    youChatEntry(hostileText),
-		"system": {kind: chatSystem, text: hostileText},
-		"error":  {kind: chatError, text: hostileText},
-		"result": {kind: chatToolResult, tool: "mesh_rooms", text: hostileText, detail: hostileText},
+		"system": {kind: chatSystem, text: termTextOf(hostileText)},
+		"error":  {kind: chatError, text: termTextOf(hostileText)},
+		"result": {kind: chatToolResult, tool: "mesh_rooms", text: termTextOf(hostileText), detail: termTextOf(hostileText)},
 	} {
 		for _, expanded := range []bool{false, true} {
 			assertNoTerminalControl(t, name, entry.render(expanded, 80))

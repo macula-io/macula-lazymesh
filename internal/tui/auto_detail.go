@@ -13,5 +13,5 @@ func AutoDetail(ev agent.Event) string {
 	if !entry.alwaysDetail {
 		return ""
 	}
-	return entry.detail
+	return entry.detail.String()
 }

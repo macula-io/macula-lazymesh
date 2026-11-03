@@ -1277,7 +1277,7 @@ func TestHandleMeshServiceCallResult_SuccessAndErrorRenderDifferentEntryKinds(t 
 	if len(m.chatEntries) != 1 || m.chatEntries[0].kind != chatToolResult {
 		t.Fatalf("expected one chatToolResult entry for success, got %+v", m.chatEntries)
 	}
-	if !strings.Contains(m.chatEntries[0].tool, "[direct]") {
+	if !strings.Contains(m.chatEntries[0].tool.String(), "[direct]") {
 		t.Fatalf("expected the tool field marked [direct], got %q", m.chatEntries[0].tool)
 	}
 
@@ -1654,7 +1654,9 @@ func TestApprovalPopupGDoesNotSkipTheMiddle(t *testing.T) {
 
 // TestApprovalPopupEscapesBidiAndZeroWidth: a bidi override or a
 // zero-width rune cannot reorder or hide part of a command (Trojan
-// Source); each is shown as \u{XXXX}.
+// Source); each is shown as <U+XXXX> -- the one spelling termTextOf gives
+// every format character (#95; before it, the approval popup had its own
+// \u{XXXX} rendering and the chat had this one).
 func TestApprovalPopupEscapesBidiAndZeroWidth(t *testing.T) {
 	args := "{\"command\":\"ls \u202e; hs | x lruc\u202c\u200b\u2066 \ufeffok\"}"
 	m, _ := approvalModel(t, 80, 40, args)
@@ -1663,7 +1665,7 @@ func TestApprovalPopupEscapesBidiAndZeroWidth(t *testing.T) {
 		if strings.ContainsRune(view, r) {
 			t.Errorf("U+%04X reached the screen raw", r)
 		}
-		if !strings.Contains(view, fmt.Sprintf("\\u{%04X}", r)) {
+		if !strings.Contains(view, fmt.Sprintf("<U+%04X>", r)) {
 			t.Errorf("U+%04X is not shown escaped:\n%s", r, view)
 		}
 	}

@@ -117,7 +117,7 @@ func (m *Model) ensureNotesPanel() {
 func wrapBlock(s string, width int) []string {
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {
-		lines = append(lines, wrapCells(line, width)...)
+		lines = append(lines, wrapCells(termTextOf(line), width)...)
 	}
 	return lines
 }
@@ -263,7 +263,7 @@ func sameContent(fresh []checkoutnotes.Note, shown checkoutnotes.Note) bool {
 
 // saySystem appends one system line to the conversation pane.
 func (m Model) saySystem(text string) (Model, tea.Cmd) {
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: text})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: termTextOf(text)})
 	m.syncViewport()
 	return m, nil
 }

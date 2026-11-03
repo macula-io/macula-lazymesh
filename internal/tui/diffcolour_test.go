@@ -20,7 +20,7 @@ func diffRows(t *testing.T, expanded bool, events ...agent.Event) map[string]lip
 			continue
 		}
 		for _, l := range e.toolCallLines(expanded) {
-			rows[strings.TrimSpace(l.text)] = l.style.GetForeground()
+			rows[strings.TrimSpace(l.text.String())] = l.style.GetForeground()
 		}
 	}
 	return rows
@@ -102,7 +102,7 @@ func TestDiffColour_ControlsStayVisibleAfterColouring(t *testing.T) {
 func TestDiffColour_HunkLinesThatLookLikeHeaders(t *testing.T) {
 	diff := "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n@@ -1,2 +1,2 @@\n--- keep: audit on\n-- drop the audit trigger\n+++ x\n++ y\n" +
 		"--- a/n.sql\n+++ b/n.sql\n@@ -1 +1 @@\n--- old\n+++ new\n"
-	lines := diffLines(textLines(diff))
+	lines := diffLines(textLines(termTextOf(diff)))
 	want := []lipgloss.Style{
 		diffFileStyle, diffFileStyle, diffFileStyle, diffHunkStyle,
 		diffRemovedStyle, diffRemovedStyle, diffAddedStyle, diffAddedStyle,

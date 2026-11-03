@@ -48,7 +48,7 @@ func TestOpenAgentLog_UnconfiguredPathIsReportedNotOpened(t *testing.T) {
 		t.Fatal("with no log path there is nothing to open, so no editor should launch")
 	}
 	last := m.chatEntries[len(m.chatEntries)-1]
-	if last.kind != chatError || !strings.Contains(last.text, "no agent log path") {
+	if last.kind != chatError || !strings.Contains(last.text.String(), "no agent log path") {
 		t.Fatalf("expected the missing path to be reported, got %+v", last)
 	}
 }
@@ -99,7 +99,7 @@ func TestLogViewed_ReportsAFailureAndStaysQuietOnSuccess(t *testing.T) {
 		t.Fatalf("expected an error entry, got %+v", last)
 	}
 	for _, want := range []string{"agent.log", "executable file not found"} {
-		if !strings.Contains(last.text, want) {
+		if !strings.Contains(last.text.String(), want) {
 			t.Fatalf("failure line should name %q so it can be acted on, got %q", want, last.text)
 		}
 	}

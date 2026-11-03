@@ -209,8 +209,8 @@ func TestToolCall_GitHeadlines(t *testing.T) {
 		"git_push":   {`{"remote":"origin"}`, "git push origin"},
 	}
 	for tool, c := range cases {
-		got := toolHeadline(tool, c[0])
-		if !strings.Contains(got, c[1]) {
+		got := toolHeadline(termTextOf(tool), termTextOf(c[0]))
+		if !strings.Contains(got.String(), c[1]) {
 			t.Fatalf("%s: headline %q lacks %q", tool, got, c[1])
 		}
 	}

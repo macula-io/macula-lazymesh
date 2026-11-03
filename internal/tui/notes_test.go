@@ -14,7 +14,7 @@ import (
 func chatTexts(m Model) string {
 	var b strings.Builder
 	for _, e := range m.chatEntries {
-		b.WriteString(e.text)
+		b.WriteString(e.text.String())
 		b.WriteString("\n")
 	}
 	return b.String()

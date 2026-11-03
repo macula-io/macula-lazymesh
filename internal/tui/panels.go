@@ -172,8 +172,8 @@ func (m Model) renderRooms() string {
 	rows := make([]table.Row, 0, len(m.state.joined))
 	for _, r := range m.state.joined {
 		rows = append(rows, table.Row{
-			roomLabel(r.RoomTopic, r.Purpose),
-			displayName(r.OpenedBy, r.OpenedByPetname),
+			termTextOf(roomLabel(r.RoomTopic, r.Purpose)).String(),
+			termTextOf(displayName(r.OpenedBy, r.OpenedByPetname)).String(),
 			fmt.Sprintf("%d", len(r.ParticipantsSeen)),
 			fmt.Sprintf("%d", r.MessagesReceived),
 		})
@@ -191,15 +191,15 @@ func (m Model) renderRooms() string {
 		if len(recent) == 0 {
 			continue
 		}
-		b.WriteString("\n" + dimStyle.Render(roomLabel(r.RoomTopic, r.Purpose)+":"))
+		b.WriteString("\n" + dimStyle.Render(termTextOf(roomLabel(r.RoomTopic, r.Purpose)+":").String()))
 		for _, msg := range recent {
 			// Issue #8: the speaker's name carries their deterministic
 			// identity color (same principle as the presence badge below,
 			// IRC-nick-style); the message body stays dim -- coloring the
 			// whole line would fight legibility for exactly the busy
 			// multi-agent conversation this is meant to help read.
-			who := agentBadgeStyle(identityKey(msg.From, msg.FromPetname)).Render(displayName(msg.From, msg.FromPetname))
-			b.WriteString("\n    " + who + dimStyle.Render(": "+truncate(msg.Text, 80)))
+			who := agentBadgeStyle(identityKey(msg.From, msg.FromPetname)).Render(termTextOf(displayName(msg.From, msg.FromPetname)).String())
+			b.WriteString("\n    " + who + dimStyle.Render(termTextOf(": "+truncate(msg.Text, 80)).String()))
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -228,9 +228,9 @@ func (m Model) renderPendingRings() string {
 	rows := make([]table.Row, 0, len(m.state.pending))
 	for _, r := range m.state.pending {
 		rows = append(rows, table.Row{
-			r.Direction,
-			displayName(r.Peer, r.PeerPetname),
-			r.Purpose,
+			termTextOf(r.Direction).String(),
+			termTextOf(displayName(r.Peer, r.PeerPetname)).String(),
+			termTextOf(r.Purpose).String(),
 		})
 	}
 	t.SetRows(rows)
@@ -317,10 +317,10 @@ func (m Model) renderPresence() string {
 
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top,
 			presenceCol(badge, widths[0], false),
-			presenceCol(name, widths[1], false),
-			presenceCol(a.SessionName, widths[2], false),
-			presenceCol(a.Model, widths[3], false),
-			presenceCol(a.ConnectedVia, widths[4], false),
+			presenceCol(termTextOf(name).String(), widths[1], false),
+			presenceCol(termTextOf(a.SessionName).String(), widths[2], false),
+			presenceCol(termTextOf(a.Model).String(), widths[3], false),
+			presenceCol(termTextOf(a.ConnectedVia).String(), widths[4], false),
 			presenceCol(fmt.Sprintf("%ds ago", a.SecondsSinceSeen), widths[5], false),
 		))
 	}
@@ -510,7 +510,12 @@ func (m Model) renderRealms() string {
 	)
 	rows := make([]table.Row, 0, len(m.state.realms))
 	for _, r := range m.state.realms {
-		rows = append(rows, table.Row{r.Realm, r.Handle, r.Tier, r.JoinedAt})
+		rows = append(rows, table.Row{
+			termTextOf(r.Realm).String(),
+			termTextOf(r.Handle).String(),
+			termTextOf(r.Tier).String(),
+			termTextOf(r.JoinedAt).String(),
+		})
 	}
 	t.SetRows(rows)
 	b.WriteString(t.View())
@@ -521,21 +526,26 @@ func (m Model) renderRealms() string {
 // pulled out from renderRealmJoinProgress so each kind's own wording has
 // a direct test independent of the panel's surrounding layout.
 func realmJoinStatusLine(ev realmjoin.Event) string {
+	// Every field here is the realm server's, not lazymesh's (#95): the
+	// realm name, the handle it hands out, its message and its timestamps
+	// are all peer-controlled text, so each goes through termTextOf before
+	// it is styled or joined into the line.
+	realm := termTextOf(ev.Realm)
 	switch ev.Kind {
 	case "starting":
-		return dimStyle.Render(fmt.Sprintf("starting join for %s...", ev.Realm))
+		return dimStyle.Render(fmt.Sprintf("starting join for %s...", realm))
 	case "already_joined":
-		return fmt.Sprintf("already joined %s as %s (joined %s)", ev.Realm, displayHandle(ev), ev.JoinedAt)
+		return fmt.Sprintf("already joined %s as %s (joined %s)", realm, displayHandle(ev), termTextOf(ev.JoinedAt))
 	case "confirmed":
-		return statusStripStyle.Render(fmt.Sprintf("✓ joined %s as %s", ev.Realm, displayHandle(ev)))
+		return statusStripStyle.Render(fmt.Sprintf("✓ joined %s as %s", realm, displayHandle(ev)))
 	case "expired":
-		return errStyle.Render(fmt.Sprintf("session for %s expired before it was confirmed -- %s", ev.Realm, realmRetryHint()))
+		return errStyle.Render(fmt.Sprintf("session for %s expired before it was confirmed -- %s", realm, realmRetryHint()))
 	case "timeout":
-		return errStyle.Render(fmt.Sprintf("gave up waiting for %s -- %s", ev.Realm, realmRetryHint()))
+		return errStyle.Render(fmt.Sprintf("gave up waiting for %s -- %s", realm, realmRetryHint()))
 	case "error", "spawn_error":
-		return errStyle.Render(fmt.Sprintf("error joining %s: %s", ev.Realm, ev.Message))
+		return errStyle.Render(fmt.Sprintf("error joining %s: %s", realm, termTextOf(ev.Message)))
 	default: // "session" -- interim, still polling
-		return dimStyle.Render(fmt.Sprintf("waiting for confirmation (session expires %s)...", ev.ExpiresAt))
+		return dimStyle.Render(fmt.Sprintf("waiting for confirmation (session expires %s)...", termTextOf(ev.ExpiresAt)))
 	}
 }
 
@@ -546,29 +556,31 @@ func realmRetryHint() string {
 	return keyHint(DefaultKeyMap.Normal, "dismiss") + ", then " + keyHint(DefaultKeyMap.Submit, "try again")
 }
 
-func displayHandle(ev realmjoin.Event) string {
+func displayHandle(ev realmjoin.Event) termText {
 	if ev.Handle != "" {
-		return ev.Handle
+		return termTextOf(ev.Handle)
 	}
-	return ev.OrgIdentity
+	return termTextOf(ev.OrgIdentity)
 }
 
 // renderRealmJoinProgress shows one join's own status -- the link and
-// QR while a session is pending (ev.QRTerminal is already ANSI-free
-// plain text, same as macula-mcp's own realm.ts qrTerminal renders in
-// its own tool output, so it's safe to drop straight into this bordered
-// panel), then whatever the terminal outcome was once it resolves.
+// QR while a session is pending, then whatever the terminal outcome was
+// once it resolves. The link, the QR and the realm name are the realm
+// server's text: macula-mcp's realm.ts qrTerminal is expected to be
+// ANSI-free, and termTextOf is what makes that expectation true rather
+// than assumed (#95) -- a control the server did slip in is shown, not
+// obeyed.
 // Esc (handleKey's own ToggleRealm-closing and Normal-mode-within-the-
 // panel paths) clears m.realmJoinLatest to get back to the plain list.
 func (m Model) renderRealmJoinProgress(ev realmjoin.Event) string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Realms -- joining %s", ev.Realm)) + "\n")
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Realms -- joining %s", termTextOf(ev.Realm))) + "\n")
 	if ev.Kind == "session" {
 		if ev.JoinURL != "" {
-			b.WriteString(ev.JoinURL + "\n\n")
+			b.WriteString(termTextOf(ev.JoinURL).String() + "\n\n")
 		}
 		if ev.QRTerminal != "" {
-			b.WriteString(ev.QRTerminal + "\n\n")
+			b.WriteString(termTextOf(ev.QRTerminal).String() + "\n\n")
 		}
 	}
 	b.WriteString(realmJoinStatusLine(ev))
