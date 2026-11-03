@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -60,7 +61,7 @@ type SessionArgs struct {
 
 // Say asks the session's loop to process one user message: the full
 // tool-calling round runs, and every intermediate step is forwarded to
-// each subscriber as an Event, in order, after the turn completes. Say is
+// each subscriber as an Event, in order, while the turn runs (#96). Say is
 // a REQUEST, not a cast: the driver blocks on SayReply until the turn is
 // done, preserving the sequential one-turn-at-a-time cadence the old
 // runAgent had — and SayReply.Err carries a turn failure as a value, so a
@@ -73,9 +74,18 @@ type Say struct {
 // SayReply is the answer to a Say: Err is nil on a completed turn, and
 // carries the loop's own error on a failed one. It travels as a normal
 // reply value — the driver decides what a failure means; the session
-// itself survives it.
+// itself survives it. A turn that panics is answered with sayCrashed
+// instead, which SayTurn reports as the session gone.
 type SayReply struct {
 	Err error
+}
+
+// sayCrashed is the answer to a Say whose turn panicked: the session
+// sends it on its way down, so the driver learns at once that the session
+// is gone instead of waiting out the call timeout (#96). SayTurn turns it
+// into a returned error, the same as any other death mid-turn.
+type sayCrashed struct {
+	Reason string
 }
 
 // Event is one loop step (assistant text, tool call, tool result, error)
@@ -225,23 +235,21 @@ func TryAnswerApproval(session gen.PID, id string, allow bool) bool {
 // approval timeout.
 //
 // It runs inside the loop's tool-call path, on the session's actor
-// goroutine — which is exactly why it BROADCASTS directly instead of
-// self-Sending: a self-Sent event would sit in the mailbox unprocessed
-// while the actor is blocked in Say, and the prompt would deadlock the
-// very answer it is waiting for. A direct broadcast from the actor's own
-// goroutine touches only what the actor already owns.
+// goroutine, so the question goes out on the turn's own event channel,
+// behind the text of the same turn that explains it (#96): the forwarding
+// goroutine delivers both, in the order the turn produced them.
 func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool, error) {
 	id := fmt.Sprintf("approve-%d", time.Now().UnixNano())
 	ch := make(chan approvalAnswer, 1)
 	slot := &approvalSlot{id: id, ch: ch}
 	approvals.Store(s.PID(), slot)
 	defer approvals.Delete(s.PID())
-	s.broadcast(agent.Event{
+	s.turnEvents <- agent.Event{
 		Kind:     agent.EventApprovalRequested,
 		ToolName: tool,
 		ID:       id,
 		Text:     argumentsJSON, // whole: the operator approves what they read (#39)
-	})
+	}
 	timer := time.NewTimer(approvalTimeout)
 	defer timer.Stop()
 	select {
@@ -260,10 +268,18 @@ func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool
 type session struct {
 	act.Actor
 
-	loop        *agent.Loop
+	loop      *agent.Loop
+	store     *sessionstore.Store
+	sessionID string
+
+	// subscribers is read by the turn's forwarding goroutine while the
+	// actor goroutine is blocked in a turn, so it is guarded by mu.
+	mu          sync.Mutex
 	subscribers map[gen.PID]struct{}
-	store       *sessionstore.Store
-	sessionID   string
+
+	// turnEvents is the running turn's event channel, set for the length
+	// of runSay; consent sends its question on it.
+	turnEvents chan<- agent.Event
 }
 
 func sessionFactory() gen.ProcessBehavior { return &session{} }
@@ -315,19 +331,11 @@ func (s *session) ProcessKind() gen.ProcessKind {
 	return gen.ProcessKindSession
 }
 
-// HandleMessage routes Subscribe, and Event — the live-drain shape:
-// runSay's forwarding goroutine self-Sends every loop event here, so the
-// broadcast to subscribers happens on the actor's own goroutine and the
-// subscriber map is never touched concurrently (Ergo's no-goroutines-in-
-// callbacks rule is about exactly this). An unknown message is logged
-// and dropped, never an error: a non-nil return terminates the process.
+// HandleMessage routes Subscribe. An unknown message is logged and
+// dropped, never an error: a non-nil return terminates the process.
 func (s *session) HandleMessage(from gen.PID, message any) error {
-	switch msg := message.(type) {
-	case Subscribe:
-		s.subscribers[from] = struct{}{}
-		return nil
-	case Event:
-		s.broadcast(msg.Event)
+	if _, ok := message.(Subscribe); ok {
+		s.subscribe(from)
 		return nil
 	}
 	s.Log().Warning("sessionhost: session dropped unknown message %T from %s", message, from)
@@ -344,19 +352,44 @@ func (s *session) HandleMessage(from gen.PID, message any) error {
 func (s *session) HandleCall(from gen.PID, ref gen.Ref, request any) (any, error) {
 	switch req := request.(type) {
 	case Say:
+		defer s.reportCrash(from, ref)
 		return SayReply{Err: s.runSay(req.Text)}, nil
 	case StatusRequest:
 		rounds, schemaBytes := s.loop.Rounds()
 		return Status{MessageCount: s.loop.MessageCount(), Usage: s.loop.Usage(), Rounds: rounds, ToolSchemaBytes: schemaBytes, Stop: s.loop.LastStopReason()}, nil
 	case Subscribe:
-		s.subscribers[from] = struct{}{}
-		return len(s.subscribers), nil
+		return s.subscribe(from), nil
 	}
 	s.Log().Warning("sessionhost: session answered unknown request %T from %s with UnsupportedReply", request, from)
 	if err := s.SendResponse(from, ref, UnsupportedReply{Request: request}); err != nil {
 		return nil, err
 	}
 	return nil, nil
+}
+
+// subscribe registers pid and reports how many subscribers there are.
+func (s *session) subscribe(pid gen.PID) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscribers[pid] = struct{}{}
+	return len(s.subscribers)
+}
+
+// reportCrash, deferred around a turn, answers the Say with sayCrashed
+// when the turn panics and then lets the panic go on, so Ergo still
+// terminates the session with TerminateReasonPanic and the supervisor
+// restarts it. Without it the driver would learn of the crash only when
+// its call timed out (#96).
+func (s *session) reportCrash(from gen.PID, ref gen.Ref) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	// Ergo's own panic line would point here, at the re-panic: log where
+	// the turn actually crashed first.
+	s.Log().Error("sessionhost: turn panicked: %v\n%s", r, debug.Stack())
+	_ = s.SendResponse(from, ref, sayCrashed{Reason: fmt.Sprint(r)})
+	panic(r)
 }
 
 // Terminate has nothing to release yet: the Loop owns no resources beyond
@@ -372,26 +405,15 @@ func (s *session) Terminate(reason error) {}
 // preempted, so interrupt will arrive as ctx-cancel at the boundary, not
 // as an actor Kill (conditions 2-3); and the failure mode supervision
 // exists for — a panic — is precisely what still gets caught and
-// restarted. Events are captured in a bounded buffer and broadcast after
-// the turn, so no subscriber can stall the loop.
-// runSay executes one full tool-calling turn inside this actor's callback.
-//
-// Blocking I/O in an actor callback is the deliberate deviation Ergo's own
-// guidelines warn about, and it is accepted here for three reasons, all
-// recorded in the D4 decision: Ergo runs one goroutine per process, so a
-// blocked session blocks only itself (Q5); a blocked turn cannot be
-// preempted, so interrupt will arrive as ctx-cancel at the boundary, not
-// as an actor Kill (conditions 2-3); and the failure mode supervision
-// exists for — a panic — is precisely what still gets caught and
 // restarted.
 //
-// Streaming (D3) changed the event drain: the loop now emits a delta per
-// content chunk, far more than the bounded capture buffer could hold
-// before it deadlocked the turn. One forwarding goroutine therefore
-// drains the buffer while Say runs and self-Sends every event through
-// the actor's own mailbox — all subscriber-state access stays on the
-// actor goroutine, and events reach subscribers live, in mailbox order,
-// ahead of the SayReply that ends the turn.
+// One forwarding goroutine drains the turn's event channel while Say runs
+// and broadcasts each event to the subscribers itself (#96). It used to
+// self-Send them through the actor's mailbox, which the actor reads only
+// after the turn: every delta then arrived in one burst at the end, and
+// an approval question, broadcast directly, overtook the text before it.
+// The channel is closed by a defer, so a turn that panics still ends its
+// forwarding goroutine instead of leaving it parked.
 func (s *session) runSay(text string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	turns.Store(s.PID(), cancel)
@@ -401,13 +423,12 @@ func (s *session) runSay(text string) error {
 	drained := make(chan struct{})
 	go func() {
 		for ev := range events {
-			_ = s.Send(s.PID(), Event{Event: ev})
+			s.broadcast(ev)
 		}
 		close(drained)
 	}()
-	err := s.loop.Say(ctx, text, events)
-	close(events)
-	<-drained
+	s.turnEvents = events
+	err := s.say(ctx, text, events, drained)
 	// Persist the turn's completed state change: the messages Say appended
 	// (user + assistant + tool results), appended to the log after the
 	// turn finishes. An in-flight turn lost to a crash is exactly that —
@@ -424,14 +445,13 @@ func (s *session) runSay(text string) error {
 			}
 		}
 	}
-	// The turn-complete marker is emitted BY the session, appended to the
-	// mailbox AFTER every event of the turn it just ran: it rides the
-	// same delivery path as the deltas, so the control plane's settle
-	// contract (deltas..., then turn_complete) holds regardless of how
-	// quickly the driver's SayReply travels to the caller. The driver's
-	// own success path deliberately does NOT emit EventListening for the
-	// same turn.
-	_ = s.Send(s.PID(), Event{Event: agent.Event{Kind: agent.EventListening}})
+	// The turn-complete marker is emitted BY the session, after every event
+	// of the turn it just ran has been delivered: it rides the same path as
+	// the deltas, so the control plane's settle contract (deltas..., then
+	// turn_complete) holds regardless of how quickly the driver's SayReply
+	// travels to the caller. The driver's own success path deliberately
+	// does NOT emit EventListening for the same turn.
+	s.broadcast(agent.Event{Kind: agent.EventListening})
 	// The turn's failure travels back to the driver as SayReply.Err: the
 	// loop has already emitted the EventError describing it, and the
 	// retry/backoff policy belongs to whoever drives the session — the
@@ -439,10 +459,24 @@ func (s *session) runSay(text string) error {
 	return err
 }
 
+// say runs the loop and, however it ends, panic included, closes the
+// turn's event channel and waits until its forwarding goroutine has
+// delivered everything.
+func (s *session) say(ctx context.Context, text string, events chan agent.Event, drained <-chan struct{}) error {
+	defer func() {
+		s.turnEvents = nil
+		close(events)
+		<-drained
+	}()
+	return s.loop.Say(ctx, text, events)
+}
+
 // broadcast forwards one event to every subscriber. A dead subscriber's
 // Send failure is expected and ignored — subscribers clean themselves up
 // by dying, and the event is not retried.
 func (s *session) broadcast(ev agent.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for pid := range s.subscribers {
 		_ = s.Send(pid, Event{Event: ev})
 	}
@@ -483,6 +517,9 @@ func SayTurn(n gen.Node, root, session gen.PID, text string) (SayReply, error) {
 	for {
 		reply, err := n.CallWithTimeout(session, Say{Text: text}, sayTurnTimeoutSeconds)
 		if err == nil {
+			if crash, ok := reply.(sayCrashed); ok {
+				return SayReply{}, fmt.Errorf("sessionhost: session %s crashed mid-turn: %s", session, crash.Reason)
+			}
 			r, ok := reply.(SayReply)
 			if !ok {
 				return SayReply{}, fmt.Errorf("sessionhost: session answered Say with %T, want SayReply", reply)
