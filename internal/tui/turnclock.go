@@ -70,19 +70,23 @@ func (m Model) endTurn(failed bool) Model {
 }
 
 // trackTurn moves the turn clock for one agent event: the listening beat
-// ends a turn, a backoff or the final failure ends it as failed, and any
-// other activity begins one if none is running.
+// ends a turn, a backoff or the final failure ends it as failed, and work
+// that only happens inside a turn begins one if none is running. Nothing
+// else starts a turn: an error can arrive while the agent is parked (the
+// roster gate reports an unreadable inbox then), and a ring is the mesh
+// knocking -- counting either would run a clock with no turn behind it
+// (#91 review).
 func (m Model) trackTurn(ev agent.Event) (Model, tea.Cmd) {
 	switch ev.Kind {
 	case agent.EventListening:
 		return m.endTurn(false), nil
 	case agent.EventBackoff, agent.EventMaxFailuresReached:
 		return m.endTurn(true), nil
-	case agent.EventRingPending:
-		// A ring is the mesh knocking, not the agent working.
-		return m, nil
+	case agent.EventAssistantDelta, agent.EventAssistantMessage, agent.EventToolCall,
+		agent.EventToolResult, agent.EventApprovalRequested:
+		return m.beginTurn()
 	}
-	return m.beginTurn()
+	return m, nil
 }
 
 // handleTurnTick re-arms the tick while a turn runs and lets it lapse
