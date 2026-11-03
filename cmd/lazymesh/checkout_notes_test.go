@@ -51,9 +51,9 @@ func TestPlantedCheckoutNotesCannotGiveOrders(t *testing.T) {
 	if reading.Notes[0].Trusted {
 		t.Fatal("a planted note started out trusted")
 	}
-	prompt := buildCodingSystemPrompt("", true, checkoutnotes.Prompt(reading.Notes))
+	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes))
 
-	tools, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom))
+	tools, _, err := buildCodingToolSource(cfg, &fakeMesh{}, onlyRoom(codingRoom), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestTrustedCheckoutNoteThatChangedReachesTheModelAsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := buildCodingSystemPrompt("", true, checkoutnotes.Prompt(reading.Notes))
+	prompt := buildCodingSystemPrompt("", true, false, checkoutnotes.Prompt(reading.Notes))
 	if strings.Contains(prompt, "<"+checkoutnotes.OperatorFence) {
 		t.Fatalf("a changed file kept the operator's authority:\n%s", prompt)
 	}

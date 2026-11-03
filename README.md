@@ -359,6 +359,25 @@ What changes in this profile:
   `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
   asking.
+- **Handing work out is a separate, narrower tool.** Name `git_branch`,
+  `git_commit` and `git_push` on `tool_allowlist` and the model can create
+  or switch a branch, commit, and push that branch to your checkout's own
+  configured remote (the one in `local_tools.working_dir`). It can never
+  push `main`, `master` or a tag (in any letter case), never follow a tag,
+  never force, and never reach a different remote — not even when an
+  approval says yes: those calls are refused before you are asked, and
+  every refusal is written to `agent.log` with its arguments and reason.
+  What you approve is the resolved command — the remote, its URL and the
+  ref `refs/heads/<branch>` — not an empty argument object.
+  The push URL is the one read when lazymesh started; if the checkout's
+  config rewrites it, adds push refs, sets a mirror, or names a filter, a
+  gpg program, an ssh or askpass command, a remote `receivepack`/
+  `uploadpack` or an include, the call is refused. Every git command pins
+  hooks, fsmonitor, commit signing, the ssh command, the credential helper,
+  askpass and `ext:` remotes on its own command line, the environment's
+  `GIT_*` variables are dropped, and a `.git` that is a symlink or that
+  changed after start is refused outright: a swapped `.git` is a whole
+  attacker-chosen config. It never prompts for credentials.
 - The roster lives only in your config file. Nothing the model does changes
   it, and it is separate from the ring pop-up's "Answer + Trust" list.
 
