@@ -298,16 +298,21 @@ func (c *Controller) failPending() {
 // catch — it showed an operator every approval with empty arguments.
 func parseEvent(line []byte) (agent.Event, bool) {
 	var raw struct {
-		Type       string `json:"type"`
-		Text       string `json:"text"`
-		Tool       string `json:"tool"`
-		Args       string `json:"args"`
-		Result     string `json:"result"`
-		Error      string `json:"error"`
-		ID         string `json:"id"`
-		RingID     string `json:"ring_id"`
-		From       string `json:"from"`
-		Purpose    string `json:"purpose"`
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Tool    string `json:"tool"`
+		Args    string `json:"args"`
+		Result  string `json:"result"`
+		Error   string `json:"error"`
+		ID      string `json:"id"`
+		RingID  string `json:"ring_id"`
+		From    string `json:"from"`
+		Purpose string `json:"purpose"`
+
+		ContextTokens int `json:"context_tokens"`
+		ContextWindow int `json:"context_window"`
+		RunTokens     int `json:"run_tokens"`
+
 		Stop       string `json:"stop"`
 		StopDetail string `json:"stop_detail"`
 	}
@@ -335,6 +340,8 @@ func parseEvent(line []byte) (agent.Event, bool) {
 		return agent.Event{Kind: agent.EventListening}, true
 	case "ring_pending":
 		return agent.Event{Kind: agent.EventRingPending, ID: raw.RingID, From: raw.From, Text: raw.Purpose}, true
+	case "usage":
+		return agent.Event{Kind: agent.EventUsageReported, Usage: agent.UsageReport{ContextTokens: raw.ContextTokens, ContextWindow: raw.ContextWindow, RunTokens: raw.RunTokens}}, true
 	default:
 		return agent.Event{}, false
 	}

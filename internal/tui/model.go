@@ -106,6 +106,11 @@ type Options struct {
 	AgentEvents <-chan agent.Event // nil when no --room agent is running
 	UserInputCh chan<- string      // where a submitted message is sent for runAgent to pick up
 
+	// PromptHistoryPath is where sent prompts are kept for recall with the
+	// up key (#78 gap 5; see prompthistory). Empty means no history:
+	// nothing is read or written (forget_prompts).
+	PromptHistoryPath string
+
 	// InterruptCh receives a signal on the `x` key (normal mode): the
 	// caller cancels the in-flight turn's context. nil when unwired, in
 	// which case `x` reports rather than sending.
@@ -300,6 +305,17 @@ type Model struct {
 	leaderPending bool
 	leader        key.Binding
 
+	// usage is the latest usage report from the agent loop (#78 gap 4),
+	// the zero value until the first one: see usageSegment.
+	usage agent.UsageReport
+
+	// promptHistoryPath, prompts and recallAt are prompt recall (#78 gap
+	// 5, prompthistory.go): the file, the prompts it holds oldest first,
+	// and which one the composer shows -- len(prompts) when none.
+	promptHistoryPath string
+	prompts           []string
+	recallAt          int
+
 	// lastKeyAt is when a key last reached the TUI. A pop-up opens only when
 	// this is popupIdleDelay in the past, so one cannot take the screen in the
 	// middle of a word (#62).
@@ -477,7 +493,9 @@ func New(client toolCaller, opts Options) Model {
 		refusedNotes:      append([]checkoutnotes.Refused{}, opts.CheckoutRefused...),
 		checkoutDir:       opts.CheckoutDir,
 		checkoutTrustPath: opts.CheckoutTrustPath,
+		promptHistoryPath: opts.PromptHistoryPath,
 	}
+	m.loadPrompts()
 	// One line at start naming the macula-mcp this session is running on
 	// (macula-lazymesh#61): the summary segment is a glance, this is the
 	// record in the conversation itself, in the same voice as the rest of
@@ -875,6 +893,10 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.realmJoinInput.Focus()
 	}
 
+	if next, ok := m.recall(msg); ok {
+		return next, nil
+	}
+
 	// Everything else is the composer's.
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -885,6 +907,7 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if text == "" {
 			return m, cmd
 		}
+		m.rememberPrompt(text)
 		m.chatEntries = append(m.chatEntries, youChatEntry(text))
 		m.lastInputAt = time.Now()
 		m.syncViewport()
@@ -1387,6 +1410,13 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 		m.lastListeningAt = time.Now()
 	}
 
+	if ev.Kind == agent.EventUsageReported {
+		// A status figure, never a chat line: it arrives after every
+		// round and would bury the conversation.
+		m.usage = ev.Usage
+		return m, waitForAgentEvent(m.agentEvents)
+	}
+
 	if ev.Kind == agent.EventApprovalRequested {
 		next, cmd := m.showApproval(ApprovalRequestEvent{Tool: ev.ToolName, ID: ev.ID, Args: ev.Text})
 		// A held request is a tool call waiting on a person who may never see
@@ -1788,9 +1818,6 @@ func (m Model) renderSummaryLine() string {
 	if !m.lastListeningAt.IsZero() {
 		tail += " · listening " + m.lastListeningAt.Format("15:04:05")
 	}
-	if tail != "" {
-		out += summaryStyle.Render(tail)
-	}
 
 	// Leads with "who am I" when known -- the dual-instance identity bug
 	// (two lazymesh instances silently sharing one mesh node_id, fixed in
@@ -1801,6 +1828,17 @@ func (m Model) renderSummaryLine() string {
 		identity := identityKey(self.NodeID, self.Petname)
 		name := agentBadgeStyle(identity).Render(displayName(self.NodeID, self.Petname))
 		out = name + summaryStyle.Render(" · ") + out
+	}
+	// The context figure sits beside the model it describes, ahead of the
+	// tail, and only when it fits whole in what the width leaves: the cut
+	// below would otherwise end it mid-number, and "context 64" or "(6"
+	// reads as a different figure (#78 gap 4 review).
+	if seg := summaryStyle.Render(" · " + usageSegment(m.usage)); m.usage.ContextTokens > 0 &&
+		(m.width == 0 || lipgloss.Width(out)+lipgloss.Width(seg) <= m.width) {
+		out += seg
+	}
+	if tail != "" {
+		out += summaryStyle.Render(tail)
 	}
 	if m.lastErr != nil {
 		out += "  " + formatSummaryError(m.leaderLabel(), m.lastErr)
