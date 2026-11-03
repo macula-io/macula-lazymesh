@@ -358,7 +358,11 @@ What changes in this profile:
   invisible characters (bidi overrides, zero-width marks) written out as
   `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
-  asking.
+  asking. The prompt can arrive while you are mid-word, so its answer keys
+  stay asleep for 0.6 s after it appears and after the last key that
+  reached it — a letter meant for your message cannot answer it, and the
+  prompt says so while the keys sleep. `esc` denies at once: the safe
+  answer is never delayed.
 - **Handing work out is a separate, narrower tool.** Name `git_branch`,
   `git_commit` and `git_push` on `tool_allowlist` and the model can create
   or switch a branch, commit, and push that branch to your checkout's own

@@ -51,8 +51,18 @@ func answerRingCmd(mcp toolCaller, ringID string, answer int, alsoTrust bool, pe
 func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	r := m.pendingRingPopup
 	if r == nil {
-		m.mode = ModeNormal
+		m.mode = m.returnTo
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
+		return m, nil
+	}
+
+	// The same guard the approval pop-up has (#59), for the same reason: this
+	// one opens under the cursor too, and `a` is a letter a person types. Esc
+	// is not an answer here -- it leaves the ring pending -- so it stays
+	// instant, and every key still restarts the guard.
+	armed := m.ringArm.armedAt(m.clock())
+	m.ringArm.lastKeyAt = m.clock()
+	if !armed && !key.Matches(msg, DefaultKeyMap.Normal) {
 		return m, nil
 	}
 
@@ -60,25 +70,29 @@ func (m Model) handleRingPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case key.Matches(msg, DefaultKeyMap.Answer):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
-		m.mode = ModeNormal
+		m.ringArm = popupArm{}
+		m.mode = m.returnTo
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, false, "")
 	case key.Matches(msg, DefaultKeyMap.Decline):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
-		m.mode = ModeNormal
+		m.ringArm = popupArm{}
+		m.mode = m.returnTo
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerDecline, false, "")
 	case key.Matches(msg, DefaultKeyMap.Trust):
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
-		m.mode = ModeNormal
+		m.ringArm = popupArm{}
+		m.mode = m.returnTo
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, answerRingCmd(m.mcp, r.RingID, answerAccept, true, r.Peer)
 	case key.Matches(msg, DefaultKeyMap.Normal): // Esc
 		m.seenRingIDs[r.RingID] = true
 		m.pendingRingPopup = nil
-		m.mode = ModeNormal
+		m.ringArm = popupArm{}
+		m.mode = m.returnTo
 		m.resizeComponents() // hint row goes from 1 line (Ring) to 2 (Normal)
 		return m, nil
 	}
@@ -127,12 +141,16 @@ func (m Model) renderRingPopup() string {
 	if purpose == "" {
 		purpose = "(no purpose given)"
 	}
+	hint := "[a] Answer   [d] Decline   [t] Answer + Trust   [esc] Later"
+	if !m.ringArm.armedAt(m.clock()) {
+		hint = armHint() + "   [esc] Later"
+	}
 	body := fmt.Sprintf(
 		"%s\n\nIncoming ring from %s\n\n%s\n\n%s",
 		popupTitleStyle.Render("☎ Incoming ring"),
 		name,
 		purpose,
-		popupHintStyle.Render("[a] Answer   [d] Decline   [t] Answer + Trust   [esc] Later"),
+		popupHintStyle.Render(hint),
 	)
 	return popupBorderStyle.Render(body)
 }
