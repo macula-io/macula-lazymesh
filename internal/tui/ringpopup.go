@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -144,27 +145,60 @@ var (
 // renderRingPopup is the phone-call-style modal: who's ringing (petname
 // over raw hex, same principle as everywhere else), why, and the three
 // phone-style actions plus a way to leave it for later.
+//
+// Everything in it is peer-authored text, and a peer chooses how long its
+// purpose is, so the box is laid out for the terminal it is shown on
+// (#112): the name and the purpose wrap to the room the border and padding
+// leave, and the hint row drops whole actions rather than running past the
+// edge. A box wider than the terminal is wrapped by the terminal itself,
+// which pushes the screen off by a row -- the class #86 closed for the
+// status strip.
 func (m Model) renderRingPopup() string {
 	r := m.pendingRingPopup
 	if r == nil {
 		return ""
 	}
+	inner := ringPopupInnerWidth(m.width)
 	// Both are the peer's own text (#81): shown, never acted on.
-	name := collapseNewlines(termTextOf(displayName(r.Peer, r.PeerPetname)).String())
+	nameLines := wrapCells(termTextOf("Incoming ring from "+collapseNewlines(displayName(r.Peer, r.PeerPetname))), inner)
 	purpose := termTextOf(r.Purpose)
 	if purpose == "" {
 		purpose = "(no purpose given)"
 	}
-	hint := "[a] Answer   [d] Decline   [t] Answer + Trust   [esc] Later"
-	if !m.ringArm.armedAt(m.clock()) {
-		hint = armHint() + "   [esc] Later"
+	purposeLines := wrapCells(purpose, inner)
+	var hint string
+	if m.ringArm.armedAt(m.clock()) {
+		hint = fitHintSegments([]hintSegment{
+			{"[a] Answer", 0},
+			{"[d] Decline", 1},
+			{"[t] Answer + Trust", 3},
+			{"[esc] Later", 2},
+		}, "   ", inner)
+	} else {
+		hint = fitHintSegments([]hintSegment{
+			{armHint(), 0},
+			{"[esc] Later", 1},
+		}, "   ", inner)
 	}
-	body := fmt.Sprintf(
-		"%s\n\nIncoming ring from %s\n\n%s\n\n%s",
-		popupTitleStyle.Render("☎ Incoming ring"),
-		name,
-		purpose,
-		popupHintStyle.Render(hint),
-	)
-	return popupBorderStyle.Render(body)
+	lines := append([]string{popupTitleStyle.Render("☎ Incoming ring"), ""}, nameLines...)
+	lines = append(lines, "")
+	lines = append(lines, purposeLines...)
+	lines = append(lines, "", popupHintStyle.Render(hint))
+	return popupBorderStyle.Render(strings.Join(lines, "\n"))
+}
+
+// ringPopupInnerWidth is the widest content line the ring pop-up may hold
+// on a terminal width cells wide: its thick border takes one cell each
+// side and its padding two, so six cells of the box are chrome (#112). An
+// unknown width (before the first resize) wraps nothing; a very narrow one
+// gets a floor rather than a nonsense width.
+func ringPopupInnerWidth(width int) int {
+	if width <= 0 {
+		return 1 << 20
+	}
+	inner := width - 6
+	if inner < 10 {
+		return 10
+	}
+	return inner
 }
