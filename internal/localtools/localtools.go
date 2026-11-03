@@ -336,8 +336,8 @@ func (s *Source) shellExec(ctx context.Context, args map[string]any) (string, er
 
 // createOutputFile makes a new file in the output directory through
 // os.Root, after refusing an output directory that is a symlink: the
-// coding profile mounts it read-only in the sandbox, and the host still
-// does not trust the path (#26).
+// sandbox mounts it read-only, and the host still does not trust the
+// path (#26).
 func (s *Source) createOutputFile() (*os.File, error) {
 	info, err := os.Lstat(s.outputDir)
 	if err != nil {
