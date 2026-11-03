@@ -330,11 +330,15 @@ type Model struct {
 	// the live one under the person's eyes (macula-lazymesh#62 review r=2).
 	deferredApproval *ApprovalRequestEvent
 
-	// lastInputAt is when this TUI last sent a message to the agent.
-	// lastListeningAt (below) is its other half: the agent emits a listening
-	// beat when it parks between turns, so a send that no beat has followed is
-	// a turn in flight, which is what esc interrupts.
-	lastInputAt time.Time
+	// turnStartedAt is when the running turn began, zero while the agent is
+	// idle (#78 gap 2): set at a submit or at the agent's first activity,
+	// cleared by the listening beat it emits when it parks between turns, or
+	// by a backoff. A running turn is what esc interrupts. turnInterrupted
+	// records that esc did, so the turn's end line can say so; turnTicking
+	// that a turnTickMsg is scheduled, so there is never more than one.
+	turnStartedAt   time.Time
+	turnInterrupted bool
+	turnTicking     bool
 
 	// approvalArm and ringArm are the two pop-ups' arming state (#59): the
 	// answer keys do nothing until a pause has passed, so a key meant for a
@@ -798,7 +802,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRefresh(msg)
 
 	case agentEventMsg:
-		return m.handleAgentEvent(msg)
+		m, turnCmd := m.trackTurn(agent.Event(msg))
+		next, cmd := m.handleAgentEvent(msg)
+		return next, tea.Batch(cmd, turnCmd)
+
+	case turnTickMsg:
+		return m.handleTurnTick()
 
 	case approvalResolvedMsg:
 		return m.handleApprovalResolved(msg)
@@ -927,9 +936,9 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.rememberPrompt(text)
 		m.chatEntries = append(m.chatEntries, youChatEntry(text))
-		m.lastInputAt = time.Now()
 		m.syncViewport()
-		return m, tea.Batch(cmd, sendUserInput(m.userInputCh, text))
+		m, turnCmd := m.beginTurn()
+		return m, tea.Batch(cmd, sendUserInput(m.userInputCh, text), turnCmd)
 	}
 	return m, cmd
 }
@@ -1123,7 +1132,7 @@ func (m Model) maybeShowDeferredApproval() (Model, tea.Cmd) {
 // emits one when it parks between turns (see lastListeningAt). Esc interrupts
 // only while this holds, so a stray esc while the agent is idle does nothing.
 func (m Model) turnRunning() bool {
-	return !m.lastInputAt.IsZero() && m.lastInputAt.After(m.lastListeningAt)
+	return !m.turnStartedAt.IsZero()
 }
 
 // interruptTurn cancels the in-flight turn. A non-blocking send: the caller's
@@ -1133,6 +1142,7 @@ func (m Model) interruptTurn() (tea.Model, tea.Cmd) {
 		select {
 		case m.interruptCh <- struct{}{}:
 			m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: "interrupting the current turn..."})
+			m.turnInterrupted = m.turnRunning()
 			m.syncViewport()
 		default:
 		}
@@ -1849,6 +1859,12 @@ func (m Model) renderLeaderHint() string {
 // (rooms/rings/agents/model) is normal weight (summaryStyle).
 func (m Model) renderSummaryLine() string {
 	var out string
+
+	// A running turn first: it is what changes, and what an operator who
+	// just pressed enter is looking for (#78 gap 2).
+	if seg := m.turnSegment(); seg != "" {
+		out += turnWorkingStyle.Render(seg) + summaryStyle.Render(" · ")
+	}
 
 	// Which macula-mcp this is, and whether it is still answering: a person
 	// could not tell lazymesh used macula-mcp at all before this

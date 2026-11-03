@@ -25,6 +25,19 @@ func typeKey(t tea.KeyType) tea.KeyMsg {
 	return tea.KeyMsg(tea.Key{Type: t})
 }
 
+// runCmd executes a command the way bubbletea would, a batch's members
+// included: a submit returns the send together with the turn clock's tick.
+func runCmd(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			runCmd(c)
+		}
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	userInputCh := make(chan string, 8)
@@ -106,7 +119,7 @@ func TestEnterSubmitsAndKeepsTheComposerFocused(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected a command to deliver the message to userInputCh")
 	}
-	cmd() // execute the returned tea.Cmd synchronously
+	runCmd(cmd) // execute the returned tea.Cmd synchronously
 
 	select {
 	case got := <-userInputCh:
@@ -1490,7 +1503,7 @@ func TestBareXTypesAndEscInterruptsARunningTurn(t *testing.T) {
 	}
 
 	// A sent message with no listening beat since is a turn in flight.
-	m.lastInputAt = time.Now()
+	m.turnStartedAt = time.Now()
 	updated, _ := m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
 	select {
@@ -1502,8 +1515,9 @@ func TestBareXTypesAndEscInterruptsARunningTurn(t *testing.T) {
 		t.Fatalf("esc cost the draft: %q", m.input.Value())
 	}
 
-	// With the agent parked again, the same esc does nothing.
-	m.lastListeningAt = time.Now().Add(time.Second)
+	// With the agent parked again (its listening beat ended the turn), the
+	// same esc does nothing.
+	m.turnStartedAt = time.Time{}
 	updated, _ = m.Update(typeKey(tea.KeyEsc))
 	m = updated.(Model)
 	select {
@@ -1778,7 +1792,7 @@ func TestComposeIsMultiline(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter did not return the send command")
 	}
-	cmd()
+	runCmd(cmd)
 	select {
 	case sent := <-userInputCh:
 		if sent != "a\nb" {
