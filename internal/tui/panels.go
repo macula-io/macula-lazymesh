@@ -487,7 +487,7 @@ func (m Model) renderRealms() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Realms (%d joined)", len(m.state.realms))) + "\n")
 	if len(m.state.realms) == 0 {
-		b.WriteString(m.panelPlaceholder("no realms joined yet -- i: join one"))
+		b.WriteString(m.panelPlaceholder("no realms joined yet -- " + keyHint(DefaultKeyMap.Submit, "join one")))
 		return b.String()
 	}
 

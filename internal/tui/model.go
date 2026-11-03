@@ -1661,13 +1661,13 @@ func (m Model) renderHintLines() []string {
 	case ModeErrorPopup:
 		return []string{statusStripStyle.Render("-- ERRORS --")}
 	case ModeNotesPanel:
-		return []string{statusStripStyle.Render("-- NOTES --") + "  " + dimStyle.Render("tab: next  t: trust  N/esc: close")}
+		return []string{statusStripStyle.Render("-- NOTES --") + "  " + dimStyle.Render("tab: next  "+keyHint(DefaultKeyMap.Trust, "trust")+"  N/esc: close")}
 	case ModeRealmJoin:
-		return []string{statusStripStyle.Render("-- REALM --") + "  " + dimStyle.Render("enter: join  esc: cancel")}
+		return []string{statusStripStyle.Render("-- REALM --") + "  " + dimStyle.Render(keyHint(DefaultKeyMap.Submit, "join")+"  "+keyHint(DefaultKeyMap.Normal, "cancel"))}
 	case ModeMeshServiceCall:
-		return []string{statusStripStyle.Render("-- MESH CALL --") + "  " + dimStyle.Render("enter: call "+m.meshServiceCallProcedure+"  esc: cancel")}
+		return []string{statusStripStyle.Render("-- MESH CALL --") + "  " + dimStyle.Render(keyHint(DefaultKeyMap.Submit, "call "+m.meshServiceCallProcedure)+"  "+keyHint(DefaultKeyMap.Normal, "cancel"))}
 	case ModeMeshServicesPanel:
-		return []string{statusStripStyle.Render("-- MESH SERVICES --") + "  " + dimStyle.Render("↑↓: select  enter: call  esc: close")}
+		return []string{statusStripStyle.Render("-- MESH SERVICES --") + "  " + dimStyle.Render("↑↓: select  "+keyHint(DefaultKeyMap.Submit, "call")+"  "+keyHint(DefaultKeyMap.Normal, "close"))}
 	}
 
 	if m.leaderPending {
