@@ -563,11 +563,13 @@ What the sandbox does not cover:
   (`shell_timeout_seconds`) applies.
 - **The shell runs only in a git checkout, in either profile**: the working
   directory needs a real `.git` (a directory, or the file a git worktree
-  has), which the sandbox keeps read-only. The default
-  `~/.config/lazymesh/workspace` is not one, so set `working_dir` to a
-  checkout before you expect a shell. `shell_exec` is then refused, with
-  that reason, and every other local tool keeps working. `write_file`
-  never writes into `.git` and never writes through a symlink.
+  has), which the sandbox keeps read-only, and it has to sit outside
+  `~/.config/lazymesh`, which the sandbox fences off. The default
+  `~/.config/lazymesh/workspace` therefore never has a shell, even as a
+  git repository: point `working_dir` at a checkout somewhere else.
+  `shell_exec` is then refused, with that reason, and every other local
+  tool keeps working. `write_file` never writes into `.git` and never
+  writes through a symlink.
 
 Every call lazymesh refuses (you denied it, it was too long to show, the
 tool is not allowed, there is no shell) is written whole, with the reason,

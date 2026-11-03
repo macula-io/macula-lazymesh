@@ -270,9 +270,10 @@ goreleaser from a `v*` tag; this file records what each one changes.
   at all and says why, exactly as the coding profile already behaved.
   There is no setting that runs it unconfined and no compatibility switch.
   The system prompt promises `shell_exec` only when a sandbox exists. One
-  consequence: the shell needs a real `.git` in `local_tools.working_dir`,
-  so the default `~/.config/lazymesh/workspace` gets no shell until
-  `working_dir` names a checkout; the file tools are unaffected.
+  consequence: the shell needs a real `.git` in `local_tools.working_dir`
+  and a directory outside `~/.config/lazymesh`, which the sandbox fences,
+  so the default `~/.config/lazymesh/workspace` never has a shell; point
+  `working_dir` at a checkout elsewhere. The file tools are unaffected.
 - **The control socket serves only controllers of the same user.** Each
   connection is checked against the kernel's record of who connected
   (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS); a peer of another uid,
