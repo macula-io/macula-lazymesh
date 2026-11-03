@@ -1582,8 +1582,8 @@ func (m Model) chatBody() string {
 		return body
 	}
 	lines := strings.Split(body, "\n")
-	bottom := m.leaderLabel() + " " + DefaultKeyMap.ScrollBottom.Help().Key
-	lines[len(lines)-1] = statusStripStyle.Render("↓ new below -- " + bottom + ": " + DefaultKeyMap.ScrollBottom.Help().Desc)
+	bottom := m.leaderLabel() + " " + keyHint(DefaultKeyMap.ScrollBottom, DefaultKeyMap.ScrollBottom.Help().Desc)
+	lines[len(lines)-1] = statusStripStyle.Render("↓ new below -- " + bottom)
 	return strings.Join(lines, "\n")
 }
 
