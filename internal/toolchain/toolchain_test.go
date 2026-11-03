@@ -304,8 +304,14 @@ func TestChainHandoffBeforeWatchedRoomsBeforeAllowlist(t *testing.T) {
 
 	t.Run("watched-rooms-outside-allowlist", func(t *testing.T) {
 		base := &recordingBase{}
+		// mesh_say deliberately NOT on the allowlist: with it admitted,
+		// both orders refuse with the roster's message and the test would
+		// pass on a swapped chain too (the observation on #100's review).
+		// Without it, the refusal's own words say which guard decided
+		// first -- the roster's when the order is right, the allowlist's
+		// if the two were swapped.
 		p := policyOpts{
-			allowlist:    []string{"mesh_say"},
+			allowlist:    []string{"mesh_rooms"},
 			handoff:      true,
 			watchedRooms: func(string) bool { return false },
 			recordDenial: true,
@@ -313,7 +319,7 @@ func TestChainHandoffBeforeWatchedRoomsBeforeAllowlist(t *testing.T) {
 		_, err := toolchain.Chain(p).CallToolRaw(context.Background(), "mesh_say",
 			`{"room_topic":"`+unwatched+`","text":"hi"}`)
 		if err == nil || !strings.Contains(err.Error(), "limited to the rooms") {
-			t.Fatalf("err = %v, want the roster's refusal even though the allowlist admits mesh_say", err)
+			t.Fatalf("err = %v, want the roster's refusal before the allowlist's", err)
 		}
 		if len(base.calls) != 0 {
 			t.Fatalf("base was called despite the roster refusal: %v", base.calls)
@@ -379,5 +385,45 @@ func TestChainListToolsThroughTerse(t *testing.T) {
 	required, _ := join.InputSchema.(map[string]any)["required"].([]string)
 	if len(required) != 1 || required[0] != "room_topic" {
 		t.Fatalf("mesh_join_room schema = %+v, want the hand-authored room_topic-only schema", join.InputSchema)
+	}
+}
+
+// TestChainAnAskListWithoutConsentRefusesTheCall pins the chain's
+// fail-closed rule: naming a tool as needing approval while supplying
+// nobody to ask refuses THAT tool, and only that one. Before this was
+// pinned, the chain dropped the guard instead, so an ask list with no
+// consent ran the very calls it named (found by the review of #100).
+func TestChainAnAskListWithoutConsentRefusesTheCall(t *testing.T) {
+	var denied []agent.Denial
+	base := &recordingBase{}
+	p := toolchain.Policy{
+		Base:         base,
+		Allowlist:    []string{"shell_exec", "mesh_rooms"},
+		Ask:          []string{"shell_exec"},
+		RecordDenial: func(d agent.Denial) { denied = append(denied, d) },
+	}
+	src := toolchain.Chain(p)
+
+	_, err := src.CallToolRaw(context.Background(), "shell_exec", `{"command":"id"}`)
+	if err == nil {
+		t.Fatal("an ask-listed call ran with no consent to approve it")
+	}
+	if !agent.IsRefusal(err) || !strings.Contains(err.Error(), "needs approval") {
+		t.Fatalf("err = %v, want the chain's own refusal", err)
+	}
+	if len(base.calls) != 0 {
+		t.Fatalf("base was called although nothing could approve the call: %v", base.calls)
+	}
+	if len(denied) != 1 || denied[0].Tool != "shell_exec" {
+		t.Fatalf("denials = %+v, want the refused call recorded", denied)
+	}
+
+	// A tool the ask list does not name is untouched: this is the ask
+	// guard's position, not a blanket denial.
+	if _, err := src.CallToolRaw(context.Background(), "mesh_rooms", `{}`); err != nil {
+		t.Fatalf("an unlisted tool was refused: %v", err)
+	}
+	if len(base.calls) != 1 || base.calls[0] != "mesh_rooms {}" {
+		t.Fatalf("base saw %v, want exactly the unlisted call", base.calls)
 	}
 }
