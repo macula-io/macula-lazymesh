@@ -167,6 +167,13 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Fixed
 
+- **The realms panel names the key that really starts a join (#74).** The
+  empty panel said `i: join one` long after `i` stopped meaning anything —
+  since #62 the message box is always focused, so `i` typed a letter and
+  the join was never offered. The hint is now built from the binding
+  (`enter`), and so are the single-key hints on the notes, realm, mesh-call
+  and mesh-services strips, so a keymap change carries them along. A test
+  fails when a panel placeholder names a key the keymap does not bind.
 - **`lazymesh attach` can be interrupted (#49).** An attached TUI whose stdin
   is not a terminal — `timeout 5 lazymesh attach … < /dev/null`, a service
   stop, a supervisor — sometimes ignored SIGINT and SIGTERM and had to be
