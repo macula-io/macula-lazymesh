@@ -260,6 +260,23 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Security
 
+- **One constructor for terminal text (#95).** Text a peer or the model
+  writes reached the screen through two sanitizers with two spellings -- the
+  chat's `neutralise` (`␛`, `<U+202E>`) and the approval popup's
+  `visibleControls` (`\x1b`, `\u{202E}`) -- and a new string field could
+  forget both. There is now one constructor, `termTextOf`, and the fields
+  that carry such text are its type: a chat entry's text, tool and detail,
+  the tool rows, and the approval popup's arguments. A raw string variable
+  no longer compiles into any of them; colour and layout take `.String()`
+  afterwards. Every format character is shown as `<U+XXXX>` everywhere, so
+  the approval popup's bidi and zero-width rendering reads like the chat's.
+  Panel cells still take a string, because `bubbles/table` does, so they are
+  wrapped at the row and covered by a test that fills every peer-controlled
+  field with the #81 hostile text and renders every panel and popup. A
+  source scan fails the build when a second door appears: a `termText(x)`
+  conversion outside the constructor, or a chat entry whose text is not
+  constructed.
+
 - **One confined shell for both profiles (#94).** The mesh profile's
   `shell_exec` was a plain `sh -c` with the operator's own rights, behind
   `local_tools.enabled` and the allowlist: "a confined shell that fails

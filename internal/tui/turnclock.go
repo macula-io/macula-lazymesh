@@ -64,7 +64,7 @@ func (m Model) endTurn(failed bool) Model {
 	}
 	m.turnStartedAt = time.Time{}
 	m.turnInterrupted = false
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: m.clock(), text: text})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: m.clock(), text: termTextOf(text)})
 	m.syncViewport()
 	return m
 }

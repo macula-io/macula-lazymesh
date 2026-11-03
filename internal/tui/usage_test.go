@@ -32,7 +32,7 @@ func TestSummaryLine_ShowsContextUseAfterATurn(t *testing.T) {
 		}
 	}
 	for _, e := range m.chatEntries {
-		if strings.Contains(e.text, "12.3k") || strings.Contains(e.text, "12345") {
+		if strings.Contains(e.text.String(), "12.3k") || strings.Contains(e.text.String(), "12345") {
 			t.Fatalf("a usage report is a status figure, not a chat line: %+v", e)
 		}
 	}

@@ -15,7 +15,7 @@ import (
 func fillChat(t *testing.T, m Model, entries int) Model {
 	t.Helper()
 	for i := 0; i < entries; i++ {
-		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatAssistant, at: time.Now(), text: strings.Repeat("line\n", 3)})
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatAssistant, at: time.Now(), text: termTextOf(strings.Repeat("line\n", 3))})
 	}
 	m.syncViewport()
 	return m

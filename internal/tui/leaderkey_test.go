@@ -231,7 +231,7 @@ func TestLeaderHelpNamesConfiguredLeader(t *testing.T) {
 	if len(m.chatEntries) == 0 {
 		t.Fatal("the leader help wrote nothing into the chat")
 	}
-	last := m.chatEntries[len(m.chatEntries)-1].text
+	last := m.chatEntries[len(m.chatEntries)-1].text.String()
 	if !strings.HasPrefix(last, "ctrl+g then:") {
 		t.Fatalf("the leader help opens with %q, want it to name ctrl+g", last)
 	}

@@ -147,10 +147,10 @@ func paletteKeyPress(b key.Binding) tea.KeyMsg {
 func (m Model) renderPalette() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Commands") + "\n")
-	// The query goes out through neutralise like any other text that came
+	// The query goes out through termTextOf like any other text that came
 	// from outside the program (#81): searchable keeps controls out of it,
 	// and this keeps them off the terminal whatever reaches the field.
-	b.WriteString("> " + neutralise(m.palette.query) + "\n")
+	b.WriteString("> " + termTextOf(m.palette.query).String() + "\n")
 	matches := paletteMatches(m.palette.query)
 	if len(matches) == 0 {
 		b.WriteString(dimStyle.Render("no command matches"))

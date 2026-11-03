@@ -117,7 +117,7 @@ func (m Model) handleRingAnswered(msg ringAnsweredMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
 		text = fmt.Sprintf("ring answer failed: %s", msg.err)
 	}
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: text})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: termTextOf(text)})
 	m.syncViewport()
 	return m, nil
 }
@@ -140,8 +140,8 @@ func (m Model) renderRingPopup() string {
 		return ""
 	}
 	// Both are the peer's own text (#81): shown, never acted on.
-	name := collapseNewlines(neutralise(displayName(r.Peer, r.PeerPetname)))
-	purpose := neutralise(r.Purpose)
+	name := collapseNewlines(termTextOf(displayName(r.Peer, r.PeerPetname)).String())
+	purpose := termTextOf(r.Purpose)
 	if purpose == "" {
 		purpose = "(no purpose given)"
 	}

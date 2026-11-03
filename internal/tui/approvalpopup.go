@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -71,7 +69,7 @@ func (m Model) handleApprovalResolved(msg approvalResolvedMsg) (Model, tea.Cmd) 
 	case dropped:
 		text += " (it was still waiting to be shown)"
 	}
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: text})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: termTextOf(text)})
 
 	var next tea.Cmd
 	if m.approvalResolvedCh != nil {
@@ -209,7 +207,7 @@ func (m Model) renderApprovalPopup(width int) []string {
 	}
 	lines := []string{
 		approvalTitleStyle.Render("approval required"),
-		"tool: " + approvalTitleStyle.Render(m.pendingApproval.tool),
+		"tool: " + approvalTitleStyle.Render(termTextOf(m.pendingApproval.tool).String()),
 		fmt.Sprintf("args (lines %d-%d of %d):", first+1, last, len(args)),
 	}
 	for _, line := range args[first:last] {
@@ -246,7 +244,7 @@ func (m Model) approvalArgLines(width int) []string {
 	if width < 20 {
 		width = 20
 	}
-	return wrapCells(visibleControls(m.pendingApproval.args), width)
+	return wrapCells(termTextOf(m.pendingApproval.args), width)
 }
 
 // markApprovalSeen records the args lines now on screen.
@@ -300,35 +298,13 @@ func (m Model) scrollApproval(key string) bool {
 	return true
 }
 
-// visibleControls shows as text every rune that could change what the
-// operator reads without being seen itself: C0 and C1 controls and DEL
-// as \xNN, and every format character (the Cf class, which holds the
-// bidi overrides and isolates U+202A-202E and U+2066-2069 and the
-// zero-width U+200B-200F and U+FEFF), line and paragraph separators, and
-// any other rune that takes no cell on screen as \u{XXXX}. A shell
-// command reordered by a bidi override (Trojan Source) then reads as
-// written, not as displayed.
-func visibleControls(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
-			fmt.Fprintf(&b, "\\x%02x", r)
-		case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) || r == utf8.RuneError || runewidth.RuneWidth(r) == 0:
-			fmt.Fprintf(&b, "\\u{%04X}", r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
 // wrapCells hard-wraps s so no line is wider than width terminal cells:
 // arguments are machine text, and a word wrap could move a short tail out
 // of sight just as a cut would. It counts cells, not runes, so a line of
-// wide runes still fits the screen. s has been through visibleControls,
-// so every rune takes at least one cell.
-func wrapCells(s string, width int) []string {
+// wide runes still fits the screen. t came from termTextOf, so every rune
+// takes at least one cell.
+func wrapCells(t termText, width int) []string {
+	s := t.String()
 	var lines []string
 	var line strings.Builder
 	cells := 0

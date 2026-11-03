@@ -172,8 +172,8 @@ func (m Model) renderRooms() string {
 	rows := make([]table.Row, 0, len(m.state.joined))
 	for _, r := range m.state.joined {
 		rows = append(rows, table.Row{
-			roomLabel(r.RoomTopic, r.Purpose),
-			displayName(r.OpenedBy, r.OpenedByPetname),
+			termTextOf(roomLabel(r.RoomTopic, r.Purpose)).String(),
+			termTextOf(displayName(r.OpenedBy, r.OpenedByPetname)).String(),
 			fmt.Sprintf("%d", len(r.ParticipantsSeen)),
 			fmt.Sprintf("%d", r.MessagesReceived),
 		})
@@ -191,15 +191,15 @@ func (m Model) renderRooms() string {
 		if len(recent) == 0 {
 			continue
 		}
-		b.WriteString("\n" + dimStyle.Render(roomLabel(r.RoomTopic, r.Purpose)+":"))
+		b.WriteString("\n" + dimStyle.Render(termTextOf(roomLabel(r.RoomTopic, r.Purpose)+":").String()))
 		for _, msg := range recent {
 			// Issue #8: the speaker's name carries their deterministic
 			// identity color (same principle as the presence badge below,
 			// IRC-nick-style); the message body stays dim -- coloring the
 			// whole line would fight legibility for exactly the busy
 			// multi-agent conversation this is meant to help read.
-			who := agentBadgeStyle(identityKey(msg.From, msg.FromPetname)).Render(displayName(msg.From, msg.FromPetname))
-			b.WriteString("\n    " + who + dimStyle.Render(": "+truncate(msg.Text, 80)))
+			who := agentBadgeStyle(identityKey(msg.From, msg.FromPetname)).Render(termTextOf(displayName(msg.From, msg.FromPetname)).String())
+			b.WriteString("\n    " + who + dimStyle.Render(termTextOf(": "+truncate(msg.Text, 80)).String()))
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -228,9 +228,9 @@ func (m Model) renderPendingRings() string {
 	rows := make([]table.Row, 0, len(m.state.pending))
 	for _, r := range m.state.pending {
 		rows = append(rows, table.Row{
-			r.Direction,
-			displayName(r.Peer, r.PeerPetname),
-			r.Purpose,
+			termTextOf(r.Direction).String(),
+			termTextOf(displayName(r.Peer, r.PeerPetname)).String(),
+			termTextOf(r.Purpose).String(),
 		})
 	}
 	t.SetRows(rows)
@@ -317,10 +317,10 @@ func (m Model) renderPresence() string {
 
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top,
 			presenceCol(badge, widths[0], false),
-			presenceCol(name, widths[1], false),
-			presenceCol(a.SessionName, widths[2], false),
-			presenceCol(a.Model, widths[3], false),
-			presenceCol(a.ConnectedVia, widths[4], false),
+			presenceCol(termTextOf(name).String(), widths[1], false),
+			presenceCol(termTextOf(a.SessionName).String(), widths[2], false),
+			presenceCol(termTextOf(a.Model).String(), widths[3], false),
+			presenceCol(termTextOf(a.ConnectedVia).String(), widths[4], false),
 			presenceCol(fmt.Sprintf("%ds ago", a.SecondsSinceSeen), widths[5], false),
 		))
 	}
@@ -510,7 +510,12 @@ func (m Model) renderRealms() string {
 	)
 	rows := make([]table.Row, 0, len(m.state.realms))
 	for _, r := range m.state.realms {
-		rows = append(rows, table.Row{r.Realm, r.Handle, r.Tier, r.JoinedAt})
+		rows = append(rows, table.Row{
+			termTextOf(r.Realm).String(),
+			termTextOf(r.Handle).String(),
+			termTextOf(r.Tier).String(),
+			termTextOf(r.JoinedAt).String(),
+		})
 	}
 	t.SetRows(rows)
 	b.WriteString(t.View())

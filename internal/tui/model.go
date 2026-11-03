@@ -522,7 +522,7 @@ func New(client toolCaller, opts Options) Model {
 		m.chatEntries = append(m.chatEntries, chatEntry{
 			kind: chatSystem,
 			at:   time.Now(),
-			text: fmt.Sprintf("connected to macula-mcp %s over stdio", m.mcpReportedVersion),
+			text: termTextOf(fmt.Sprintf("connected to macula-mcp %s over stdio", m.mcpReportedVersion)),
 		})
 	}
 	// A file the operator trusted that has changed since is announced
@@ -536,7 +536,7 @@ func New(client toolCaller, opts Options) Model {
 		m.chatEntries = append(m.chatEntries, chatEntry{
 			kind: chatSystem,
 			at:   time.Now(),
-			text: fmt.Sprintf("%s changed since you trusted it: it reaches the model as data until you trust this version again (N to review).", n.Name),
+			text: termTextOf(fmt.Sprintf("%s changed since you trusted it: it reaches the model as data until you trust this version again (N to review).", n.Name)),
 		})
 	}
 	return m
@@ -1180,7 +1180,7 @@ func (m Model) takeServerVersion(v string) Model {
 	m.chatEntries = append(m.chatEntries, chatEntry{
 		kind: chatSystem,
 		at:   time.Now(),
-		text: fmt.Sprintf("macula-mcp is now %s (was %s)", v, was),
+		text: termTextOf(fmt.Sprintf("macula-mcp is now %s (was %s)", v, was)),
 	})
 	return m
 }
@@ -1195,7 +1195,7 @@ func (m *Model) explainLeader() {
 	for _, c := range leaderHelp() {
 		b.WriteString("  " + c.Key + " " + c.Action)
 	}
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: b.String()})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: termTextOf(b.String())})
 	m.syncViewport()
 }
 
@@ -1401,7 +1401,7 @@ func (m *Model) processPendingRings() []tea.Cmd {
 			m.chatEntries = append(m.chatEntries, chatEntry{
 				kind: chatSystem,
 				at:   time.Now(),
-				text: fmt.Sprintf("auto-accepted ring from %s (trusted)", displayName(ring.Peer, ring.PeerPetname)),
+				text: termTextOf(fmt.Sprintf("auto-accepted ring from %s (trusted)", displayName(ring.Peer, ring.PeerPetname))),
 			})
 			cmds = append(cmds, answerRingCmd(m.mcp, ring.RingID, answerAccept, false, ""))
 			continue
@@ -1490,13 +1490,13 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	// authoritative) wins.
 	if ev.Kind == agent.EventAssistantDelta {
 		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
-			m.chatEntries[n-1].text += ev.Text
+			m.chatEntries[n-1].text += termTextOf(ev.Text)
 			m.syncViewport()
 			return m, tea.Batch(ringBell(pattern, m.muted), waitForAgentEvent(m.agentEvents))
 		}
 	} else if ev.Kind == agent.EventAssistantMessage {
 		if n := len(m.chatEntries); n > 0 && m.chatEntries[n-1].kind == chatAssistant && m.chatEntries[n-1].streaming {
-			m.chatEntries[n-1].text = ev.Text
+			m.chatEntries[n-1].text = termTextOf(ev.Text)
 			m.chatEntries[n-1].stop = ev.Stop
 			m.chatEntries[n-1].streaming = false
 			m.syncViewport()
@@ -1505,7 +1505,7 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 	}
 
 	entry := chatEntryFromAgentEvent(agent.Event(ev))
-	if open := m.openToolCall(ev.ToolName); open != nil && (ev.Kind == agent.EventToolResult || ev.Kind == agent.EventError) {
+	if open := m.openToolCall(termTextOf(ev.ToolName)); open != nil && (ev.Kind == agent.EventToolResult || ev.Kind == agent.EventError) {
 		// A call's result or error joins the call's entry: the agent
 		// runs its calls one at a time, so the newest open call of the
 		// same tool is the one this answers (#78 gap 1).
@@ -1525,7 +1525,7 @@ func (m Model) handleAgentEvent(ev agentEventMsg) (Model, tea.Cmd) {
 func lastAssistantText(entries []chatEntry) (string, bool) {
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].kind == chatAssistant && !entries[i].streaming && entries[i].text != "" {
-			return neutralise(entries[i].text), true
+			return entries[i].text.String(), true
 		}
 	}
 	return "", false
@@ -1543,11 +1543,11 @@ func (m Model) copyLastAnswer() (Model, tea.Cmd) {
 		return m, nil
 	}
 	if err := clipboard.WriteAll(text); err != nil {
-		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not copy to clipboard: %v", err)})
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: termTextOf(fmt.Sprintf("could not copy to clipboard: %v", err))})
 		m.syncViewport()
 		return m, nil
 	}
-	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: fmt.Sprintf("copied the last agent answer (%d bytes) to the clipboard", len(text))})
+	m.chatEntries = append(m.chatEntries, chatEntry{kind: chatSystem, at: time.Now(), text: termTextOf(fmt.Sprintf("copied the last agent answer (%d bytes) to the clipboard", len(text)))})
 	m.syncViewport()
 	return m, nil
 }
@@ -1568,13 +1568,13 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 		defer os.Remove(msg.path)
 	}
 	if msg.err != nil {
-		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("$EDITOR composition failed: %s", msg.err)})
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: termTextOf(fmt.Sprintf("$EDITOR composition failed: %s", msg.err))})
 		m.syncViewport()
 		return m, nil
 	}
 	content, err := os.ReadFile(msg.path)
 	if err != nil {
-		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: fmt.Sprintf("could not read composed message: %s", err)})
+		m.chatEntries = append(m.chatEntries, chatEntry{kind: chatError, at: time.Now(), text: termTextOf(fmt.Sprintf("could not read composed message: %s", err))})
 		m.syncViewport()
 		return m, nil
 	}

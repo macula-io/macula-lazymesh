@@ -12,7 +12,7 @@ const errorHistoryMax = 20
 // and over; collapsing those into one record with a count is what makes
 // both the history and the auto-pop usable.
 type errorRecord struct {
-	text  string
+	text  termText
 	first time.Time
 	last  time.Time
 	count int
@@ -34,7 +34,7 @@ func (m *Model) recordError(err error, now time.Time) (isNew bool) {
 	// Neutralised once, here, where an error enters the history: the popup
 	// shows it and its copy key copies it, and an error's text is often a
 	// provider's or a peer's, not lazymesh's own (#81).
-	text := neutralise(err.Error())
+	text := termTextOf(err.Error())
 
 	for i := range m.errorHistory {
 		if m.errorHistory[i].text == text {
@@ -87,7 +87,7 @@ func (m Model) openErrorPopup(i int) Model {
 	if i > len(m.errorHistory)-1 {
 		i = len(m.errorHistory) - 1
 	}
-	e := newErrorPopup(m.errorHistory[i].text, m.width, m.height)
+	e := newErrorPopup(m.errorHistory[i].text.String(), m.width, m.height)
 	e.index = i
 	m.errorPopup = &e
 	m.mode = ModeErrorPopup

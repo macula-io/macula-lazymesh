@@ -122,8 +122,8 @@ func TestNew_AnnouncesTheConnectedMaculaMCP(t *testing.T) {
 	m := mcpTestModel(t, "")
 	var found string
 	for _, e := range m.chatEntries {
-		if e.kind == chatSystem && strings.Contains(e.text, "macula-mcp") {
-			found = e.text
+		if e.kind == chatSystem && strings.Contains(e.text.String(), "macula-mcp") {
+			found = e.text.String()
 		}
 	}
 	if want := "connected to macula-mcp 0.51.1 over stdio"; found != want {
@@ -134,7 +134,7 @@ func TestNew_AnnouncesTheConnectedMaculaMCP(t *testing.T) {
 func TestNew_NoStartLineWithoutAMaculaMCPOfItsOwn(t *testing.T) {
 	m := New(nil, Options{UserInputCh: make(chan string, 8), StatusBarPosition: "bottom", Attached: true})
 	for _, e := range m.chatEntries {
-		if strings.Contains(e.text, "macula-mcp") {
+		if strings.Contains(e.text.String(), "macula-mcp") {
 			t.Fatalf("expected no macula-mcp start line in an attached TUI, got %q", e.text)
 		}
 	}
@@ -160,7 +160,7 @@ func TestRefresh_FollowsARespawnToAnotherRelease(t *testing.T) {
 	if len(m.chatEntries) != before+1 {
 		t.Fatalf("expected one chat line saying the release changed, got %d new entries", len(m.chatEntries)-before)
 	}
-	if last := m.chatEntries[len(m.chatEntries)-1]; !strings.Contains(last.text, "macula-mcp is now 0.52.0 (was 0.51.1)") {
+	if last := m.chatEntries[len(m.chatEntries)-1]; !strings.Contains(last.text.String(), "macula-mcp is now 0.52.0 (was 0.51.1)") {
 		t.Fatalf("expected the change to name both releases, got %q", last.text)
 	}
 }
