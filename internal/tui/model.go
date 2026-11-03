@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -1834,13 +1835,25 @@ func (m Model) renderHintLines() []string {
 		return []string{m.renderLeaderHint()}
 	}
 
-	hint := keyHint(DefaultKeyMap.Submit, "send") + "  shift+enter: newline  " +
-		keyHint(DefaultKeyMap.Normal, "close or interrupt") + "  shift+↑↓: scroll  " +
-		keyHint(DefaultKeyMap.OpenEditor, "$EDITOR") + "  " + m.leaderLabel() + ": commands"
-	if m.realmExpanded && m.realmJoinLatest == nil && strings.TrimSpace(m.input.Value()) == "" {
-		hint = keyHint(DefaultKeyMap.Submit, "join a realm") + "  " + hint
+	// The row is built from segments that are dropped, not cut, when the
+	// terminal is narrow: a hint that ends mid-word ("shift+↑↓: scr") is
+	// worse than one that is simply absent. The slice is the row's reading
+	// order; the priority is what a narrow terminal keeps, so dropping a
+	// segment never reorders the ones that stay (#86).
+	segs := []hintSegment{
+		{keyHint(DefaultKeyMap.Submit, "send"), 0},
+		{"shift+enter: newline", 4},
+		{keyHint(DefaultKeyMap.Normal, "close or interrupt"), 2},
+		{"shift+↑↓: scroll", 3},
+		{keyHint(DefaultKeyMap.OpenEditor, "$EDITOR"), 5},
+		{m.leaderLabel() + ": commands", 1},
 	}
-	return []string{dimStyle.Render(hint)}
+	if m.realmExpanded && m.realmJoinLatest == nil && strings.TrimSpace(m.input.Value()) == "" {
+		// The realms view's own action, ahead of the rest and first to be
+		// kept: in that view joining is what a person came to do.
+		segs = append([]hintSegment{{keyHint(DefaultKeyMap.Submit, "join a realm"), -1}}, segs...)
+	}
+	return []string{dimStyle.Render(fitHintSegments(segs, "  ", m.width))}
 }
 
 // leaderLabel is the leader as the screen names it: the configured key, never
@@ -1852,14 +1865,90 @@ func (m Model) leaderLabel() string {
 }
 
 // renderLeaderHint is the leader's own list: what it is waiting for and
-// everything it can do, so the next key is never a guess.
+// what can follow it. The list is cut from its tail on a narrow terminal,
+// never in the middle: the leader's name stays, then the commands in
+// their own order, as many as fit whole (#86). `?` still writes the full
+// list into the chat, which is where a command past the cut is looked up.
 func (m Model) renderLeaderHint() string {
-	var b strings.Builder
-	b.WriteString(statusStripStyle.Render(m.leaderLabel() + " …"))
+	texts := []string{statusStripStyle.Render(m.leaderLabel() + " …")}
 	for _, c := range leaderHelp() {
-		b.WriteString(dimStyle.Render("  " + c.Key + ": " + c.Action))
+		texts = append(texts, dimStyle.Render(c.Key+": "+c.Action))
 	}
-	return b.String()
+	return fitHintPrefix(texts, "  ", m.width)
+}
+
+// fitHintPrefix keeps texts in order until one does not fit, for rows whose
+// order is its own priority (the leader's command list). A width of zero
+// (before the first resize) keeps everything.
+func fitHintPrefix(texts []string, sep string, width int) string {
+	if width <= 0 {
+		return strings.Join(texts, sep)
+	}
+	kept := make([]string, 0, len(texts))
+	used := 0
+	sepW := lipgloss.Width(sep)
+	for _, t := range texts {
+		w := lipgloss.Width(t)
+		if used > 0 {
+			w += sepW
+		}
+		if used+w > width {
+			break
+		}
+		kept = append(kept, t)
+		used += w
+	}
+	return strings.Join(kept, sep)
+}
+
+// hintSegment is one piece of a status row. Priority decides what a narrow
+// terminal keeps -- lower first, ties in display order -- while what
+// survives is still rendered in display order.
+type hintSegment struct {
+	text     string
+	priority int
+}
+
+// fitHintSegments renders the highest-priority segments that fit width
+// cells, separated by sep. Segments are dropped whole, never cut: a hint
+// ending mid-word ("shift+↑↓: scr") tells the reader less than an absent
+// one. A width of zero (before the first resize) keeps everything.
+func fitHintSegments(segs []hintSegment, sep string, width int) string {
+	if width <= 0 {
+		all := make([]string, len(segs))
+		for i, s := range segs {
+			all[i] = s.text
+		}
+		return strings.Join(all, sep)
+	}
+	order := make([]int, len(segs))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return segs[order[a]].priority < segs[order[b]].priority
+	})
+	keep := make([]bool, len(segs))
+	used := 0
+	sepW := lipgloss.Width(sep)
+	for _, i := range order {
+		w := lipgloss.Width(segs[i].text)
+		if used > 0 {
+			w += sepW
+		}
+		if used+w > width {
+			continue
+		}
+		keep[i] = true
+		used += w
+	}
+	kept := make([]string, 0, len(segs))
+	for i, s := range segs {
+		if keep[i] {
+			kept = append(kept, s.text)
+		}
+	}
+	return strings.Join(kept, sep)
 }
 
 // renderSummaryLine is the mesh-state line: this instance's own identity
@@ -1973,7 +2062,23 @@ func (m Model) renderSummaryLine() string {
 }
 
 func (m Model) renderStatusStrip() string {
-	return strings.Join(m.statusLines(), "\n")
+	lines := m.statusLines()
+	for i, line := range lines {
+		lines[i] = m.clipStatusLine(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// clipStatusLine is the last word on a status line's width: whatever the
+// row's own layout chose, a line wider than the terminal is wrapped by the
+// terminal itself, which makes the screen a row taller than the layout
+// reserved and scrolls the top away (#86). ANSI-aware, and a no-op before
+// the first resize, when there is no width to cut to yet.
+func (m Model) clipStatusLine(line string) string {
+	if m.width <= 0 || lipgloss.Width(line) <= m.width {
+		return line
+	}
+	return lipgloss.NewStyle().MaxWidth(m.width).Inline(true).Render(line)
 }
 
 // mcpPinned reports whether the release actually running is the one
