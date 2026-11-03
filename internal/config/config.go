@@ -276,16 +276,19 @@ func RingPolicyAutoAcceptsKnown(p string) bool {
 
 // LocalTools configures internal/localtools. Disabled by default; a
 // working directory is required once enabled -- see localtools.New.
+// shell_exec runs only inside the confined shell both profiles use
+// (#94): where no sandbox can be prepared, it is refused, never run on
+// the operator's account.
 type LocalTools struct {
 	Enabled             bool   `yaml:"enabled"`
 	WorkingDir          string `yaml:"working_dir,omitempty"`
 	ShellTimeoutSeconds int    `yaml:"shell_timeout_seconds,omitempty"`
-	// ReadOnlyPaths are extra toolchain directories the coding profile's
-	// confined shell mounts read-only (#26), for toolchains outside the
-	// system directories and the Go root and module cache it finds
-	// itself. A path that is the home directory, holds it, or overlaps
-	// lazymesh's config, data, key or identity files is refused, and the
-	// shell is then not offered.
+	// ReadOnlyPaths are extra toolchain directories the confined shell
+	// mounts read-only, in either profile (#26, #94), for toolchains
+	// outside the system directories and the Go root and module cache it
+	// finds itself. A path that is the home directory, holds it, or
+	// overlaps lazymesh's config, data, key or identity files is refused,
+	// and the shell is then not offered.
 	ReadOnlyPaths []string `yaml:"read_only_paths,omitempty"`
 }
 

@@ -32,11 +32,11 @@ type Options struct {
 }
 
 // Prepare builds the sandbox for opts.Checkout and proves it with
-// SelfTest. Any error means the coding profile offers no shell: there is
-// no weaker fallback.
+// SelfTest. Any error means lazymesh offers no shell, in either profile:
+// there is no weaker fallback.
 func Prepare(ctx context.Context, opts Options) (*Sandbox, error) {
 	if runtime.GOOS != "linux" {
-		return nil, fmt.Errorf("no confined shell on %s yet: the coding profile offers no shell here", runtime.GOOS)
+		return nil, fmt.Errorf("no confined shell on %s yet: lazymesh offers no shell here", runtime.GOOS)
 	}
 	opts, err := withDefaults(opts)
 	if err != nil {
@@ -76,7 +76,7 @@ func withDefaults(opts Options) (Options, error) {
 	var err error
 	if opts.Bwrap == "" {
 		if opts.Bwrap, err = exec.LookPath("bwrap"); err != nil {
-			return opts, fmt.Errorf("bubblewrap (bwrap) is not installed: the coding profile offers no shell until it is")
+			return opts, fmt.Errorf("bubblewrap (bwrap) is not installed: lazymesh offers no shell until it is")
 		}
 	}
 	if _, err := os.Stat(opts.Bwrap); err != nil {
@@ -176,11 +176,11 @@ func gitMounts(checkout string) ([]string, error) {
 	info, err := os.Lstat(dotGit)
 	switch {
 	case os.IsNotExist(err):
-		return nil, fmt.Errorf("the working directory %s has no .git; the coding profile's shell runs only in a git checkout, whose .git it keeps read-only", checkout)
+		return nil, fmt.Errorf("the working directory %s has no .git; lazymesh's shell runs only in a git checkout, whose .git it keeps read-only", checkout)
 	case err != nil:
 		return nil, err
 	case info.Mode()&os.ModeSymlink != 0:
-		return nil, fmt.Errorf("%s is a symlink; the coding profile's shell needs a real .git it can keep read-only", dotGit)
+		return nil, fmt.Errorf("%s is a symlink; lazymesh's shell needs a real .git it can keep read-only", dotGit)
 	case info.IsDir():
 		return []string{dotGit}, nil
 	case !info.Mode().IsRegular():

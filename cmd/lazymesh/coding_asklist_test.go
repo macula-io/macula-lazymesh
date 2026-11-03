@@ -131,18 +131,24 @@ func TestResolveAsklist_CodingAddsEveryAllowedLocalTool(t *testing.T) {
 	}
 }
 
-// TestMeshProfileKeepsItsShell: the mesh profile still offers shell_exec
-// when the operator opts in, unconfined as before slice C.
-func TestMeshProfileKeepsItsShell(t *testing.T) {
+// TestMeshProfileShellNeedsASandbox: the mesh profile keeps shell_exec when
+// the operator opts in, but only inside a confined shell -- with no sandbox
+// there is no shell at all, exactly as in the coding profile (#94). The
+// sandboxed run itself is TestMeshProfileShellRunsInsideTheSandbox.
+func TestMeshProfileShellNeedsASandbox(t *testing.T) {
 	cfg := config.Default()
 	cfg.LocalTools = config.LocalTools{Enabled: true, WorkingDir: t.TempDir()}
 	cfg.ToolAllowlist = []string{"shell_exec"}
-	tools, err := meshLocalTools(cfg)
+
+	tools, err := meshLocalTools(cfg, codingShell{reason: "no shell in the mesh profile: no sandbox could be prepared"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := tools.CallToolRaw(context.Background(), "shell_exec", `{"command":"echo mesh-shell"}`)
-	if err != nil || !strings.Contains(out, "mesh-shell") {
-		t.Fatalf("mesh profile shell_exec = (%q, %v)", out, err)
+	if err == nil {
+		t.Fatalf("the mesh profile ran shell_exec with no sandbox: %q", out)
+	}
+	if !strings.Contains(err.Error(), "no sandbox could be prepared") {
+		t.Fatalf("the refusal does not name the reason: %v", err)
 	}
 }

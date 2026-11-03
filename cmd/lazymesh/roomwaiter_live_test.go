@@ -103,7 +103,7 @@ func TestLiveOldDesign_HumanInputWasInvisibleDuringLongMeshSayWait(t *testing.T)
 	}
 
 	const waitReplySeconds = 8
-	tools, err := buildToolSource(config.Config{}, client, nil) // deliberately unwrapped -- see doc comment
+	tools, err := buildToolSource(config.Config{}, client, nil, codingShell{}) // deliberately unwrapped -- see doc comment
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

@@ -61,7 +61,7 @@ func TestCodingProfileShellIsConfined(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(cfg.LocalTools.WorkingDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	shell := prepareCodingShell(context.Background(), cfg, filepath.Join(t.TempDir(), "config.yaml"))
+	shell := prepareShell(context.Background(), cfg, filepath.Join(t.TempDir(), "config.yaml"), "coding profile", codingAllowlist(cfg))
 	if shell.sandbox == nil {
 		t.Fatalf("no sandbox: %s", shell.reason)
 	}

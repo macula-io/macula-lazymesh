@@ -1,5 +1,5 @@
-// Package confinedshell runs the coding profile's shell_exec inside
-// bubblewrap (macula-io/macula-lazymesh#26, slice C of #38): an approved
+// Package confinedshell runs shell_exec inside bubblewrap, in either
+// profile (#26, slice C of #38; one shell for both profiles in #94): an approved
 // command sees the checkout and a scratch directory read-write, the
 // toolchain read-only, and nothing else of the operator's home; it has
 // no network, no controlling terminal, no new privileges, and none of

@@ -35,7 +35,7 @@ func TestLiveBuildToolSource_ExcludesMeshServiceToolsByDefault(t *testing.T) {
 	}
 	defer client.Close()
 
-	tools, err := buildToolSource(config.Config{}, client, nil)
+	tools, err := buildToolSource(config.Config{}, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestLiveBuildToolSource_MeshServicesEnabledIncludesCuratedTools(t *testing.
 	// is silently ignored, which is exactly the regression this test
 	// exists to catch, not something to reintroduce via the test's own
 	// setup.
-	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client))
+	tools, err := buildToolSource(config.Config{MeshServicesEnabled: true}, client, meshservices.New(client), codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestLiveBuildToolSource_DefaultAllowlistExcludesShellExecEvenWhenLocalTools
 		// second, separate opt-in.
 	}
 
-	tools, err := buildToolSource(cfg, client, nil)
+	tools, err := buildToolSource(cfg, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestLiveBuildToolSource_ExplicitAllowlistOverrideExposesShellExec(t *testin
 		ToolAllowlist: []string{"mesh_hello", "shell_exec"},
 	}
 
-	tools, err := buildToolSource(cfg, client, nil)
+	tools, err := buildToolSource(cfg, client, nil, codingShell{})
 	if err != nil {
 		t.Fatalf("buildToolSource: %v", err)
 	}

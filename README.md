@@ -363,9 +363,10 @@ Setting `local_tools.enabled: true` in `config.yaml` wires up `shell_exec`/
 `local_tools.working_dir`. Every one of them reaches the directory through
 an `os.Root`: a path that resolves outside — by `..`, by an absolute path,
 or through a symlink — is refused, and a write never follows a symlink at
-all. `shell_exec` is the exception: it runs with that as its starting
-directory only, not a real sandbox (in the coding profile it is the
-confined shell below). **This flag alone does not make them reachable by
+all. `shell_exec` is not the exception it used to be: in **both**
+profiles it runs inside the confined shell below, and where no sandbox can
+be prepared there is no `shell_exec` at all (see "The shell is confined,
+or not there"). **This flag alone does not make them reachable by
 the agent** — the tool allowlist above still excludes them. Reaching them
 needs a second, separate step: explicitly listing them in `tool_allowlist`
 in your own config, e.g.:
@@ -505,7 +506,14 @@ way to join one.
 logs, in agent.log, which messages a coding agent would have dropped, so
 you can check the filter against your own rooms first.
 
-### The shell in the coding profile is confined, or not there
+### The shell is confined, or not there
+
+This holds for both the mesh profile and the coding profile: `shell_exec`
+has exactly one implementation, a bubblewrap sandbox that passed its own
+self-test on this machine before it was offered. A profile whose sandbox
+cannot be prepared has no `shell_exec`; it never falls back to a plain
+`sh -c` on your account (#94 removed the mesh profile's old unconfined
+shell, which every opt-in still led to).
 
 Put `shell_exec` on `tool_allowlist` and lazymesh runs every command it is
 allowed inside [bubblewrap](https://github.com/containers/bubblewrap)
@@ -525,9 +533,9 @@ misread one.
 At start lazymesh checks all of this on your machine: it plants a file
 outside the working directory and makes sure a command cannot read it,
 looks for any network interface besides loopback, and so on. If any check
-fails, or bubblewrap is not installed, or you are not on Linux, the coding
-profile has **no shell at all** and says why when it starts. There is no
-setting that runs it unconfined.
+fails, or bubblewrap is not installed, or you are not on Linux, **the
+profile has no shell at all** and says why when it starts. There is no
+setting, in either profile, that runs it unconfined.
 
 Other toolchains outside the system directories can be mounted read-only:
 
@@ -541,8 +549,8 @@ local_tools:
 
 A path that is your home directory, holds it, or overlaps lazymesh's
 config, session data, key or identity files is refused, and the shell is
-then not offered. Do not start the coding profile in your home directory:
-the working directory is writable, so that is refused too.
+then not offered. Do not use your home directory as `working_dir` in
+either profile: the working directory is writable, so that is refused too.
 
 What the sandbox does not cover:
 
@@ -553,10 +561,15 @@ What the sandbox does not cover:
   the diff before you run anything in the checkout yourself.
 - **No limit on CPU or memory**: only the time limit
   (`shell_timeout_seconds`) applies.
-- The coding profile runs its shell only in a git checkout: the working
+- **The shell runs only in a git checkout, in either profile**: the working
   directory needs a real `.git` (a directory, or the file a git worktree
-  has), which the sandbox keeps read-only. `write_file` never writes into
-  `.git` and never writes through a symlink.
+  has), which the sandbox keeps read-only, and it has to sit outside
+  `~/.config/lazymesh`, which the sandbox fences off. The default
+  `~/.config/lazymesh/workspace` therefore never has a shell, even as a
+  git repository: point `working_dir` at a checkout somewhere else.
+  `shell_exec` is then refused, with that reason, and every other local
+  tool keeps working. `write_file` never writes into `.git` and never
+  writes through a symlink.
 
 Every call lazymesh refuses (you denied it, it was too long to show, the
 tool is not allowed, there is no shell) is written whole, with the reason,
