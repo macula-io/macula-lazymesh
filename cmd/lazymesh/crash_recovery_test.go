@@ -142,7 +142,7 @@ func TestCrashRecovery_NoResendAfterACrashFollowingMeshSay(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runAgent(ctx, n, root, sess, bridge, roomwaiter.New(nil, ""), ringwaiter.New(nil, ""), agentLog, tuiOut, frontendOut, userInput, nil, true, nil, nil)
+		runAgent(ctx, n, root, newCurrentSession(sess), bridge, roomwaiter.New(nil, ""), ringwaiter.New(nil, ""), agentLog, tuiOut, frontendOut, userInput, nil, true, nil, nil)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 

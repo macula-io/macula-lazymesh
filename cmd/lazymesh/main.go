@@ -430,14 +430,18 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	defer sessionhost.StopSession(node, sessPid)
+	// Every closure below reads the live session through sess, never a
+	// copy of sessPid: the driver moves it to the replacement after a
+	// crash (#107).
+	sess := newCurrentSession(sessPid)
+	defer func() { sessionhost.StopSession(node, sess.Pid()) }()
 	runtimeCounters := counters.New()
 	bridgePid, err := startEventBridge(node, ctx, sessPid, tuiOut, frontendOut, agentLog, waiterMgr, runtimeCounters)
 	if err != nil {
 		return fmt.Errorf("start event bridge: %w", err)
 	}
 	if cfg.MetricsListen != "" {
-		addr, err := counters.ServeMetrics(ctx, cfg.MetricsListen, metricsReader(node, sessPid, runtimeCounters), logStack.StdFor("metrics"))
+		addr, err := counters.ServeMetrics(ctx, cfg.MetricsListen, metricsReader(node, sess, runtimeCounters), logStack.StdFor("metrics"))
 		if err != nil {
 			return err
 		}
@@ -449,9 +453,10 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// in-flight turn via its per-turn context. One goroutine per signal;
 	// a turn that isn't running makes Interrupt a no-op.
 	interruptCh := make(chan struct{}, 4)
+	interrupt := interruptCurrent(sess)
 	go func() {
 		for range interruptCh {
-			sessionhost.Interrupt(sessPid)
+			interrupt()
 		}
 	}()
 
@@ -463,13 +468,14 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	// TUI answered first, and only the server keeps that record.
 	var ctrl *frontend.Server
 	approvalCh := make(chan tui.ApprovalAnswer, 4)
+	approve := approveCurrent(sess)
 	go func() {
 		for answer := range approvalCh {
 			if ctrl != nil {
 				ctrl.AnswerLocal(answer.ID, answer.Allow)
 				continue
 			}
-			sessionhost.AnswerApproval(sessPid, answer.ID, answer.Allow)
+			approve(answer.ID, answer.Allow)
 		}
 	}()
 
@@ -494,9 +500,9 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 			Path:        path,
 			Input:       userInputCh,
 			Events:      frontendEvents,
-			Query:       buildQueryHandler(node, sessPid, client, runtimeCounters),
-			Interrupt:   func() { sessionhost.Interrupt(sessPid) },
-			Approve:     func(id string, allow bool) bool { return sessionhost.TryAnswerApproval(sessPid, id, allow) },
+			Query:       buildQueryHandler(node, sess, client, runtimeCounters),
+			Interrupt:   interrupt,
+			Approve:     approve,
 			Schedule:    schedulerMgr.Schedule,
 			PreToolHook: preToolHook,
 			SessionID:   resolvedSessionID,
@@ -533,7 +539,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 				panic(r)
 			}
 		}()
-		runAgent(ctx, node, rootPid, sessPid, bridgePid, waiterMgr, ringMgr, agentLog, tuiOut, frontendOut, userInputCh, schedulerMgr.Arrivals(), idleStart, gate, initialRooms)
+		runAgent(ctx, node, rootPid, sess, bridgePid, waiterMgr, ringMgr, agentLog, tuiOut, frontendOut, userInputCh, schedulerMgr.Arrivals(), idleStart, gate, initialRooms)
 	}()
 	agentModelLabel := providerLabel(cfg) + "/" + cfg.Model
 
@@ -1384,7 +1390,7 @@ func buildSystemPrompt(room, goalText string, localToolsReachable, expressiveSty
 // failure falls into the ordinary backoff accounting. Room/ring waiting
 // stays waiterMgr's and ringMgr's job (macula-io/macula-lazymesh#14/#15):
 // this function supplies the cadence, driven by real events.
-func runAgent(ctx context.Context, n gen.Node, root, sessPid, bridge gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
+func runAgent(ctx context.Context, n gen.Node, root gen.PID, sess *currentSession, bridge gen.PID, waiterMgr *roomwaiter.Manager, ringMgr *ringwaiter.Manager, agentLog *log.Logger, tuiEvents, frontendEvents *agent.Outlet, userInputCh <-chan string, wakeups <-chan string, idleStart bool, gate *rostergate.Gate, initialRooms []string) {
 	consecutiveErrors := 0
 	backoff := initialBackoff
 	prompt, ok := firstPrompt(ctx, idleStart, userInputCh, waiterMgr, ringMgr, wakeups, gate, initialRooms)
@@ -1396,6 +1402,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid, bridge gen.PID, wa
 		if ctx.Err() != nil {
 			return
 		}
+		sessPid := sess.Pid()
 
 		usageBefore, err := sessionhost.SessionStatus(n, sessPid)
 		if err != nil {
@@ -1410,7 +1417,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid, bridge gen.PID, wa
 				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
 				continue
 			}
-			sessPid = newPid
+			sess.MoveTo(newPid)
 			continue
 		}
 
@@ -1427,7 +1434,7 @@ func runAgent(ctx context.Context, n gen.Node, root, sessPid, bridge gen.PID, wa
 				prompt, _ = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
 				continue
 			}
-			sessPid = newPid
+			sess.MoveTo(newPid)
 			var ok bool
 			prompt, ok = nextEvent(ctx, userInputCh, waiterMgr, ringMgr, wakeups, gate)
 			if !ok {
@@ -1533,12 +1540,25 @@ func reattachSession(ctx context.Context, n gen.Node, root, oldPid gen.PID, agen
 	return gen.PID{}, fmt.Errorf("no replacement session appeared for %s", oldPid)
 }
 
+// interruptCurrent is the operator's interrupt, aimed at whichever
+// session is live when it fires (#107).
+func interruptCurrent(sess *currentSession) func() {
+	return func() { sessionhost.Interrupt(sess.Pid()) }
+}
+
+// approveCurrent is the operator's approval answer, delivered to the live
+// session (#107). It stays in this file: only run's two approval buses may
+// answer an approval (threat model invariant 4).
+func approveCurrent(sess *currentSession) func(id string, allow bool) bool {
+	return func(id string, allow bool) bool { return sessionhost.TryAnswerApproval(sess.Pid(), id, allow) }
+}
+
 // buildQueryHandler answers the control plane's query messages: status
 // reads the supervised session; rooms/inbox/agents/realms call the mesh
 // directly through the client, bypassing the model — the same
 // deterministic-harness-plumbing posture as seedInitialRooms. Mesh tool
 // results travel as parsed JSON when they parse, raw text otherwise.
-func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client, runtimeCounters *counters.Registry) func(ctx context.Context, what string) (any, error) {
+func buildQueryHandler(n gen.Node, sess *currentSession, client *mcpclient.Client, runtimeCounters *counters.Registry) func(ctx context.Context, what string) (any, error) {
 	meshTool := map[string]string{
 		"rooms":  "mesh_rooms",
 		"inbox":  "mesh_read_inbox",
@@ -1548,7 +1568,7 @@ func buildQueryHandler(n gen.Node, sessPid gen.PID, client *mcpclient.Client, ru
 	return func(ctx context.Context, what string) (any, error) {
 		switch what {
 		case "status":
-			st, err := sessionhost.SessionStatus(n, sessPid)
+			st, err := sessionhost.SessionStatus(n, sess.Pid())
 			if err != nil {
 				return nil, err
 			}
@@ -1616,13 +1636,13 @@ func emitTui(tuiEvents, frontendEvents *agent.Outlet, ev agent.Event) {
 // turns, so a scrape during a long turn can time out reaching it; it then
 // reports the last totals it read, which are behind but never wrong in
 // direction (they only grow).
-func metricsReader(n gen.Node, sessPid gen.PID, runtimeCounters *counters.Registry) func() (counters.Snapshot, counters.Totals) {
+func metricsReader(n gen.Node, sess *currentSession, runtimeCounters *counters.Registry) func() (counters.Snapshot, counters.Totals) {
 	var mu sync.Mutex
 	var last counters.Totals
 	return func() (counters.Snapshot, counters.Totals) {
 		mu.Lock()
 		defer mu.Unlock()
-		if st, err := sessionhost.SessionStatus(n, sessPid); err == nil {
+		if st, err := sessionhost.SessionStatus(n, sess.Pid()); err == nil {
 			last = counters.Totals{
 				PromptTokens:     st.Usage.PromptTokens,
 				CompletionTokens: st.Usage.CompletionTokens,
