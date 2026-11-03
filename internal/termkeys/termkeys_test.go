@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/term"
 )
 
-// readAll drains the reader until EOF.
+// readAll drains the reader until EOF. The buffer is large on purpose:
+// readAll is not what models a split read (the chunkReaders below are),
+// and a small buffer here would cut the stream at a size nobody chose.
 func readAll(t *testing.T, r io.Reader) []byte {
 	t.Helper()
 	var out bytes.Buffer
-	buf := make([]byte, 3)
+	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		out.Write(buf[:n])
@@ -194,7 +198,96 @@ func (c *chunkReader) Read(p []byte) (int, error) {
 	if n > len(c.data) {
 		n = len(c.data)
 	}
+	// A reader never hands back more than the caller's buffer: this fake
+	// split the stream to exercise the state machine, not to model a
+	// terminal that overfills a read.
+	if n > len(p) {
+		n = len(p)
+	}
 	copy(p, c.data[:n])
 	c.data = c.data[n:]
 	return n, nil
+}
+
+// TestFullReadHoldsATrailingEsc pins the boundary rule for a read that
+// filled the caller's buffer. With the kitty protocol pushed every key is
+// a CSI sequence, so a buffer edge can land right after a sequence's ESC;
+// treating that as the escape key delivered a stray Escape mid-typing
+// (which leaves insert mode, so the keys behind it ran as commands) and
+// then the rest of the sequence as literal text.
+//
+// The input is the reviewer's probe: 5 plain bytes then 51 five-byte key
+// reports, 260 bytes, so a 256-byte read ends exactly on the 51st ESC.
+func TestFullReadHoldsATrailingEsc(t *testing.T) {
+	in := []byte("abcde")
+	for i := 0; i < 51; i++ {
+		in = append(in, []byte("\x1b[97u")...)
+	}
+
+	r := New(bytes.NewReader(in))
+	var out bytes.Buffer
+	buf := make([]byte, 256)
+	for {
+		n, err := r.Read(buf)
+		out.Write(buf[:n])
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+	}
+
+	want := "abcde" + strings.Repeat("a", 51)
+	if got := out.String(); got != want {
+		t.Fatalf("a full read split a key sequence:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// TestAPartialEscapeRunDoesNotBlockTheRead pins the other half of the
+// same rule: when a chunk is nothing but an incomplete sequence, Read must
+// hand control back rather than read again. In the TUI the caller waits on
+// the terminal before every read, so that wait is cancellable; a read
+// blocked here is not, and would survive the cancel bubbletea does before
+// it starts an editor (macula-lazymesh#60).
+func TestAPartialEscapeRunDoesNotBlockTheRead(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { r.Close(); w.Close() })
+	in := New(r)
+
+	done := make(chan int, 1)
+	go func() {
+		buf := make([]byte, 16)
+		n, _ := in.Read(buf)
+		done <- n
+	}()
+
+	if _, err := w.Write([]byte("\x1b[")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case n := <-done:
+		if n != 0 {
+			t.Fatalf("an incomplete sequence produced %d bytes, want 0", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read blocked on a second read instead of returning the incomplete sequence to the caller")
+	}
+
+	// The held run is completed by the next bytes: CSI A is the up arrow,
+	// which the caller must still receive as the legacy form.
+	if _, err := w.Write([]byte("A")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, 16)
+	n, err := in.Read(buf)
+	if err != nil {
+		t.Fatalf("read the completed sequence: %v", err)
+	}
+	if got := string(buf[:n]); got != "\x1b[A" {
+		t.Fatalf("completed sequence = %q, want %q", got, "\x1b[A")
+	}
 }

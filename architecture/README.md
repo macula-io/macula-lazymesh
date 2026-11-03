@@ -34,7 +34,7 @@ Legend, the same in both diagrams and as in [mcl-fovea](https://github.com/macul
 | `provider` | LLM backends | `deepseek`, `nvidia`, `groq` (OpenAI-compatible shape), `anthropic` (Messages API); streamed |
 | `mcpclient` | Tool source | Spawns macula-mcp and holds the one MCP session the agent and the TUI panels share; call log |
 | `meshservices`, `webfetch` | Tool sources | Curated `mcl-rag` and `mcl-graph` procedures discovered in the DHT (`mesh_services_enabled`, off by default); `web_fetch` |
-| `localtools` | Tool source | `shell_exec`, `read_file`, `write_file` in a working directory: opt-in, and reachable only when listed in `tool_allowlist` |
+| `localtools` | Tool source | `shell_exec`, `read_file`, `write_file`, `search`, `apply_patch` in a working directory, every file reached through an `os.Root`: opt-in, and reachable only when listed in `tool_allowlist` |
 | `roomwaiter`, `ringwaiter`, `scheduler` | Loop-owned waits | Block in `mesh_wait_room` and `mesh_wait_ring` and feed arrivals in as prompts; deferred prompts at their time |
 | `tui` | bubbletea, lipgloss; `termkeys` | Status strip, rooms/rings/presence panels, chat pane, ring and approval popups, realms view |
 | `frontend` | Unix-socket control plane | NDJSON both ways, socket 0600 and peer uid checked; the pre-tool hook, failing closed |

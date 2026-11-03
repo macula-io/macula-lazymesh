@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +44,24 @@ type chatEntry struct {
 	streaming bool   // assistant entry still accumulating deltas
 	md        string // glamour rendering, cached once finished
 	mdWidth   int    // the width md was rendered at
+	// alwaysDetail renders detail even when details are collapsed. Set for
+	// apply_patch: a patch that was applied to the checkout is shown to the
+	// operator straight away (#46) -- a change they did not see is not a
+	// review, and hunting for it behind a toggle is how it gets missed.
+	alwaysDetail bool
+}
+
+// workingTreeDiffOf returns the diff a shell_exec result carries, and
+// whether it carries one -- what makes its entry worth showing without the
+// details toggle (#46).
+func workingTreeDiffOf(text string) (string, bool) {
+	var res struct {
+		Diff string `json:"working_tree_diff"`
+	}
+	if json.Unmarshal([]byte(text), &res) != nil || strings.TrimSpace(res.Diff) == "" {
+		return "", false
+	}
+	return res.Diff, true
 }
 
 // chatEntryFromAgentEvent converts one agent.Event into a chat line. Plain
@@ -58,7 +77,18 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 	case agent.EventToolCall:
 		return chatEntry{kind: chatToolCall, at: now, tool: ev.ToolName, text: fmt.Sprintf("→ %s(%s)", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
 	case agent.EventToolResult:
-		return chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		entry := chatEntry{kind: chatToolResult, at: now, tool: ev.ToolName, text: fmt.Sprintf("← %s: %s", ev.ToolName, truncateForChat(ev.Text, 60)), detail: ev.Text}
+		entry.alwaysDetail = ev.ToolName == "apply_patch" && strings.TrimSpace(ev.Text) != ""
+		// A command that changed the checkout carries its diff (#46): the
+		// operator is shown the diff itself, decoded, not the result JSON
+		// around it -- the model's own stdout must not be mistaken for it.
+		if ev.ToolName == "shell_exec" {
+			if diff, ok := workingTreeDiffOf(ev.Text); ok {
+				entry.detail = diff
+				entry.alwaysDetail = true
+			}
+		}
+		return entry
 	case agent.EventError:
 		msg := ""
 		if ev.Err != nil {
@@ -132,7 +162,7 @@ var (
 func (e *chatEntry) render(detailsExpanded bool, width int) string {
 	ts := chatTimeStyle.Render(e.at.Format("15:04:05"))
 	text := e.text
-	if detailsExpanded && e.detail != "" && e.detail != e.text {
+	if (detailsExpanded || e.alwaysDetail) && e.detail != "" && e.detail != e.text {
 		switch e.kind {
 		case chatToolCall:
 			text = fmt.Sprintf("→ %s(%s)", e.tool, e.detail)

@@ -209,8 +209,10 @@ top\|bottom` in config, default bottom) is always visible whether the chat
 pane or the full mesh view is showing — collapsing the mesh view never
 loses that ambient awareness. Two lines:
 
-- the shortcuts row, leading with a vim-style mode indicator
-  (`-- NORMAL --` / `-- INSERT --`).
+- the shortcuts row: whatever is modal on screen names itself first
+  (`-- APPROVAL --`, `-- RING --`, `-- NOTES --`, …), the candidates for
+  the next key while `ctrl+x` is pending, and otherwise the keys that do
+  something at the composer.
 - the summary line: this instance's own petname once known, bold and in
   its own color so it stands out (`swift-otter`, requires macula-mcp
   >= 0.25.2 — see the room-message color coding above for the same
@@ -324,13 +326,16 @@ trigger local execution.
 ### Local tools (opt-in, off by default, allowlist-gated separately)
 
 Setting `local_tools.enabled: true` in `config.yaml` wires up `shell_exec`/
-`read_file`/`write_file`, scoped to `local_tools.working_dir` (read/write
-confined there; `shell_exec` runs with that as its starting directory
-only, not a real sandbox — treat it as exactly as trusted as the operator
-running commands themselves). **This flag alone does not make them
-reachable by the agent** — the tool allowlist above still excludes them.
-Reaching them needs a second, separate step: explicitly listing them in
-`tool_allowlist` in your own config, e.g.:
+`read_file`/`write_file`/`search`/`apply_patch`, scoped to
+`local_tools.working_dir`. Every one of them reaches the directory through
+an `os.Root`: a path that resolves outside — by `..`, by an absolute path,
+or through a symlink — is refused, and a write never follows a symlink at
+all. `shell_exec` is the exception: it runs with that as its starting
+directory only, not a real sandbox (in the coding profile it is the
+confined shell below). **This flag alone does not make them reachable by
+the agent** — the tool allowlist above still excludes them. Reaching them
+needs a second, separate step: explicitly listing them in `tool_allowlist`
+in your own config, e.g.:
 
 ```yaml
 local_tools:
@@ -348,9 +353,42 @@ tool_allowlist:
   - shell_exec
   - read_file
   - write_file
+  - search
+  - apply_patch
 ```
 
-**Adding `shell_exec` (or `read_file`/`write_file`) to `tool_allowlist`
+`search` takes a literal string or a regular expression and returns one
+line per match as `path:line:text`. `apply_patch` applies a unified diff to
+the working directory and refuses any path that resolves outside it, any
+path inside `.git`, and any patch that would create a symlink. Both are
+edited by the model and both are shown to you: a patch is asked about with
+its whole text on screen before it runs, and the diff of the working tree
+appears in the chat as soon as it has been applied.
+
+Neither `write_file` nor `apply_patch` writes through a symlinked directory,
+even one that points back inside the checkout: a committed `tools ->
+.git/hooks` would otherwise put a hook where your own git runs it. One
+section per file per patch — a patch that names the same file twice is
+refused rather than silently keeping the last edit.
+
+A `shell_exec` call reads the checkout's `git diff` before and after it, and
+when the command changed the tree the result carries that diff, which the
+chat shows without the details toggle: a test that rewrites a fixture is
+visible as a change, not only as output. An ordinary test run changes
+nothing and carries nothing. That diff is the host's own `git diff` with
+`--no-ext-diff --no-textconv`, `core.fsmonitor=false`,
+`--ignore-submodules=all`, no inherited `GIT_*` variables and no global or
+system config, so nothing in the checkout — a nested repository's config
+included — can make it run code on your machine. Two limits worth knowing:
+it covers tracked changes only (a brand-new untracked file does not appear),
+and a diff over 16 KB is cut with a note and, on the coding profile, kept
+whole in the scratch directory.
+
+A result too long for one answer is paged, not cut: `read_file` and
+`search` return a page with the offset for the next one in the footer, so
+a search's last match and a long file's last line stay reachable.
+
+**Adding `shell_exec` (or any file tool) to `tool_allowlist`
 re-exposes the mesh-content-to-arbitrary-execution risk the default
 allowlist exists to prevent** — the fix removes the capability from the
 default, it doesn't mark peer-authored room text as untrusted. Only do
@@ -392,14 +430,15 @@ What changes in this profile:
   model.
 - **Only you approve.** A roster member can assign and discuss work. No
   message can approve a tool call: approvals come only from the TUI or the
-  control socket. Every local tool you allow here (`read_file`,
-  `write_file`, `shell_exec`) asks you before each call, whatever
-  `tool_asklist` says. The approval prompt shows the whole call, with
-  invisible characters (bidi overrides, zero-width marks) written out as
-  `\u{XXXX}`; one taller than the screen must be paged through, every
+  control socket. Every local tool you allow here (`read_file`, `search`,
+  `apply_patch`, `write_file`, `shell_exec`) asks you before each call,
+  whatever `tool_asklist` says. The approval prompt shows the whole call,
+  with invisible characters (bidi overrides, zero-width marks) written out
+  as `\u{XXXX}`; one taller than the screen must be paged through, every
   line, before `y` allows it, and a call over 16 KiB is refused without
-  asking. The prompt only appears once the message box has been quiet for
-  two seconds, and its answer keys then stay asleep for a further 0.6 s —
+  asking — a patch larger than that has to be sent in several pieces.
+  The prompt only appears once the message box has been quiet for two
+  seconds, and its answer keys then stay asleep for a further 0.6 s —
   a letter meant for your message cannot answer it, and the prompt says so
   while the keys sleep. `esc` denies at once: the safe answer is never
   delayed.

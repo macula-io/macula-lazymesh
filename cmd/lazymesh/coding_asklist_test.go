@@ -114,11 +114,11 @@ func TestCodingProfileAsksBeforeEveryLocalTool(t *testing.T) {
 // the mesh profile keeps tool_asklist as written.
 func TestResolveAsklist_CodingAddsEveryAllowedLocalTool(t *testing.T) {
 	cfg := codingConfig(t)
-	cfg.ToolAllowlist = []string{"read_file", "write_file", "shell_exec"}
+	cfg.ToolAllowlist = []string{"read_file", "write_file", "shell_exec", "search", "apply_patch"}
 	cfg.ToolAllowlistExtends = false
 	cfg.ToolAsklist = []string{"mesh_say"}
 	got := resolveAsklist(cfg)
-	for _, want := range []string{"mesh_say", "read_file", "write_file", "shell_exec"} {
+	for _, want := range []string{"mesh_say", "read_file", "write_file", "shell_exec", "search", "apply_patch"} {
 		if !allowlistIncludes(got, want) {
 			t.Errorf("coding ask list %v lacks %s", got, want)
 		}
