@@ -78,6 +78,8 @@ func leaderCases(t *testing.T) []leaderCase {
 			m.chatViewport.GotoTop()
 			return m
 		}, func(m Model, _ tea.Cmd) bool { return m.chatViewport.AtBottom() }},
+		{"p", func(t *testing.T) Model { return newTestModel(t) },
+			func(m Model, _ tea.Cmd) bool { return m.mode == ModePalette }},
 		{"q", func(t *testing.T) Model { return newTestModel(t) },
 			func(_ Model, cmd tea.Cmd) bool { return cmd != nil }},
 		{"?", func(t *testing.T) Model { return newTestModel(t) },

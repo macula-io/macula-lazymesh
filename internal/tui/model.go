@@ -98,6 +98,10 @@ const (
 	// chat, and esc closes the panel instead of leaving whatever was
 	// underneath.
 	ModeNotesPanel
+	// ModePalette: searching the leader's commands by name (#78 gap 6).
+	// Its own mode so what is typed goes to the search and never reaches
+	// the draft; it is opened from the leader, so never over a prompt.
+	ModePalette
 )
 
 // Options configures a new Model. Zero values are all valid (no agent
@@ -411,6 +415,8 @@ type Model struct {
 	meshServiceCallInput     textinput.Model
 	meshServiceCallProcedure string
 	meshServiceCallInFlight  bool
+
+	palette paletteState // the search while ModePalette holds the keyboard
 
 	chatEntries  []chatEntry
 	sel          selectionState // shift+drag selection over the chat pane
@@ -871,6 +877,8 @@ func (m Model) applyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleRealmJoinKey(msg)
 	case ModeMeshServiceCall:
 		return m.handleMeshServiceCallKey(msg)
+	case ModePalette:
+		return m.handlePaletteKey(msg)
 	}
 
 	// The leader is armed: the next key is a command, whether or not it is
@@ -1053,6 +1061,8 @@ func (m Model) runLeader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.newBelow = false
 		}
 		return m, nil
+	case key.Matches(msg, DefaultKeyMap.Palette):
+		return m.openPalette()
 	case key.Matches(msg, DefaultKeyMap.LeaderHelp):
 		m.explainLeader()
 		return m, nil
@@ -1745,6 +1755,8 @@ func (m Model) View() string {
 
 	var body string
 	switch {
+	case m.mode == ModePalette:
+		body = m.renderPalette()
 	case m.meshExpanded:
 		body = m.renderMeshOverlay()
 	case m.meshServicesExpanded:
@@ -1812,6 +1824,8 @@ func (m Model) renderHintLines() []string {
 		return []string{statusStripStyle.Render("-- REALM --") + "  " + dimStyle.Render(keyHint(DefaultKeyMap.Submit, "join")+"  "+keyHint(DefaultKeyMap.Normal, "cancel"))}
 	case ModeMeshServiceCall:
 		return []string{statusStripStyle.Render("-- MESH CALL --") + "  " + dimStyle.Render(keyHint(DefaultKeyMap.Submit, "call "+m.meshServiceCallProcedure)+"  "+keyHint(DefaultKeyMap.Normal, "cancel"))}
+	case ModePalette:
+		return []string{statusStripStyle.Render("-- COMMANDS --") + "  " + dimStyle.Render("↑↓: select  "+keyHint(DefaultKeyMap.Submit, "run")+"  "+keyHint(DefaultKeyMap.Normal, "close"))}
 	case ModeMeshServicesPanel:
 		return []string{statusStripStyle.Render("-- MESH SERVICES --") + "  " + dimStyle.Render("↑↓: select  "+keyHint(DefaultKeyMap.Submit, "call")+"  "+keyHint(DefaultKeyMap.Normal, "close"))}
 	}
