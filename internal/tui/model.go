@@ -272,6 +272,21 @@ type Model struct {
 
 	pendingRingPopup *pendingRing // the one ring currently shown, nil if none
 
+	// now is the clock the pop-ups' arming guard reads (#59). nil means
+	// time.Now; tests set it so a 600 ms guard costs no wall clock.
+	now func() time.Time
+
+	// approvalArm and ringArm are the two pop-ups' arming state (#59): the
+	// answer keys do nothing until a pause has passed, so a key meant for a
+	// message cannot answer a prompt that appeared under the cursor.
+	approvalArm popupArm
+	ringArm     popupArm
+	// approvalReturnTo and ringReturnTo are the modes the two pop-ups took
+	// focus from, one each: both can be open at once, and one shared slot
+	// hands focus back to the wrong pop-up (see refocus).
+	approvalReturnTo Mode
+	ringReturnTo     Mode
+
 	// The error pop-up's own state, nil when it is closed. Separate from
 	// lastErr: lastErr is the live condition, this is the reading of it,
 	// so closing the pop-up does not pretend the error went away.
@@ -1088,7 +1103,9 @@ func (m *Model) processPendingRings() []tea.Cmd {
 		}
 		if m.mode != ModeInsert && m.pendingRingPopup == nil {
 			r := ring
+			*m = m.rememberFocus(ModeRingPopup)
 			m.pendingRingPopup = &r
+			m.ringArm = popupArm{shownAt: m.clock()}
 			m.mode = ModeRingPopup
 			m.resizeComponents() // hint row goes from 2 lines (Normal) to 1 (Ring)
 		}

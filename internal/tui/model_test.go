@@ -1396,6 +1396,7 @@ func TestApprovalPopupAnswersOnCh(t *testing.T) {
 		t.Fatalf("popup state = mode %v pending %+v", m.mode, m.pendingApproval)
 	}
 
+	m = armPopups(m) // a person who paused: the guard's own tests are in popuparm_test.go
 	updated, _ = m.Update(runeKey('y'))
 	m = updated.(Model)
 
@@ -1443,6 +1444,7 @@ func TestApprovalPopupShowsTheTailOfALongCall(t *testing.T) {
 func TestApprovalPopupAllowsOnlyAfterTheEndWasShown(t *testing.T) {
 	args := `{"command":"` + strings.Repeat("echo step; ", 600) + `rm -rf ~"}`
 	m, approvalCh := approvalModel(t, 80, 20, args)
+	m = armPopups(m)
 	updated, _ := m.Update(runeKey('y'))
 	m = updated.(Model)
 	select {
@@ -1457,6 +1459,7 @@ func TestApprovalPopupAllowsOnlyAfterTheEndWasShown(t *testing.T) {
 	if !strings.Contains(strings.ReplaceAll(m.View(), "\n", ""), `rm -rf ~"}`) {
 		t.Fatalf("paging did not reach the last line:\n%s", m.View())
 	}
+	m = armPopups(m) // paging is typing: the guard starts again
 	updated, _ = m.Update(runeKey('y'))
 	m = updated.(Model)
 	select {
@@ -1490,6 +1493,7 @@ func TestApprovalPopupGDoesNotSkipTheMiddle(t *testing.T) {
 	m, approvalCh := approvalModel(t, 80, 20, args)
 	updated, _ := m.Update(runeKey('G'))
 	m = updated.(Model)
+	m = armPopups(m)
 	updated, _ = m.Update(runeKey('y'))
 	m = updated.(Model)
 	select {
@@ -1555,6 +1559,7 @@ func TestApprovalPopupDenyOnN(t *testing.T) {
 	m := New(nil, Options{UserInputCh: make(chan string, 8), ApprovalCh: approvalCh})
 	updated, _ := m.Update(agentEventMsg(agent.Event{Kind: agent.EventApprovalRequested, ToolName: "shell_exec", ID: "approve-2", Text: "{}"}))
 	m = updated.(Model)
+	m = armPopups(m)
 	updated, _ = m.Update(runeKey('n'))
 	m = updated.(Model)
 

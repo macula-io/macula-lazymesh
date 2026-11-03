@@ -88,6 +88,7 @@ func TestHandleRingPopupKey_AnswerAcceptsAndClearsPopup(t *testing.T) {
 	ring := pendingRing{RingID: "r1", Peer: "peer1", Purpose: "hi"}
 	m.pendingRingPopup = &ring
 	m.mode = ModeRingPopup
+	m = armPopups(m) // a person who paused: the guard's own tests are in popuparm_test.go
 
 	updated, cmd := m.handleRingPopupKey(runeKey('a'))
 	if updated.mode != ModeNormal {
@@ -114,6 +115,7 @@ func TestHandleRingPopupKey_DeclineClearsPopup(t *testing.T) {
 	ring := pendingRing{RingID: "r1", Peer: "peer1"}
 	m.pendingRingPopup = &ring
 	m.mode = ModeRingPopup
+	m = armPopups(m)
 
 	updated, cmd := m.handleRingPopupKey(runeKey('d'))
 	if updated.pendingRingPopup != nil || updated.mode != ModeNormal {
@@ -134,6 +136,7 @@ func TestHandleRingPopupKey_TrustAcceptsAndTrusts(t *testing.T) {
 	ring := pendingRing{RingID: "r1", Peer: "peer1"}
 	m.pendingRingPopup = &ring
 	m.mode = ModeRingPopup
+	m = armPopups(m)
 
 	updated, cmd := m.handleRingPopupKey(runeKey('t'))
 	if updated.pendingRingPopup != nil {
