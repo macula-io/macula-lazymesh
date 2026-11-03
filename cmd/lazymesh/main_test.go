@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/checkoutnotes"
 	"github.com/macula-io/macula-lazymesh/internal/config"
 	"github.com/macula-io/macula-lazymesh/internal/mcpclient"
 	"github.com/macula-io/macula-lazymesh/internal/meshservices"
@@ -654,9 +655,9 @@ func TestBuildSystemPrompt_LocalInstructionsInjected(t *testing.T) {
 	}
 }
 
-// TestLocalInstructionsReadsConventionFiles pins the reader: both
-// convention files in the working directory land in the returned text,
-// in order, and missing files are simply absent.
+// TestLocalInstructionsReadsConventionFiles pins the renderer: both
+// convention files the reader delivered land in the returned text, in
+// order, and missing files are simply absent.
 func TestLocalInstructionsReadsConventionFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("agents says hi"), 0o644); err != nil {
@@ -665,7 +666,7 @@ func TestLocalInstructionsReadsConventionFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("claude says no"), 0o644); err != nil {
 		t.Fatalf("write CLAUDE.md: %v", err)
 	}
-	got := localInstructions(dir)
+	got := localInstructions(checkoutnotes.Read(dir).Notes)
 	if !strings.Contains(got, "--- AGENTS.md ---") || !strings.Contains(got, "agents says hi") {
 		t.Fatalf("AGENTS.md missing: %q", got)
 	}
@@ -675,25 +676,27 @@ func TestLocalInstructionsReadsConventionFiles(t *testing.T) {
 	if strings.Index(got, "AGENTS.md") > strings.Index(got, "CLAUDE.md") {
 		t.Fatalf("AGENTS.md should come before CLAUDE.md: %q", got)
 	}
-	if got := localInstructions(t.TempDir()); got != "" {
+	if got := localInstructions(checkoutnotes.Read(t.TempDir()).Notes); got != "" {
 		t.Fatalf("expected empty instructions without any convention files, got %q", got)
 	}
 }
 
-// TestLocalInstructionsTruncatesOversizedFiles pins the cap: an oversized
-// file is cut with a marker, never silently sliced mid-thought.
-func TestLocalInstructionsTruncatesOversizedFiles(t *testing.T) {
+// TestLocalInstructionsRefusesOversizedFiles pins the cap on the mesh
+// profile's own path to the same rule the coding profile uses: a note past
+// the cap is refused whole, not cut with a marker, and the reason is
+// available to log.
+func TestLocalInstructionsRefusesOversizedFiles(t *testing.T) {
 	dir := t.TempDir()
-	big := strings.Repeat("x", maxLocalInstructionsBytes+1000)
+	big := strings.Repeat("x", checkoutnotes.MaxBytes+1000)
 	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(big), 0o644); err != nil {
 		t.Fatalf("write AGENTS.md: %v", err)
 	}
-	got := localInstructions(dir)
-	if !strings.Contains(got, "truncated") {
-		t.Fatalf("oversized file was not marked truncated: %q", got[:200])
+	reading := checkoutnotes.Read(dir)
+	if got := localInstructions(reading.Notes); got != "" {
+		t.Fatalf("an oversized note reached the mesh profile's instructions (%d bytes)", len(got))
 	}
-	if len(got) > maxLocalInstructionsBytes+2000 {
-		t.Fatalf("truncated instructions grew unexpectedly: %d bytes", len(got))
+	if len(reading.Refused) != 1 {
+		t.Fatalf("refused = %+v, want AGENTS.md", reading.Refused)
 	}
 }
 
