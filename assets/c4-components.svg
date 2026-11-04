@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 954" role="img" aria-label="macula-lazymesh components">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1220" role="img" aria-label="macula-lazymesh components">
 <title>macula-lazymesh components</title>
 <style>
 .t-name { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; }
@@ -44,13 +44,13 @@
 }
 </style>
 <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
-<rect class="bg" x="0" y="0" width="1000" height="954"/>
-<rect class="bound" x="16" y="40" width="968" height="728" rx="12"/>
+<rect class="bg" x="0" y="0" width="1000" height="1220"/>
+<rect class="bound" x="16" y="40" width="968" height="996" rx="12"/>
 <text class="t-bound" x="32" y="62">lazymesh process [Go 1.27, cmd/lazymesh, internal/]</text>
 <rect class="b-sys" x="32" y="70" width="936" height="80" rx="10"/>
 <text class="t-code" x="48" y="98">cmd/lazymesh</text>
 <text class="t-type" x="48" y="116">[main.go, eventbridge.go]</text>
-<text class="t-desc" x="48" y="140">Loads config, builds the provider and tool sources, spawns macula-mcp, starts the session; the event bridge fans events to the TUI and the socket.</text>
+<text class="t-desc" x="48" y="140">Loads config, builds the provider and the tool chain, spawns macula-mcp, starts the session; the event bridge fans events to the TUI and the socket.</text>
 <rect class="b-cmp" x="32" y="174" width="300" height="112" rx="10"/>
 <text class="t-code" x="48" y="202">sessionhost</text>
 <text class="t-type" x="48" y="220">[Ergo node, simple_one_for_one]</text>
@@ -59,104 +59,141 @@
 <text class="t-desc" x="48" y="276">with the same args</text>
 <rect class="b-cmp" x="350" y="174" width="300" height="112" rx="10"/>
 <text class="t-code" x="366" y="202">agent</text>
-<text class="t-type" x="366" y="220">[tool-calling loop]</text>
+<text class="t-type" x="366" y="220">[tool-calling loop; Outlet]</text>
 <text class="t-desc" x="366" y="244">Converses, calls tools, feeds results</text>
-<text class="t-desc" x="366" y="260">back; tool allowlist (deny by</text>
-<text class="t-desc" x="366" y="276">default), approvals, terse mode</text>
+<text class="t-desc" x="366" y="260">back; an Outlet per consumer keeps</text>
+<text class="t-desc" x="366" y="276">events in order and loses none</text>
 <rect class="b-cmp" x="668" y="174" width="300" height="112" rx="10"/>
 <text class="t-code" x="684" y="202">provider</text>
 <text class="t-type" x="684" y="220">[LLM backends]</text>
 <text class="t-desc" x="684" y="244">deepseek, nvidia, groq on the</text>
 <text class="t-desc" x="684" y="260">OpenAI-compatible shape; anthropic</text>
 <text class="t-desc" x="684" y="276">on the Messages API; streamed</text>
-<rect class="bound" x="32" y="310" width="936" height="162" rx="12"/>
-<text class="t-bound" x="48" y="332">Tool sources</text>
-<rect class="b-cmp" x="48" y="342" width="288" height="116" rx="10"/>
-<text class="t-code" x="64" y="370">mcpclient</text>
-<text class="t-type" x="64" y="388">[the sole mesh tool source]</text>
-<text class="t-desc" x="64" y="412">Spawns macula-mcp, one MCP</text>
-<text class="t-desc" x="64" y="428">session for the agent and the</text>
-<text class="t-desc" x="64" y="444">TUI panels; call log</text>
-<rect class="b-cmp" x="356" y="342" width="288" height="116" rx="10"/>
-<text class="t-code" x="372" y="370">meshservices, webfetch</text>
-<text class="t-type" x="372" y="388">[off by default; always]</text>
-<text class="t-desc" x="372" y="412">Curated mcl-rag and mcl-graph</text>
-<text class="t-desc" x="372" y="428">procedures, found in the DHT;</text>
-<text class="t-desc" x="372" y="444">web_fetch with an SSRF guard</text>
-<rect class="b-cmp" x="664" y="342" width="288" height="116" rx="10"/>
-<text class="t-code" x="680" y="370">localtools</text>
-<text class="t-type" x="680" y="388">[opt-in, allowlist-gated]</text>
-<text class="t-desc" x="680" y="412">shell_exec, read_file, write_file</text>
-<text class="t-desc" x="680" y="428">in local_tools.working_dir</text>
-<rect class="b-cmp" x="32" y="508" width="300" height="112" rx="10"/>
-<text class="t-code" x="48" y="536">roomwaiter, ringwaiter</text>
-<text class="t-type" x="48" y="554">[loop-owned waits]</text>
-<text class="t-desc" x="48" y="578">Block in mesh_wait_room and</text>
-<text class="t-desc" x="48" y="594">mesh_wait_ring, feed arrivals in</text>
-<text class="t-desc" x="48" y="610">as prompts; scheduler: timed ones</text>
-<rect class="b-cmp" x="350" y="508" width="300" height="112" rx="10"/>
-<text class="t-code" x="366" y="536">tui</text>
-<text class="t-type" x="366" y="554">[bubbletea, lipgloss; termkeys]</text>
-<text class="t-desc" x="366" y="578">Status strip, rooms/rings/presence</text>
-<text class="t-desc" x="366" y="594">panels, chat pane, ring and</text>
-<text class="t-desc" x="366" y="610">approval popups, realms view</text>
-<rect class="b-cmp" x="668" y="508" width="300" height="112" rx="10"/>
-<text class="t-code" x="684" y="536">frontend</text>
-<text class="t-type" x="684" y="554">[unix-socket control plane]</text>
-<text class="t-desc" x="684" y="578">NDJSON both ways, 0600 socket,</text>
-<text class="t-desc" x="684" y="594">peer uid checked; the pre-tool</text>
-<text class="t-desc" x="684" y="610">hook, failing closed</text>
-<rect class="b-cmp" x="32" y="644" width="300" height="104" rx="10"/>
-<text class="t-code" x="48" y="672">sessionstore</text>
-<text class="t-type" x="48" y="690">[JSONL append logs]</text>
-<text class="t-desc" x="48" y="714">One conversation per file,</text>
-<text class="t-desc" x="48" y="730">O_APPEND; --resume loads one</text>
-<rect class="b-cmp" x="350" y="644" width="300" height="104" rx="10"/>
-<text class="t-code" x="366" y="672">realmjoin, updatecheck</text>
-<text class="t-type" x="366" y="690">[subprocess; HTTPS]</text>
-<text class="t-desc" x="366" y="714">Execs macula-mcp-realm join, never</text>
-<text class="t-desc" x="366" y="730">a tool; reads npm's latest mcp</text>
-<rect class="b-cmp" x="668" y="644" width="300" height="104" rx="10"/>
-<text class="t-code" x="684" y="672">config, contactpolicy</text>
-<text class="t-type" x="684" y="690">[and logging, counters]</text>
-<text class="t-desc" x="684" y="714">config.yaml; the ring policy file;</text>
-<text class="t-desc" x="684" y="730">agent.log; counters, optional /metrics</text>
+<rect class="b-cmp" x="32" y="310" width="936" height="96" rx="10"/>
+<text class="t-code" x="48" y="338">toolchain, rostergate</text>
+<text class="t-type" x="48" y="356">[the one guard chain, both profiles]</text>
+<text class="t-desc" x="48" y="380">Every tool call passes denial, refuse, hook, ask, terse, handoff, watched rooms and the allowlist, in one declared order;</text>
+<text class="t-desc" x="48" y="396">the roster gate lets the model see only room messages the station attests came from a node on the operator's roster.</text>
+<rect class="bound" x="32" y="430" width="936" height="162" rx="12"/>
+<text class="t-bound" x="48" y="452">Tool sources</text>
+<rect class="b-cmp" x="48" y="462" width="190" height="116" rx="10"/>
+<text class="t-code" x="64" y="490">mcpclient</text>
+<text class="t-type" x="64" y="508">[the sole mesh source]</text>
+<text class="t-desc" x="64" y="532">Spawns macula-mcp; one</text>
+<text class="t-desc" x="64" y="548">MCP session for the agent</text>
+<text class="t-desc" x="64" y="564">and the TUI; a call log</text>
+<rect class="b-cmp" x="254" y="462" width="222" height="116" rx="10"/>
+<text class="t-code" x="270" y="490">meshservices, webfetch</text>
+<text class="t-type" x="270" y="508">[off by default; always]</text>
+<text class="t-desc" x="270" y="532">mcl-rag and mcl-graph</text>
+<text class="t-desc" x="270" y="548">procedures from the DHT;</text>
+<text class="t-desc" x="270" y="564">web_fetch, SSRF-guarded</text>
+<rect class="b-cmp" x="492" y="462" width="240" height="116" rx="10"/>
+<text class="t-code" x="508" y="490">localtools, confinedshell</text>
+<text class="t-type" x="508" y="508">[opt-in, allowlist-gated]</text>
+<text class="t-desc" x="508" y="532">File tools on an os.Root;</text>
+<text class="t-desc" x="508" y="548">shell_exec inside bubblewrap,</text>
+<text class="t-desc" x="508" y="564">self-tested before offered</text>
+<rect class="b-cmp" x="748" y="462" width="204" height="116" rx="10"/>
+<text class="t-code" x="764" y="490">gittools</text>
+<text class="t-type" x="764" y="508">[coding profile]</text>
+<text class="t-desc" x="764" y="532">git_branch, git_commit,</text>
+<text class="t-desc" x="764" y="548">git_push: own branch only,</text>
+<text class="t-desc" x="764" y="564">fixed argv, no force</text>
+<rect class="b-cmp" x="32" y="628" width="222" height="112" rx="10"/>
+<text class="t-code" x="48" y="656">roomwaiter, ringwaiter</text>
+<text class="t-type" x="48" y="674">[loop-owned waits]</text>
+<text class="t-desc" x="48" y="698">Block in mesh_wait_room and</text>
+<text class="t-desc" x="48" y="714">mesh_wait_ring; arrivals</text>
+<text class="t-desc" x="48" y="730">come in as prompts</text>
+<rect class="b-cmp" x="270" y="628" width="222" height="112" rx="10"/>
+<text class="t-code" x="286" y="656">scheduler</text>
+<text class="t-type" x="286" y="674">[deferred prompts]</text>
+<text class="t-desc" x="286" y="698">The socket's schedule</text>
+<text class="t-desc" x="286" y="714">message arms a prompt for</text>
+<text class="t-desc" x="286" y="730">a later wakeup</text>
+<rect class="b-cmp" x="508" y="628" width="222" height="112" rx="10"/>
+<text class="t-code" x="524" y="656">tui, termkeys</text>
+<text class="t-type" x="524" y="674">[bubbletea, lipgloss]</text>
+<text class="t-desc" x="524" y="698">Status strip, panels, chat</text>
+<text class="t-desc" x="524" y="714">pane, ring and approval</text>
+<text class="t-desc" x="524" y="730">popups, realms view</text>
+<rect class="b-cmp" x="746" y="628" width="222" height="112" rx="10"/>
+<text class="t-code" x="762" y="656">frontend</text>
+<text class="t-type" x="762" y="674">[unix-socket control plane]</text>
+<text class="t-desc" x="762" y="698">NDJSON both ways, 0600,</text>
+<text class="t-desc" x="762" y="714">peer uid checked; pre-tool</text>
+<text class="t-desc" x="762" y="730">hook, failing closed</text>
+<rect class="b-cmp" x="32" y="764" width="300" height="104" rx="10"/>
+<text class="t-code" x="48" y="792">sessionstore</text>
+<text class="t-type" x="48" y="810">[JSONL append logs]</text>
+<text class="t-desc" x="48" y="834">One conversation per file,</text>
+<text class="t-desc" x="48" y="850">O_APPEND; --resume loads one</text>
+<rect class="b-cmp" x="350" y="764" width="300" height="104" rx="10"/>
+<text class="t-code" x="366" y="792">prompthistory</text>
+<text class="t-type" x="366" y="810">[per-checkout JSONL]</text>
+<text class="t-desc" x="366" y="834">The prompts an operator sent,</text>
+<text class="t-desc" x="366" y="850">given back with the up key</text>
+<rect class="b-cmp" x="668" y="764" width="300" height="104" rx="10"/>
+<text class="t-code" x="684" y="792">checkoutnotes</text>
+<text class="t-type" x="684" y="810">[AGENTS.md, CLAUDE.md as data]</text>
+<text class="t-desc" x="684" y="834">A checkout's notes, never orders</text>
+<text class="t-desc" x="684" y="850">unless the operator trusted them</text>
+<rect class="b-cmp" x="32" y="892" width="300" height="112" rx="10"/>
+<text class="t-code" x="48" y="920">realmjoin, updatecheck</text>
+<text class="t-type" x="48" y="938">[subprocess; HTTPS]</text>
+<text class="t-desc" x="48" y="962">Execs macula-mcp-realm join,</text>
+<text class="t-desc" x="48" y="978">never a tool; reads npm's</text>
+<text class="t-desc" x="48" y="994">latest @macula-io/mcp</text>
+<rect class="b-cmp" x="350" y="892" width="300" height="112" rx="10"/>
+<text class="t-code" x="366" y="920">config, contactpolicy</text>
+<text class="t-type" x="366" y="938">[YAML; policy file]</text>
+<text class="t-desc" x="366" y="962">config.yaml; who may ring this</text>
+<text class="t-desc" x="366" y="978">agent, from the contact policy</text>
+<rect class="b-cmp" x="668" y="892" width="300" height="112" rx="10"/>
+<text class="t-code" x="684" y="920">logging, counters</text>
+<text class="t-type" x="684" y="938">[agent.log; /metrics]</text>
+<text class="t-desc" x="684" y="962">agent.log; runtime counters,</text>
+<text class="t-desc" x="684" y="978">served on /metrics when</text>
+<text class="t-desc" x="684" y="994">metrics_listen is set</text>
 <path class="edge" d="M182 150V174" marker-end="url(#a)"/>
 <text class="t-rel" x="190" y="166">starts the session</text>
 <path class="edge" d="M332 230H350" marker-end="url(#a)"/>
 <path class="edge" d="M650 230H668" marker-end="url(#a)"/>
 <path class="edge" d="M500 286V310" marker-end="url(#a)"/>
 <text class="t-rel" x="508" y="302">tool calls</text>
-<path class="edge" d="M182 508V458" marker-end="url(#a)"/>
-<text class="t-rel" x="190" y="494">wait calls</text>
-<path class="edge" d="M48 420H24V842H32" marker-end="url(#a)"/>
-<text class="t-rel" x="11" y="640" text-anchor="middle" transform="rotate(-90 11 640)">MCP over stdio</text>
-<path class="edge" d="M420 748V794" marker-end="url(#a)"/>
-<text class="t-rel" x="428" y="780">execs</text>
-<path class="edge" d="M968 842H976V564H968" marker-end="url(#a)"/>
-<text class="t-rel" x="991" y="700" text-anchor="middle" transform="rotate(90 991 700)">unix socket</text>
-<rect class="b-mac" x="32" y="794" width="456" height="96" rx="10"/>
-<text class="t-name" x="48" y="822">macula-mcp subprocess</text>
-<text class="t-type" x="48" y="840">[npx -y -p @macula-io/mcp, &gt;= 0.48.0]</text>
-<text class="t-desc" x="48" y="864">The mesh: rooms, rings, presence, calls, DHT;</text>
-<text class="t-desc" x="48" y="880">macula-mcp-realm for joins, a separate process</text>
-<rect class="b-cmp" x="512" y="794" width="456" height="96" rx="10"/>
-<text class="t-name" x="528" y="822">sdk/ clients</text>
-<text class="t-type" x="528" y="840">[Go client.go, Python lazymesh_client.py]</text>
-<text class="t-desc" x="528" y="864">A controller's side of the socket: Say, events,</text>
-<text class="t-desc" x="528" y="880">pending rings, HookPreTool and ServeHook</text>
-<rect class="b-sys" x="24" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="54" y="930">In scope</text>
-<rect class="b-per" x="110.8" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="140.8" y="930">Person</text>
-<rect class="b-mac" x="184.39999999999998" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="214.39999999999998" y="930">Macula infrastructure</text>
-<rect class="b-ext" x="357.0" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="387.0" y="930">External system</text>
-<rect class="b-cmp" x="490.0" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="520.0" y="930">Container or component</text>
-<rect class="b-later" x="669.2" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="699.2" y="930">Planned, not built</text>
-<rect class="bound" x="822.0" y="918" width="22" height="14" rx="3"/>
-<text class="t-leg" x="852.0" y="930">Boundary</text>
+<path class="edge" d="M500 406V430" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="422">past every guard</text>
+<path class="edge" d="M143 628V592" marker-end="url(#a)"/>
+<text class="t-rel" x="151" y="614">wait calls</text>
+<path class="edge" d="M48 520H24V1108H32" marker-end="url(#a)"/>
+<text class="t-rel" x="11" y="816" text-anchor="middle" transform="rotate(-90 11 816)">MCP over stdio</text>
+<path class="edge" d="M182 1004V1060" marker-end="url(#a)"/>
+<text class="t-rel" x="190" y="1046">execs</text>
+<path class="edge" d="M968 1108H976V684H968" marker-end="url(#a)"/>
+<text class="t-rel" x="991" y="896" text-anchor="middle" transform="rotate(90 991 896)">unix socket</text>
+<rect class="b-mac" x="32" y="1060" width="456" height="96" rx="10"/>
+<text class="t-name" x="48" y="1088">macula-mcp subprocess</text>
+<text class="t-type" x="48" y="1106">[npx -y -p @macula-io/mcp, &gt;= 0.48.0]</text>
+<text class="t-desc" x="48" y="1130">The mesh: rooms, rings, presence, calls, DHT;</text>
+<text class="t-desc" x="48" y="1146">macula-mcp-realm for joins, a separate process</text>
+<rect class="b-cmp" x="512" y="1060" width="456" height="96" rx="10"/>
+<text class="t-code" x="528" y="1088">sdk</text>
+<text class="t-type" x="528" y="1106">[Go client.go, Python lazymesh_client.py]</text>
+<text class="t-desc" x="528" y="1130">A controller's side of the socket: Say, events,</text>
+<text class="t-desc" x="528" y="1146">pending rings, HookPreTool and ServeHook</text>
+<rect class="b-sys" x="24" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="54" y="1200">In scope</text>
+<rect class="b-per" x="110.8" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="140.8" y="1200">Person</text>
+<rect class="b-mac" x="184.39999999999998" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="214.39999999999998" y="1200">Macula infrastructure</text>
+<rect class="b-ext" x="357.0" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="387.0" y="1200">External system</text>
+<rect class="b-cmp" x="490.0" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="520.0" y="1200">Container or component</text>
+<rect class="b-later" x="669.2" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="699.2" y="1200">Planned, not built</text>
+<rect class="bound" x="822.0" y="1188" width="22" height="14" rx="3"/>
+<text class="t-leg" x="852.0" y="1200">Boundary</text>
 </svg>

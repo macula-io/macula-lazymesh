@@ -1,5 +1,6 @@
-# The C4 Context and Component diagrams stay in assets/ and stay shown by a README
-# (macula-codebase-checks#10). No path filters: a change that touches only the
+# The C4 diagrams stay in assets/ and stay shown by a README
+# (macula-codebase-checks#10), and the Component diagram names every Go
+# package (#117). No path filters: a change that touches only the
 # diagrams or a README is exactly the change this must see.
 name: c4 model
 
@@ -18,3 +19,26 @@ jobs:
     permissions:
       contents: read
     uses: macula-io/macula-ci-images/.github/workflows/c4-model.yml@83a76a358456bf2f7d6c919ad5e8fe7fd2162ce3
+
+  c4-coverage:
+    name: c4 coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # The check must still fail on a package nobody drew; a check that
+      # passes everything would pass here too.
+      - name: a planted package fails the check
+        run: |
+          mkdir internal/c4plantedprobe
+          printf 'package c4plantedprobe\n' > internal/c4plantedprobe/probe.go
+          if architecture/check_c4_coverage.sh; then
+            echo "check_c4_coverage.sh passed with an undrawn package" >&2
+            exit 1
+          fi
+          rm -r internal/c4plantedprobe
+      - run: architecture/check_c4_coverage.sh

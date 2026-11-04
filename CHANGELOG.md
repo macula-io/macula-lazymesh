@@ -7,6 +7,17 @@ goreleaser from a `v*` tag; this file records what each one changes.
 
 ### Added
 
+- **The architecture diagrams cannot drift from the code (#117).** A C4
+  Level 2 diagram shows the running parts: the agent session, the TUI,
+  the control socket, the files, and the three child processes (macula-mcp,
+  the confined shell, git). The Level 3 diagram now names every package,
+  including the ones it had missed (`toolchain`, `rostergate`,
+  `confinedshell`, `gittools`, `checkoutnotes`, `prompthistory`) and the
+  agent's `Outlet`. `architecture/check_c4_coverage.sh` fails CI when a
+  package is neither drawn nor excluded with a reason, when the diagram
+  names a package that no longer exists, or when the SVGs are not what the
+  generator produces.
+
 - **Find a command by name (#78, gap 6).** The leader then `p` (`ctrl+x p`
   by default) opens a list of the leader's commands. Type part of a name
   (`cop`) to narrow it, use the arrows to choose, and press enter to run

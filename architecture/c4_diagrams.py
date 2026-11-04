@@ -1,11 +1,17 @@
-"""Generate macula-lazymesh's two C4 diagrams into assets/.
+"""Generate macula-lazymesh's three C4 diagrams into assets/.
 
-Run:  python3 architecture/c4_diagrams.py
+Run:  python3 architecture/c4_diagrams.py   (C4_OUT=<dir> writes elsewhere)
 
   c4-context.svg     Level 1: lazymesh, the operator and programs that drive it,
                      macula-mcp, the LLM providers and everything else it talks to
+  c4-containers.svg  Level 2: the running parts -- the agent session, the TUI,
+                     the control socket, the files -- and the child processes
+                     (macula-mcp, the confined shell, git)
   c4-components.svg  Level 3: the packages inside the lazymesh process
-                     (cmd/lazymesh, internal/) and what sits beside it
+                     (cmd/lazymesh, internal/, sdk) and what sits beside it.
+                     Each monospace box title names packages:
+                     architecture/check_c4_coverage.sh fails CI when a package
+                     is missing from them and not in c4_exclusions.txt
 
 Colours are plain classes with a prefers-color-scheme: dark block, no CSS
 custom properties (rsvg-convert renders those black), so the SVGs render the
@@ -18,7 +24,7 @@ keep architecture/README.md's tables in step.
 import os
 from xml.sax.saxutils import escape
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+OUT = os.environ.get("C4_OUT") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
 
 SANS = '"Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif'
 MONO = '"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace'
@@ -150,52 +156,109 @@ def context():
     d.write()
 
 
+def containers():
+    d = Diagram("c4-containers.svg", "macula-lazymesh containers", 1000, 866)
+    d.box("b-per", 40, 30, 280, 112, "Operator", "[Person]",
+          ["Talks to the agent and answers", "approval prompts in the TUI"], person=True)
+    d.box("b-ext", 360, 30, 280, 112, "LLM provider", "[External: HTTPS API]",
+          ["DeepSeek, NVIDIA, Groq or", "Anthropic, streamed"])
+    d.box("b-ext", 680, 30, 280, 112, "Controller program", "[External: Go or Python SDK]",
+          ["Drives a session over the socket:", "input, events, approvals, the", "pre-tool hook"])
+    d.bound(24, 176, 952, 334, "lazymesh process")
+    d.box("b-cmp", 40, 210, 280, 116, "TUI", "[bubbletea; absent with --headless]",
+          ["Rooms, rings, presence, chat pane,", "approval popups, realms view"])
+    d.box("b-sys", 360, 210, 280, 116, "Agent session", "[Ergo actor, tool-calling loop]",
+          ["One supervised conversation: model", "calls, the guard chain, tool calls;", "its events go to every frontend"])
+    d.box("b-cmp", 680, 210, 280, 116, "Control socket", "[unix socket, NDJSON, 0600]",
+          ["Served with --headless or", "--unix-socket; peer uid checked;", "the pre-tool hook fails closed"])
+    d.box("b-cmp", 40, 370, 280, 116, "Session store", "[files: JSONL append logs]",
+          ["One conversation per file, read", "back by --resume; the prompt", "history for the up key"])
+    d.box("b-cmp", 360, 370, 280, 116, "Tool sources", "[in-process Go]",
+          ["Mesh tools over MCP, web_fetch,", "file tools on an os.Root, git", "(own branch only), shell_exec"])
+    d.box("b-cmp", 680, 370, 280, 116, "Config and logs", "[files]",
+          ["config.yaml, the ring contact", "policy, trusted checkout notes,", "agent.log; /metrics if enabled"])
+    d.box("b-mac", 40, 560, 280, 124, "macula-mcp", "[child: npx, Node, MCP over stdio]",
+          ["The sole mesh tool source, for the", "whole session; realm joins run as a", "separate macula-mcp-realm child"])
+    d.box("b-cmp", 360, 560, 280, 124, "Confined shell", "[child: bubblewrap, per command]",
+          ["Each approved shell_exec: checkout", "and scratch read-write, toolchain", "read-only, no network, no env"])
+    d.box("b-cmp", 680, 560, 280, 124, "git", "[child: fixed argv, per call]",
+          ["Commit and push the agent's own", "branch on the checkout's remote;", "never main, master or a tag"])
+    d.box("b-mac", 40, 730, 600, 72, "Macula mesh and realm", "[Macula infrastructure: QUIC, HTTPS]", [])
+    d.edge("M180 142V210"); d.text("t-rel", 188, 164, "keys, terminal")
+    d.edge("M500 210V142"); d.text("t-rel", 508, 164, "chat completions")
+    d.edge("M820 142V210"); d.text("t-rel", 828, 164, "unix socket, NDJSON")
+    d.edge("M360 268H320"); d.text("t-rel", 340, 260, "events", anchor="middle")
+    d.edge("M640 268H680"); d.text("t-rel", 660, 260, "events", anchor="middle")
+    d.edge("M500 326V370"); d.text("t-rel", 508, 352, "tool calls")
+    d.edge("M360 300H340V428H320"); d.text("t-rel", 332, 364, "appends", anchor="middle", rotate=-90)
+    d.edge("M400 486V530H180V560"); d.text("t-rel", 188, 550, "MCP over stdio")
+    d.edge("M500 486V560"); d.text("t-rel", 508, 550, "shell_exec")
+    d.edge("M600 486V530H820V560"); d.text("t-rel", 828, 550, "git_commit, git_push")
+    d.edge("M180 684V730"); d.text("t-rel", 188, 712, "QUIC, HTTPS")
+    d.legend(830)
+    d.write()
+
+
 def components():
-    d = Diagram("c4-components.svg", "macula-lazymesh components", 1000, 954)
-    d.bound(16, 40, 968, 728, "lazymesh process [Go 1.27, cmd/lazymesh, internal/]")
+    d = Diagram("c4-components.svg", "macula-lazymesh components", 1000, 1220)
+    d.bound(16, 40, 968, 996, "lazymesh process [Go 1.27, cmd/lazymesh, internal/]")
     d.box("b-sys", 32, 70, 936, 80, "cmd/lazymesh", "[main.go, eventbridge.go]",
-          ["Loads config, builds the provider and tool sources, spawns macula-mcp, starts the session; the event bridge fans events to the TUI and the socket."], code=True)
+          ["Loads config, builds the provider and the tool chain, spawns macula-mcp, starts the session; the event bridge fans events to the TUI and the socket."], code=True)
     d.box("b-cmp", 32, 174, 300, 112, "sessionhost", "[Ergo node, simple_one_for_one]",
           ["A supervised session actor per", "conversation, restarted on a crash", "with the same args"], code=True)
-    d.box("b-cmp", 350, 174, 300, 112, "agent", "[tool-calling loop]",
-          ["Converses, calls tools, feeds results", "back; tool allowlist (deny by", "default), approvals, terse mode"], code=True)
+    d.box("b-cmp", 350, 174, 300, 112, "agent", "[tool-calling loop; Outlet]",
+          ["Converses, calls tools, feeds results", "back; an Outlet per consumer keeps", "events in order and loses none"], code=True)
     d.box("b-cmp", 668, 174, 300, 112, "provider", "[LLM backends]",
           ["deepseek, nvidia, groq on the", "OpenAI-compatible shape; anthropic", "on the Messages API; streamed"], code=True)
-    d.bound(32, 310, 936, 162, "Tool sources")
-    d.box("b-cmp", 48, 342, 288, 116, "mcpclient", "[the sole mesh tool source]",
-          ["Spawns macula-mcp, one MCP", "session for the agent and the", "TUI panels; call log"], code=True)
-    d.box("b-cmp", 356, 342, 288, 116, "meshservices, webfetch", "[off by default; always]",
-          ["Curated mcl-rag and mcl-graph", "procedures, found in the DHT;", "web_fetch with an SSRF guard"], code=True)
-    d.box("b-cmp", 664, 342, 288, 116, "localtools", "[opt-in, allowlist-gated]",
-          ["shell_exec, read_file, write_file", "in local_tools.working_dir"], code=True)
-    d.box("b-cmp", 32, 508, 300, 112, "roomwaiter, ringwaiter", "[loop-owned waits]",
-          ["Block in mesh_wait_room and", "mesh_wait_ring, feed arrivals in", "as prompts; scheduler: timed ones"], code=True)
-    d.box("b-cmp", 350, 508, 300, 112, "tui", "[bubbletea, lipgloss; termkeys]",
-          ["Status strip, rooms/rings/presence", "panels, chat pane, ring and", "approval popups, realms view"], code=True)
-    d.box("b-cmp", 668, 508, 300, 112, "frontend", "[unix-socket control plane]",
-          ["NDJSON both ways, 0600 socket,", "peer uid checked; the pre-tool", "hook, failing closed"], code=True)
-    d.box("b-cmp", 32, 644, 300, 104, "sessionstore", "[JSONL append logs]",
+    d.box("b-cmp", 32, 310, 936, 96, "toolchain, rostergate", "[the one guard chain, both profiles]",
+          ["Every tool call passes denial, refuse, hook, ask, terse, handoff, watched rooms and the allowlist, in one declared order;",
+           "the roster gate lets the model see only room messages the station attests came from a node on the operator's roster."], code=True)
+    d.bound(32, 430, 936, 162, "Tool sources")
+    d.box("b-cmp", 48, 462, 190, 116, "mcpclient", "[the sole mesh source]",
+          ["Spawns macula-mcp; one", "MCP session for the agent", "and the TUI; a call log"], code=True)
+    d.box("b-cmp", 254, 462, 222, 116, "meshservices, webfetch", "[off by default; always]",
+          ["mcl-rag and mcl-graph", "procedures from the DHT;", "web_fetch, SSRF-guarded"], code=True)
+    d.box("b-cmp", 492, 462, 240, 116, "localtools, confinedshell", "[opt-in, allowlist-gated]",
+          ["File tools on an os.Root;", "shell_exec inside bubblewrap,", "self-tested before offered"], code=True)
+    d.box("b-cmp", 748, 462, 204, 116, "gittools", "[coding profile]",
+          ["git_branch, git_commit,", "git_push: own branch only,", "fixed argv, no force"], code=True)
+    d.box("b-cmp", 32, 628, 222, 112, "roomwaiter, ringwaiter", "[loop-owned waits]",
+          ["Block in mesh_wait_room and", "mesh_wait_ring; arrivals", "come in as prompts"], code=True)
+    d.box("b-cmp", 270, 628, 222, 112, "scheduler", "[deferred prompts]",
+          ["The socket's schedule", "message arms a prompt for", "a later wakeup"], code=True)
+    d.box("b-cmp", 508, 628, 222, 112, "tui, termkeys", "[bubbletea, lipgloss]",
+          ["Status strip, panels, chat", "pane, ring and approval", "popups, realms view"], code=True)
+    d.box("b-cmp", 746, 628, 222, 112, "frontend", "[unix-socket control plane]",
+          ["NDJSON both ways, 0600,", "peer uid checked; pre-tool", "hook, failing closed"], code=True)
+    d.box("b-cmp", 32, 764, 300, 104, "sessionstore", "[JSONL append logs]",
           ["One conversation per file,", "O_APPEND; --resume loads one"], code=True)
-    d.box("b-cmp", 350, 644, 300, 104, "realmjoin, updatecheck", "[subprocess; HTTPS]",
-          ["Execs macula-mcp-realm join, never", "a tool; reads npm's latest mcp"], code=True)
-    d.box("b-cmp", 668, 644, 300, 104, "config, contactpolicy", "[and logging, counters]",
-          ["config.yaml; the ring policy file;", "agent.log; counters, optional /metrics"], code=True)
+    d.box("b-cmp", 350, 764, 300, 104, "prompthistory", "[per-checkout JSONL]",
+          ["The prompts an operator sent,", "given back with the up key"], code=True)
+    d.box("b-cmp", 668, 764, 300, 104, "checkoutnotes", "[AGENTS.md, CLAUDE.md as data]",
+          ["A checkout's notes, never orders", "unless the operator trusted them"], code=True)
+    d.box("b-cmp", 32, 892, 300, 112, "realmjoin, updatecheck", "[subprocess; HTTPS]",
+          ["Execs macula-mcp-realm join,", "never a tool; reads npm's", "latest @macula-io/mcp"], code=True)
+    d.box("b-cmp", 350, 892, 300, 112, "config, contactpolicy", "[YAML; policy file]",
+          ["config.yaml; who may ring this", "agent, from the contact policy"], code=True)
+    d.box("b-cmp", 668, 892, 300, 112, "logging, counters", "[agent.log; /metrics]",
+          ["agent.log; runtime counters,", "served on /metrics when", "metrics_listen is set"], code=True)
     d.edge("M182 150V174"); d.text("t-rel", 190, 166, "starts the session")
     d.edge("M332 230H350")
     d.edge("M650 230H668")
     d.edge("M500 286V310"); d.text("t-rel", 508, 302, "tool calls")
-    d.edge("M182 508V458"); d.text("t-rel", 190, 494, "wait calls")
-    d.edge("M48 420H24V842H32"); d.text("t-rel", 11, 640, "MCP over stdio", anchor="middle", rotate=-90)
-    d.edge("M420 748V794"); d.text("t-rel", 428, 780, "execs")
-    d.edge("M968 842H976V564H968"); d.text("t-rel", 991, 700, "unix socket", anchor="middle", rotate=90)
-    d.box("b-mac", 32, 794, 456, 96, "macula-mcp subprocess", "[npx -y -p @macula-io/mcp, >= 0.48.0]",
+    d.edge("M500 406V430"); d.text("t-rel", 508, 422, "past every guard")
+    d.edge("M143 628V592"); d.text("t-rel", 151, 614, "wait calls")
+    d.edge("M48 520H24V1108H32"); d.text("t-rel", 11, 816, "MCP over stdio", anchor="middle", rotate=-90)
+    d.edge("M182 1004V1060"); d.text("t-rel", 190, 1046, "execs")
+    d.edge("M968 1108H976V684H968"); d.text("t-rel", 991, 896, "unix socket", anchor="middle", rotate=90)
+    d.box("b-mac", 32, 1060, 456, 96, "macula-mcp subprocess", "[npx -y -p @macula-io/mcp, >= 0.48.0]",
           ["The mesh: rooms, rings, presence, calls, DHT;", "macula-mcp-realm for joins, a separate process"])
-    d.box("b-cmp", 512, 794, 456, 96, "sdk/ clients", "[Go client.go, Python lazymesh_client.py]",
-          ["A controller's side of the socket: Say, events,", "pending rings, HookPreTool and ServeHook"])
-    d.legend(918)
+    d.box("b-cmp", 512, 1060, 456, 96, "sdk", "[Go client.go, Python lazymesh_client.py]",
+          ["A controller's side of the socket: Say, events,", "pending rings, HookPreTool and ServeHook"], code=True)
+    d.legend(1188)
     d.write()
 
 
 if __name__ == "__main__":
-    for make in (context, components):
+    for make in (context, containers, components):
         make()

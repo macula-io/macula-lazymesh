@@ -1,0 +1,4 @@
+# Packages architecture/check_c4_coverage.sh does not require in the C4
+# Component diagram. One per line: the path relative to the module, then why.
+examples/fanout   example controller program, not part of the lazymesh binary
+examples/handoff  example controller program, not part of the lazymesh binary

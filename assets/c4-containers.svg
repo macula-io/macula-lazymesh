@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 866" role="img" aria-label="macula-lazymesh containers">
+<title>macula-lazymesh containers</title>
+<style>
+.t-name { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+.t-desc { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12.5px; }
+.t-rel { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; paint-order: stroke; stroke-width: 4px; stroke-linejoin: round; }
+.t-code { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 13px; font-weight: 600; }
+.t-type { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+.t-bound { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
+.t-leg { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12px; }
+.edge { fill: none; stroke-width: 1.25; }
+.edge-later { fill: none; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bg { fill: #FFFFFF; }
+.b-sys { fill: #F5E9CC; stroke: #A56F0A; stroke-width: 2; }
+.b-per { fill: #E3EBF2; stroke: #3B5B7A; stroke-width: 1.25; }
+.b-mac { fill: #E6E4EE; stroke: #5E5A78; stroke-width: 1.25; }
+.b-ext { fill: #ECEFED; stroke: #8A9791; stroke-width: 1.25; }
+.b-cmp { fill: #FFFFFF; stroke: #8A9791; stroke-width: 1.25; }
+.b-later { fill: none; stroke: #8A9791; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bound { fill: none; stroke: #B3BDB8; stroke-width: 1; }
+.head { fill: #3B5B7A; }
+.t-name, .t-code { fill: #16201D; }
+.t-type, .t-bound, .t-leg { fill: #66736E; }
+.t-desc { fill: #34413C; }
+.t-rel { fill: #66736E; stroke: #FFFFFF; }
+.edge, .edge-later { stroke: #8A9791; }
+.arrowhead { fill: #8A9791; }
+@media (prefers-color-scheme: dark) {
+.bg { fill: #171F1C; }
+.b-sys { fill: #3A2E13; stroke: #E3AA3C; }
+.b-per { fill: #1D2A36; stroke: #8EB4D8; }
+.b-mac { fill: #26243A; stroke: #A9A4C8; }
+.b-ext { fill: #1C2421; stroke: #7D8B85; }
+.b-cmp { fill: #171F1C; stroke: #7D8B85; }
+.b-later { stroke: #7D8B85; }
+.bound { stroke: #4A5752; }
+.head { fill: #8EB4D8; }
+.t-name, .t-code { fill: #E6ECE9; }
+.t-type, .t-bound, .t-leg { fill: #93A09A; }
+.t-desc { fill: #C3CDC8; }
+.t-rel { fill: #93A09A; stroke: #171F1C; }
+.edge, .edge-later { stroke: #7D8B85; }
+.arrowhead { fill: #7D8B85; }
+}
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="1000" height="866"/>
+<rect class="b-per" x="40" y="30" width="280" height="112" rx="10"/>
+<circle class="head" cx="66" cy="54" r="9"/>
+<text class="t-name" x="84" y="58">Operator</text>
+<text class="t-type" x="84" y="76">[Person]</text>
+<text class="t-desc" x="56" y="100">Talks to the agent and answers</text>
+<text class="t-desc" x="56" y="116">approval prompts in the TUI</text>
+<rect class="b-ext" x="360" y="30" width="280" height="112" rx="10"/>
+<text class="t-name" x="376" y="58">LLM provider</text>
+<text class="t-type" x="376" y="76">[External: HTTPS API]</text>
+<text class="t-desc" x="376" y="100">DeepSeek, NVIDIA, Groq or</text>
+<text class="t-desc" x="376" y="116">Anthropic, streamed</text>
+<rect class="b-ext" x="680" y="30" width="280" height="112" rx="10"/>
+<text class="t-name" x="696" y="58">Controller program</text>
+<text class="t-type" x="696" y="76">[External: Go or Python SDK]</text>
+<text class="t-desc" x="696" y="100">Drives a session over the socket:</text>
+<text class="t-desc" x="696" y="116">input, events, approvals, the</text>
+<text class="t-desc" x="696" y="132">pre-tool hook</text>
+<rect class="bound" x="24" y="176" width="952" height="334" rx="12"/>
+<text class="t-bound" x="40" y="198">lazymesh process</text>
+<rect class="b-cmp" x="40" y="210" width="280" height="116" rx="10"/>
+<text class="t-name" x="56" y="238">TUI</text>
+<text class="t-type" x="56" y="256">[bubbletea; absent with --headless]</text>
+<text class="t-desc" x="56" y="280">Rooms, rings, presence, chat pane,</text>
+<text class="t-desc" x="56" y="296">approval popups, realms view</text>
+<rect class="b-sys" x="360" y="210" width="280" height="116" rx="10"/>
+<text class="t-name" x="376" y="238">Agent session</text>
+<text class="t-type" x="376" y="256">[Ergo actor, tool-calling loop]</text>
+<text class="t-desc" x="376" y="280">One supervised conversation: model</text>
+<text class="t-desc" x="376" y="296">calls, the guard chain, tool calls;</text>
+<text class="t-desc" x="376" y="312">its events go to every frontend</text>
+<rect class="b-cmp" x="680" y="210" width="280" height="116" rx="10"/>
+<text class="t-name" x="696" y="238">Control socket</text>
+<text class="t-type" x="696" y="256">[unix socket, NDJSON, 0600]</text>
+<text class="t-desc" x="696" y="280">Served with --headless or</text>
+<text class="t-desc" x="696" y="296">--unix-socket; peer uid checked;</text>
+<text class="t-desc" x="696" y="312">the pre-tool hook fails closed</text>
+<rect class="b-cmp" x="40" y="370" width="280" height="116" rx="10"/>
+<text class="t-name" x="56" y="398">Session store</text>
+<text class="t-type" x="56" y="416">[files: JSONL append logs]</text>
+<text class="t-desc" x="56" y="440">One conversation per file, read</text>
+<text class="t-desc" x="56" y="456">back by --resume; the prompt</text>
+<text class="t-desc" x="56" y="472">history for the up key</text>
+<rect class="b-cmp" x="360" y="370" width="280" height="116" rx="10"/>
+<text class="t-name" x="376" y="398">Tool sources</text>
+<text class="t-type" x="376" y="416">[in-process Go]</text>
+<text class="t-desc" x="376" y="440">Mesh tools over MCP, web_fetch,</text>
+<text class="t-desc" x="376" y="456">file tools on an os.Root, git</text>
+<text class="t-desc" x="376" y="472">(own branch only), shell_exec</text>
+<rect class="b-cmp" x="680" y="370" width="280" height="116" rx="10"/>
+<text class="t-name" x="696" y="398">Config and logs</text>
+<text class="t-type" x="696" y="416">[files]</text>
+<text class="t-desc" x="696" y="440">config.yaml, the ring contact</text>
+<text class="t-desc" x="696" y="456">policy, trusted checkout notes,</text>
+<text class="t-desc" x="696" y="472">agent.log; /metrics if enabled</text>
+<rect class="b-mac" x="40" y="560" width="280" height="124" rx="10"/>
+<text class="t-name" x="56" y="588">macula-mcp</text>
+<text class="t-type" x="56" y="606">[child: npx, Node, MCP over stdio]</text>
+<text class="t-desc" x="56" y="630">The sole mesh tool source, for the</text>
+<text class="t-desc" x="56" y="646">whole session; realm joins run as a</text>
+<text class="t-desc" x="56" y="662">separate macula-mcp-realm child</text>
+<rect class="b-cmp" x="360" y="560" width="280" height="124" rx="10"/>
+<text class="t-name" x="376" y="588">Confined shell</text>
+<text class="t-type" x="376" y="606">[child: bubblewrap, per command]</text>
+<text class="t-desc" x="376" y="630">Each approved shell_exec: checkout</text>
+<text class="t-desc" x="376" y="646">and scratch read-write, toolchain</text>
+<text class="t-desc" x="376" y="662">read-only, no network, no env</text>
+<rect class="b-cmp" x="680" y="560" width="280" height="124" rx="10"/>
+<text class="t-name" x="696" y="588">git</text>
+<text class="t-type" x="696" y="606">[child: fixed argv, per call]</text>
+<text class="t-desc" x="696" y="630">Commit and push the agent's own</text>
+<text class="t-desc" x="696" y="646">branch on the checkout's remote;</text>
+<text class="t-desc" x="696" y="662">never main, master or a tag</text>
+<rect class="b-mac" x="40" y="730" width="600" height="72" rx="10"/>
+<text class="t-name" x="56" y="758">Macula mesh and realm</text>
+<text class="t-type" x="56" y="776">[Macula infrastructure: QUIC, HTTPS]</text>
+<path class="edge" d="M180 142V210" marker-end="url(#a)"/>
+<text class="t-rel" x="188" y="164">keys, terminal</text>
+<path class="edge" d="M500 210V142" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="164">chat completions</text>
+<path class="edge" d="M820 142V210" marker-end="url(#a)"/>
+<text class="t-rel" x="828" y="164">unix socket, NDJSON</text>
+<path class="edge" d="M360 268H320" marker-end="url(#a)"/>
+<text class="t-rel" x="340" y="260" text-anchor="middle">events</text>
+<path class="edge" d="M640 268H680" marker-end="url(#a)"/>
+<text class="t-rel" x="660" y="260" text-anchor="middle">events</text>
+<path class="edge" d="M500 326V370" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="352">tool calls</text>
+<path class="edge" d="M360 300H340V428H320" marker-end="url(#a)"/>
+<text class="t-rel" x="332" y="364" text-anchor="middle" transform="rotate(-90 332 364)">appends</text>
+<path class="edge" d="M400 486V530H180V560" marker-end="url(#a)"/>
+<text class="t-rel" x="188" y="550">MCP over stdio</text>
+<path class="edge" d="M500 486V560" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="550">shell_exec</text>
+<path class="edge" d="M600 486V530H820V560" marker-end="url(#a)"/>
+<text class="t-rel" x="828" y="550">git_commit, git_push</text>
+<path class="edge" d="M180 684V730" marker-end="url(#a)"/>
+<text class="t-rel" x="188" y="712">QUIC, HTTPS</text>
+<rect class="b-sys" x="24" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="54" y="842">In scope</text>
+<rect class="b-per" x="110.8" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="140.8" y="842">Person</text>
+<rect class="b-mac" x="184.39999999999998" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="214.39999999999998" y="842">Macula infrastructure</text>
+<rect class="b-ext" x="357.0" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="387.0" y="842">External system</text>
+<rect class="b-cmp" x="490.0" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="520.0" y="842">Container or component</text>
+<rect class="b-later" x="669.2" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="699.2" y="842">Planned, not built</text>
+<rect class="bound" x="822.0" y="830" width="22" height="14" rx="3"/>
+<text class="t-leg" x="852.0" y="842">Boundary</text>
+</svg>
