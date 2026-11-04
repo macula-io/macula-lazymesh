@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 )
 
 // startTestServer starts a Server on a temp socket with the given input
@@ -262,9 +263,9 @@ func TestApproveControlMessageAndApprovalRequestWire(t *testing.T) {
 		Path:   path,
 		Input:  make(chan string, 8),
 		Events: events,
-		Approve: func(id string, allow bool) bool {
+		Approve: func(id string, allow bool) sessionhost.ApprovalOutcome {
 			approveCalls <- [2]any{id, allow}
-			return true
+			return sessionhost.ApprovalAccepted
 		},
 		SessionID: "approve-test",
 	})

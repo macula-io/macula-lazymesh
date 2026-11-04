@@ -11,6 +11,7 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/provider"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 )
 
 // tempSocket is a socket path inside this test's own temporary directory.
@@ -22,7 +23,7 @@ func tempSocket(t *testing.T) string {
 // startControllerServer starts a Server whose approvals are answered by a
 // function the test supplies, so a test can decide what "the session"
 // says about an answer.
-func startControllerServer(t *testing.T, input chan string, events chan agent.Event, approve func(id string, allow bool) bool) (*Server, string) {
+func startControllerServer(t *testing.T, input chan string, events chan agent.Event, approve func(id string, allow bool) sessionhost.ApprovalOutcome) (*Server, string) {
 	t.Helper()
 	path := tempSocket(t)
 	s, err := Start(Options{
@@ -166,15 +167,15 @@ func TestFirstApprovalWinsAndTheLoserIsTold(t *testing.T) {
 	delivered := make(chan bool, 4)
 	answeredOnce := make(map[string]bool)
 	var onceMu sync.Mutex
-	_, path := startControllerServer(t, input, events, func(id string, allow bool) bool {
+	_, path := startControllerServer(t, input, events, func(id string, allow bool) sessionhost.ApprovalOutcome {
 		onceMu.Lock()
 		defer onceMu.Unlock()
 		if answeredOnce[id] {
-			return false
+			return sessionhost.ApprovalAlreadyAnswered
 		}
 		answeredOnce[id] = true
 		delivered <- allow
-		return true
+		return sessionhost.ApprovalAccepted
 	})
 
 	bob, err := Dial(path)
@@ -245,8 +246,11 @@ func TestFirstApprovalWinsAndTheLoserIsTold(t *testing.T) {
 func TestResolutionBroadcastIsNotAVerdict(t *testing.T) {
 	events := make(chan agent.Event, 8)
 	input := make(chan string, 4)
-	_, path := startControllerServer(t, input, events, func(id string, allow bool) bool {
-		return allow // the first allow wins; a later deny does not
+	_, path := startControllerServer(t, input, events, func(id string, allow bool) sessionhost.ApprovalOutcome {
+		if allow { // the first allow wins; a later deny does not
+			return sessionhost.ApprovalAccepted
+		}
+		return sessionhost.ApprovalAlreadyAnswered
 	})
 
 	// The winner answers from a second controller while the loser's
@@ -279,8 +283,11 @@ func TestResolutionBroadcastIsNotAVerdict(t *testing.T) {
 func TestLateApprovalIsRefusedNotSilentlyDropped(t *testing.T) {
 	events := make(chan agent.Event, 8)
 	input := make(chan string, 4)
-	_, path := startControllerServer(t, input, events, func(id string, allow bool) bool {
-		return id == "approve-9" && allow
+	_, path := startControllerServer(t, input, events, func(id string, allow bool) sessionhost.ApprovalOutcome {
+		if id == "approve-9" && allow {
+			return sessionhost.ApprovalAccepted
+		}
+		return sessionhost.ApprovalAlreadyAnswered
 	})
 
 	c, err := Dial(path)
@@ -361,7 +368,7 @@ func TestEveryEventSurvivesTheRoundTrip(t *testing.T) {
 func TestTheLocalTUIHearsAnAttachedFrontendAnswer(t *testing.T) {
 	events := make(chan agent.Event, 8)
 	input := make(chan string, 4)
-	s, path := startControllerServer(t, input, events, func(id string, allow bool) bool { return true })
+	s, path := startControllerServer(t, input, events, func(id string, allow bool) sessionhost.ApprovalOutcome { return sessionhost.ApprovalAccepted })
 
 	c, err := Dial(path)
 	if err != nil {

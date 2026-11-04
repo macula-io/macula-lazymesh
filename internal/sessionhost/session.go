@@ -43,6 +43,12 @@ type SessionArgs struct {
 	// runs in-memory exactly as it did before D2.
 	Store     *sessionstore.Store
 	SessionID string
+
+	// ApprovalTimeout bounds how long this session's consent question
+	// waits for an operator, zero meaning approvalTimeout. It exists so a
+	// test can let a real approval time out without waiting two minutes
+	// (#121) -- production leaves it zero and gets the constant.
+	ApprovalTimeout time.Duration
 }
 
 // Say asks the session's loop to process one user message: the full
@@ -149,9 +155,37 @@ type approvalSlot struct {
 	id string
 	ch chan approvalAnswer
 
-	mu   sync.Mutex
-	done bool
+	mu     sync.Mutex
+	done   bool
+	closed ApprovalOutcome // why it stopped waiting, set with done
 }
+
+// ApprovalOutcome is what became of an operator's answer. It exists
+// because "did my answer count" has more than two answers (#121): before
+// this, a question the clock refused and a question another frontend had
+// already answered were both a bare false, so a timed-out approval was
+// reported to the operator as "already answered by another frontend" --
+// telling them someone else had decided a call that nobody decided.
+type ApprovalOutcome int
+
+const (
+	// ApprovalAccepted is the answer the session used.
+	ApprovalAccepted ApprovalOutcome = iota
+	// ApprovalAlreadyAnswered: another frontend's answer reached the
+	// session first.
+	ApprovalAlreadyAnswered
+	// ApprovalTimedOut: nobody answered within the approval timeout, so
+	// the call was refused by the clock and this answer arrived too late.
+	ApprovalTimedOut
+	// ApprovalInterrupted: the turn was cut before anyone answered.
+	ApprovalInterrupted
+	// ApprovalNotOutstanding: this session has no such question -- it was
+	// never asked here, or the session has stopped.
+	ApprovalNotOutstanding
+	// ApprovalOtherQuestion: the session is waiting on a different
+	// question now, so this answer belongs to one that is over.
+	ApprovalOtherQuestion
+)
 
 // approvalAnswer is the operator's decision.
 type approvalAnswer struct {
@@ -159,31 +193,46 @@ type approvalAnswer struct {
 }
 
 // answer claims the slot for id and delivers the decision. Only the first
-// caller can win: a second answer, an answer for a different question, or
-// an answer after the question stopped waiting all report false, so the
-// frontend that sent them is told rather than congratulated.
-func (s *approvalSlot) answer(id string, allow bool) bool {
+// caller can win, and every other caller is told exactly why it did not:
+// a second answer, an answer for a different question, and an answer after
+// the question stopped waiting are three different facts (#121).
+//
+// The send cannot block even though the lock is held: the channel holds one
+// answer and done is set in the same critical section as the send, so a
+// second caller is turned away by done before it can reach the send.
+func (s *approvalSlot) answer(id string, allow bool) ApprovalOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done || s.id != id {
-		return false
+	if s.id != id {
+		return ApprovalOtherQuestion
 	}
-	select {
-	case s.ch <- approvalAnswer{allow: allow}:
-		s.done = true
-		return true
-	default:
-		return false
+	if s.done {
+		// closed == ApprovalAccepted means another caller's answer is the
+		// one in flight; from THIS caller's side that is "already answered".
+		if s.closed == ApprovalAccepted {
+			return ApprovalAlreadyAnswered
+		}
+		return s.closed
 	}
+	s.ch <- approvalAnswer{allow: allow}
+	s.done = true
+	s.closed = ApprovalAccepted
+	return ApprovalAccepted
 }
 
 // abandon closes the slot without an answer, for the timeout and
 // interrupt paths: a decision arriving after the session stopped waiting
-// was never going to be used, and must not be reported as if it were.
-func (s *approvalSlot) abandon() {
+// was never going to be used, and must not be reported as if it were. It
+// keeps WHY it closed, so the late answer is told the truth (#121) instead
+// of being left to assume a frontend beat it to the question.
+func (s *approvalSlot) abandon(outcome ApprovalOutcome) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return
+	}
 	s.done = true
-	s.mu.Unlock()
+	s.closed = outcome
 }
 
 // approvals maps each live session to its current outstanding consent
@@ -200,17 +249,19 @@ func AnswerApproval(session gen.PID, id string, allow bool) {
 	TryAnswerApproval(session, id, allow)
 }
 
-// TryAnswerApproval is AnswerApproval reporting whether this answer was
-// the one delivered. More than one frontend can be attached to a session,
-// so several may answer the same question; exactly one answer reaches the
-// session, and only that caller may be told its decision counted. A false
-// return means the question was already answered, is no longer
-// outstanding, or belongs to a different call — never that it was ignored
-// silently by the session.
-func TryAnswerApproval(session gen.PID, id string, allow bool) bool {
+// TryAnswerApproval is AnswerApproval reporting what became of this
+// answer. More than one frontend can be attached to a session, so several
+// may answer the same question; exactly one answer reaches the session,
+// and only that caller is told its decision counted.
+//
+// Anything other than ApprovalAccepted means the session did not use this
+// answer, and says which kind of "no" it was: already answered, refused by
+// the clock, cut by an interrupt, no such question, or a question that is
+// over. Never that it was dropped silently.
+func TryAnswerApproval(session gen.PID, id string, allow bool) ApprovalOutcome {
 	slot, ok := approvals.Load(session)
 	if !ok {
-		return false
+		return ApprovalNotOutstanding
 	}
 	return slot.(*approvalSlot).answer(id, allow)
 }
@@ -228,25 +279,28 @@ func (s *session) consent(ctx context.Context, tool, argumentsJSON string) (bool
 	id := fmt.Sprintf("approve-%d", time.Now().UnixNano())
 	ch := make(chan approvalAnswer, 1)
 	slot := &approvalSlot{id: id, ch: ch}
+	// The slot is deliberately NOT deleted when the question ends: it keeps
+	// how it closed, so an operator who answers a second too late is told the
+	// question timed out instead of being left to guess (#121). The next
+	// question replaces it, and Terminate clears it.
 	approvals.Store(s.PID(), slot)
-	defer approvals.Delete(s.PID())
 	s.turnEvents <- agent.Event{
 		Kind:     agent.EventApprovalRequested,
 		ToolName: tool,
 		ID:       id,
 		Text:     argumentsJSON, // whole: the operator approves what they read (#39)
 	}
-	timer := time.NewTimer(approvalTimeout)
+	timer := time.NewTimer(s.approvalWait)
 	defer timer.Stop()
 	select {
 	case answer := <-ch:
 		return answer.allow, nil
 	case <-ctx.Done():
-		slot.abandon()
+		slot.abandon(ApprovalInterrupted)
 		return false, fmt.Errorf("approval for %q was interrupted", tool)
 	case <-timer.C:
-		slot.abandon()
-		return false, fmt.Errorf("approval for %q timed out after %s", tool, approvalTimeout)
+		slot.abandon(ApprovalTimedOut)
+		return false, fmt.Errorf("approval for %q timed out after %s", tool, s.approvalWait)
 	}
 }
 
@@ -267,6 +321,10 @@ type session struct {
 	// of runSay; consent sends its question on it.
 	turnEvents chan<- agent.Event
 
+	// approvalWait is how long this session's consent question waits
+	// (approvalTimeout unless SessionArgs overrides it).
+	approvalWait time.Duration
+
 	// crash is what Init found of a turn a crash cut short, until the
 	// driver takes it (#99).
 	crash CrashReport
@@ -285,6 +343,10 @@ func (s *session) Init(args ...any) error {
 	sessArgs, ok := args[0].(SessionArgs)
 	if !ok {
 		return fmt.Errorf("sessionhost: expected SessionArgs, got %T", args[0])
+	}
+	s.approvalWait = sessArgs.ApprovalTimeout
+	if s.approvalWait <= 0 {
+		s.approvalWait = approvalTimeout
 	}
 	policy := sessArgs.Toolchain
 	// The session owns the consent half of the ask guard: the question goes
@@ -407,7 +469,12 @@ func (s *session) reportCrash(from gen.PID, ref gen.Ref) {
 
 // Terminate has nothing to release yet: the Loop owns no resources beyond
 // memory. Teardown of the future unix-socket frontend will live here.
-func (s *session) Terminate(reason error) {}
+func (s *session) Terminate(reason error) {
+	// A closed question is kept until the next one replaces it, so a late
+	// answer can be told why it did not count (#121). A session that never
+	// asks again must not leave that slot in the map when it stops.
+	approvals.Delete(s.PID())
+}
 
 // runSay executes one full tool-calling turn inside this actor's callback.
 //

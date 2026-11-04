@@ -93,6 +93,7 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 )
 
 // Server is the unix-socket control plane. It runs its own goroutines
@@ -108,10 +109,11 @@ type Server struct {
 	// mechanism -- see sessionhost.Interrupt); nil means not wired.
 	interrupt func()
 	// approve answers an approval request; nil means not wired. It reports
-	// whether this call's answer was the one the session used: with more
-	// than one frontend attached, answering is a race and exactly one
-	// answer is delivered.
-	approve func(id string, allow bool) bool
+	// what became of this call's answer: with more than one frontend
+	// attached, answering is a race and exactly one answer is delivered --
+	// and a question nobody answered before the clock ran out is a third
+	// outcome again (#121), which the operator is told apart from the race.
+	approve func(id string, allow bool) sessionhost.ApprovalOutcome
 	// schedule arms a deferred prompt; nil means not wired.
 	schedule func(at time.Time, prompt string) error
 	hook     *PreToolHook
@@ -171,11 +173,12 @@ type Options struct {
 	// interrupt control message; nil means not wired.
 	Interrupt func()
 	// Approve answers an approval request (G9) when a controller sends an
-	// approve control message; nil means not wired. It reports whether the
-	// answer was the one delivered: two frontends can answer the same
-	// approval, and the loser must be told rather than left believing it
-	// decided the call.
-	Approve func(id string, allow bool) bool
+	// approve control message; nil means not wired. It reports what became
+	// of the answer: two frontends can answer the same approval, and the
+	// loser must be told rather than left believing it decided the call;
+	// an approval that timed out before anyone answered is neither of those
+	// and is reported as itself (#121).
+	Approve func(id string, allow bool) sessionhost.ApprovalOutcome
 	// Schedule arms a deferred prompt (G13) when a controller sends a
 	// schedule control message; nil means not wired.
 	Schedule func(at time.Time, prompt string) error
@@ -654,6 +657,40 @@ func (s *Server) handleLine(conn net.Conn, c *connection, raw []byte) bool {
 	}
 }
 
+// refusalFor names the frontend that answered first, when this server knows
+// it, and otherwise falls back to approvalRefusal's wording.
+func (s *Server) refusalFor(id string, outcome sessionhost.ApprovalOutcome) string {
+	if outcome == sessionhost.ApprovalAlreadyAnswered {
+		s.mu.Lock()
+		winner, known := s.answeredBy[id]
+		s.mu.Unlock()
+		if known && winner != "" {
+			return "approval " + id + " was already answered by " + winner
+		}
+	}
+	return approvalRefusal(id, outcome)
+}
+
+// approvalRefusal says why a frontend's answer was not the one the session
+// used. The distinctions matter to the person who pressed the key: "another
+// frontend answered it" and "nobody answered it in time" look identical from
+// a bare false, and before #121 the second was reported as the first -- the
+// operator was told a colleague had decided a call that the clock refused.
+func approvalRefusal(id string, outcome sessionhost.ApprovalOutcome) string {
+	switch outcome {
+	case sessionhost.ApprovalTimedOut:
+		return "approval " + id + " timed out with no answer; the call was refused before this one arrived"
+	case sessionhost.ApprovalInterrupted:
+		return "approval " + id + " was interrupted before it was answered"
+	case sessionhost.ApprovalNotOutstanding:
+		return "approval " + id + " is not outstanding in this session"
+	case sessionhost.ApprovalOtherQuestion:
+		return "approval " + id + " is not the question this session is waiting on"
+	default:
+		return "approval " + id + " was answered before this one arrived"
+	}
+}
+
 // answerApproval records one frontend's answer and tells the frontends
 // how it was resolved. The session decides which answer counts (Approve
 // reports it); this only makes that decision visible.
@@ -667,15 +704,9 @@ func (s *Server) answerApproval(c *connection, id string, allow bool, reply func
 	if c != nil {
 		by = c.label
 	}
-	if !s.approve(id, allow) {
-		s.mu.Lock()
-		winner, known := s.answeredBy[id]
-		s.mu.Unlock()
-		if !known || winner == "" {
-			winner = "another frontend"
-		}
+	if outcome := s.approve(id, allow); outcome != sessionhost.ApprovalAccepted {
 		reply(map[string]any{"type": "approval_answer", "id": id, "accepted": 0,
-			"error": "approval " + id + " was already answered by " + winner})
+			"error": s.refusalFor(id, outcome)})
 		return
 	}
 	reply(map[string]any{"type": "approval_answer", "id": id, "accepted": 1})

@@ -111,7 +111,7 @@ func TestCurrentSession_OperatorActsReachTheReplacementAfterACrash(t *testing.T)
 
 	userInput <- "push it"
 	seen := awaitEvent(t, events, agent.EventApprovalRequested, nil)
-	if !approve(seen[len(seen)-1].ID, true) {
+	if approve(seen[len(seen)-1].ID, true) != sessionhost.ApprovalAccepted {
 		t.Fatal("the approval answer did not reach the replacement session")
 	}
 	seen = awaitEvent(t, events, agent.EventAssistantMessage, nil)

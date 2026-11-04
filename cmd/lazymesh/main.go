@@ -1570,8 +1570,14 @@ func interruptCurrent(sess *currentSession) func() {
 // approveCurrent is the operator's approval answer, delivered to the live
 // session (#107). It stays in this file: only run's two approval buses may
 // answer an approval (threat model invariant 4).
-func approveCurrent(sess *currentSession) func(id string, allow bool) bool {
-	return func(id string, allow bool) bool { return sessionhost.TryAnswerApproval(sess.Pid(), id, allow) }
+//
+// It reports what became of the answer, not merely yes/no: a question the
+// clock refused and a question another frontend answered first are
+// different things to the person who pressed the key (#121).
+func approveCurrent(sess *currentSession) func(id string, allow bool) sessionhost.ApprovalOutcome {
+	return func(id string, allow bool) sessionhost.ApprovalOutcome {
+		return sessionhost.TryAnswerApproval(sess.Pid(), id, allow)
+	}
 }
 
 // buildQueryHandler answers the control plane's query messages: status

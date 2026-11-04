@@ -24,7 +24,7 @@ func TestOnlyOneAnswerWins(t *testing.T) {
 	s := newSlot("approve-1")
 
 	var wg sync.WaitGroup
-	results := make([]bool, 2)
+	results := make([]ApprovalOutcome, 2)
 	for i := range results {
 		wg.Add(1)
 		go func(n int) {
@@ -35,8 +35,8 @@ func TestOnlyOneAnswerWins(t *testing.T) {
 	wg.Wait()
 
 	wins := 0
-	for _, ok := range results {
-		if ok {
+	for _, outcome := range results {
+		if outcome == ApprovalAccepted {
 			wins++
 		}
 	}
@@ -51,25 +51,38 @@ func TestOnlyOneAnswerWins(t *testing.T) {
 // lose, not silently take the emptied buffer.
 func TestAnswerAfterTheDrainLoses(t *testing.T) {
 	s := newSlot("approve-1")
-	if !s.answer("approve-1", true) {
+	if s.answer("approve-1", true) != ApprovalAccepted {
 		t.Fatal("the first answer should have won")
 	}
 	<-s.ch // the session wakes and takes its answer
 
-	if s.answer("approve-1", false) {
+	if s.answer("approve-1", false) == ApprovalAccepted {
 		t.Fatal("a second answer was accepted after the session had taken the first")
 	}
 }
 
 // TestAnswerAfterTheQuestionWasAbandonedLoses: a decision arriving after
-// the approval timed out (or the turn was interrupted) was never going to
-// be used, so it must not be reported as a decision that took effect.
+// the approval timed out was never going to be used, so it must not be
+// reported as a decision that took effect -- and the operator must be told
+// the clock refused it, not that another frontend answered it (#121).
 func TestAnswerAfterTheQuestionWasAbandonedLoses(t *testing.T) {
 	s := newSlot("approve-1")
-	s.abandon()
+	s.abandon(ApprovalTimedOut)
 
-	if s.answer("approve-1", true) {
-		t.Fatal("an answer arriving after the timeout was accepted")
+	if got := s.answer("approve-1", true); got != ApprovalTimedOut {
+		t.Fatalf("a late answer for a timed-out question was reported as %v, want %v", got, ApprovalTimedOut)
+	}
+}
+
+// TestAnInterruptedQuestionSaysInterrupted: the other abandon path keeps
+// its own reason, so the operator is told the turn was cut, not that the
+// clock ran out.
+func TestAnInterruptedQuestionSaysInterrupted(t *testing.T) {
+	s := newSlot("approve-1")
+	s.abandon(ApprovalInterrupted)
+
+	if got := s.answer("approve-1", true); got != ApprovalInterrupted {
+		t.Fatalf("a late answer for an interrupted question was reported as %v, want %v", got, ApprovalInterrupted)
 	}
 }
 
@@ -77,8 +90,8 @@ func TestAnswerAfterTheQuestionWasAbandonedLoses(t *testing.T) {
 // newer call.
 func TestAnswerForAnotherQuestionLoses(t *testing.T) {
 	s := newSlot("approve-2")
-	if s.answer("approve-1", true) {
-		t.Fatal("an answer for a different approval id was accepted")
+	if got := s.answer("approve-1", true); got != ApprovalOtherQuestion {
+		t.Fatalf("an answer for a different approval id was reported as %v, want %v", got, ApprovalOtherQuestion)
 	}
 }
 
@@ -87,12 +100,12 @@ func TestAnswerForAnotherQuestionLoses(t *testing.T) {
 // record of who answered.
 func TestAbandonAfterAnAnswerKeepsTheAnswer(t *testing.T) {
 	s := newSlot("approve-1")
-	if !s.answer("approve-1", true) {
+	if s.answer("approve-1", true) != ApprovalAccepted {
 		t.Fatal("first answer should have won")
 	}
-	s.abandon()
-	if s.answer("approve-1", true) {
-		t.Fatal("a second answer was accepted after abandon")
+	s.abandon(ApprovalTimedOut)
+	if got := s.answer("approve-1", true); got != ApprovalAlreadyAnswered {
+		t.Fatalf("after an answer, a late abandon rewrote the record: got %v, want %v", got, ApprovalAlreadyAnswered)
 	}
 }
 
@@ -100,7 +113,7 @@ func TestAbandonAfterAnAnswerKeepsTheAnswer(t *testing.T) {
 // must actually arrive for the blocked session to act on.
 func TestAnswerIsDeliveredPromptly(t *testing.T) {
 	s := newSlot("approve-1")
-	if !s.answer("approve-1", false) {
+	if s.answer("approve-1", false) != ApprovalAccepted {
 		t.Fatal("answer should have won")
 	}
 	select {

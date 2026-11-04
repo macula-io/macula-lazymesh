@@ -7,11 +7,12 @@ import (
 
 	"github.com/macula-io/macula-lazymesh/internal/agent"
 	"github.com/macula-io/macula-lazymesh/internal/frontend"
+	"github.com/macula-io/macula-lazymesh/internal/sessionhost"
 )
 
 // startAttachServer serves one control socket whose approvals the test
 // decides, and returns a controller attached to it.
-func startAttachServer(t *testing.T, input chan string, events chan agent.Event, approve func(id string, allow bool) bool) *frontend.Controller {
+func startAttachServer(t *testing.T, input chan string, events chan agent.Event, approve func(id string, allow bool) sessionhost.ApprovalOutcome) *frontend.Controller {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "ctrl.sock")
 	s, err := frontend.Start(frontend.Options{
@@ -62,7 +63,7 @@ func TestAttachBridgeCarriesComposedInput(t *testing.T) {
 func TestAttachBridgeReportsWhoAnsweredAnApproval(t *testing.T) {
 	input := make(chan string, 4)
 	events := make(chan agent.Event, 8)
-	ctrl := startAttachServer(t, input, events, func(id string, allow bool) bool { return true })
+	ctrl := startAttachServer(t, input, events, func(id string, allow bool) sessionhost.ApprovalOutcome { return sessionhost.ApprovalAccepted })
 	b := newAttachBridge(ctrl)
 
 	events <- agent.Event{Kind: agent.EventApprovalRequested, ID: "approve-1", ToolName: "shell_exec", Text: "{}"}
@@ -100,10 +101,17 @@ func TestAttachBridgeSurfacesARefusedAnswer(t *testing.T) {
 	events := make(chan agent.Event, 8)
 	path := filepath.Join(t.TempDir(), "ctrl.sock")
 	s, err := frontend.Start(frontend.Options{
-		Path:      path,
-		Input:     input,
-		Events:    events,
-		Approve:   func(id string, allow bool) bool { return allow },
+		Path:   path,
+		Input:  input,
+		Events: events,
+		// The winner's allow is taken; a later deny loses, exactly what the
+		// session reports for a second answer (#40, #121).
+		Approve: func(id string, allow bool) sessionhost.ApprovalOutcome {
+			if allow {
+				return sessionhost.ApprovalAccepted
+			}
+			return sessionhost.ApprovalAlreadyAnswered
+		},
 		SessionID: "attach-test",
 	})
 	if err != nil {
