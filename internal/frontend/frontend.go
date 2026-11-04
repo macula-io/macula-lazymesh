@@ -671,11 +671,18 @@ func (s *Server) answerApproval(c *connection, id string, allow bool, reply func
 		s.mu.Lock()
 		winner, known := s.answeredBy[id]
 		s.mu.Unlock()
-		if !known || winner == "" {
-			winner = "another frontend"
+		// Two different ways an answer reaches nothing, and the person who
+		// gave it needs to be able to tell them apart: someone else got
+		// there first, or the question is gone (timed out, its turn
+		// interrupted, its session replaced). Calling the second "already
+		// answered by another frontend" sent the reader looking for a
+		// frontend that never existed (macula-io/macula-lazymesh#115).
+		why := "is no longer waiting: it timed out, its turn was interrupted, or its session is gone"
+		if known && winner != "" {
+			why = "was already answered by " + winner
 		}
 		reply(map[string]any{"type": "approval_answer", "id": id, "accepted": 0,
-			"error": "approval " + id + " was already answered by " + winner})
+			"error": "approval " + id + " " + why})
 		return
 	}
 	reply(map[string]any{"type": "approval_answer", "id": id, "accepted": 1})
@@ -715,17 +722,26 @@ func (s *Server) Resolutions() <-chan ApprovalResolved {
 // the same accounting as a controller's answer, so a frontend attached
 // over the socket that loses the race is told the TUI answered rather
 // than being left to assume its own answer landed.
+//
+// It reports whether the answer was used, in the only way that matters to
+// the TUI that sent it: nil when the question took it, an error saying why
+// not otherwise, which the caller turns into a notice on screen
+// (macula-io/macula-lazymesh#115).
 func (s *Server) AnswerLocal(id string, allow bool) error {
+	var notUsed error
 	s.answerApproval(nil, id, allow, func(v any) {
 		msg, ok := v.(map[string]any)
 		if !ok {
 			return
 		}
 		if e, ok := msg["error"].(string); ok {
-			s.logf("%s", e)
+			notUsed = errors.New(e)
 		}
 	})
-	return nil
+	if notUsed != nil {
+		s.logf("%s", notUsed)
+	}
+	return notUsed
 } // logf writes one lifecycle line when a logger is wired.
 func (s *Server) logf(format string, args ...any) {
 	if s.log != nil {

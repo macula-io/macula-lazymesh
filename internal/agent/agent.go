@@ -97,6 +97,15 @@ const (
 	// a room joined by any route is watched.
 	EventRoomJoined
 	EventRoomLeft
+	// EventAnswerUnused is emitted by cmd/lazymesh when the operator's
+	// approval answer reached no question (macula-io/macula-lazymesh#115):
+	// the question had timed out, the turn had been interrupted, or the
+	// session that asked it was gone. The answer is dropped either way; the
+	// difference is whether the person who gave it is told. It is not an
+	// EventError, because nothing failed and the turn carries on -- an
+	// error is shown as a failure and ends the turn as failed. ID is the
+	// approval the answer was for.
+	EventAnswerUnused
 )
 
 // UsageReport is the figure an EventUsageReported carries. ContextTokens

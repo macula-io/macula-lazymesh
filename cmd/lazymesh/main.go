@@ -489,11 +489,7 @@ func run(configPath, room, goalText string, headless bool, socketPath, sessionID
 	approve := approveCurrent(sess)
 	go func() {
 		for answer := range approvalCh {
-			if ctrl != nil {
-				ctrl.AnswerLocal(answer.ID, answer.Allow)
-				continue
-			}
-			approve(answer.ID, answer.Allow)
+			deliverApproval(approve, ctrl, tuiOut, answer)
 		}
 	}()
 
@@ -1572,6 +1568,29 @@ func interruptCurrent(sess *currentSession) func() {
 // answer an approval (threat model invariant 4).
 func approveCurrent(sess *currentSession) func(id string, allow bool) bool {
 	return func(id string, allow bool) bool { return sessionhost.TryAnswerApproval(sess.Pid(), id, allow) }
+}
+
+// deliverApproval delivers one answer from the TUI's own popup and tells
+// the TUI when it reached nothing (macula-io/macula-lazymesh#115). With a
+// control plane running the answer goes through it, so an attached frontend
+// is told the in-process TUI answered first; either way the answer reports
+// whether a question took it. A false used to be swallowed: the popup
+// closed and the operator believed an answer counted that never arrived.
+//
+// It reports whether the answer was used, which is what the tests can see;
+// the notice that matters to an operator goes out as an event, not as a
+// failed turn.
+func deliverApproval(approve func(id string, allow bool) bool, ctrl *frontend.Server, tuiEvents *agent.Outlet, answer tui.ApprovalAnswer) bool {
+	var used bool
+	if ctrl != nil {
+		used = ctrl.AnswerLocal(answer.ID, answer.Allow) == nil
+	} else {
+		used = approve(answer.ID, answer.Allow)
+	}
+	if !used {
+		tuiEvents.Send(agent.Event{Kind: agent.EventAnswerUnused, ID: answer.ID})
+	}
+	return used
 }
 
 // buildQueryHandler answers the control plane's query messages: status

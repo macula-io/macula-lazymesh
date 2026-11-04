@@ -133,6 +133,13 @@ func chatEntryFromAgentEvent(ev agent.Event) chatEntry {
 		// #99: the operator must learn which steps of the crashed turn
 		// ran, since nothing is sent again on their behalf.
 		return chatEntry{kind: chatError, at: now, text: termTextOf(ev.Text), detail: termTextOf(ev.Text)}
+	case agent.EventAnswerUnused:
+		// macula-io/macula-lazymesh#115: the popup closed and the key was
+		// taken, so nothing on screen would otherwise say the answer never
+		// arrived. A system notice, not an error: the turn this was meant
+		// for has already moved on, and saying it failed would be a lie
+		// about a turn that is fine.
+		return chatEntry{kind: chatSystem, at: now, text: "answer not used: the question is no longer waiting"}
 	case agent.EventListening:
 		// macula-io/macula-lazymesh#13/#15: the loop-owned room-waiter
 		// design parks silently between real events, with none of the
