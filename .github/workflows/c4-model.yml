@@ -30,15 +30,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # The check must still fail on a package nobody drew; a check that
-      # passes everything would pass here too.
-      - name: a planted package fails the check
-        run: |
-          mkdir internal/c4plantedprobe
-          printf 'package c4plantedprobe\n' > internal/c4plantedprobe/probe.go
-          if architecture/check_c4_coverage.sh; then
-            echo "check_c4_coverage.sh passed with an undrawn package" >&2
-            exit 1
-          fi
-          rm -r internal/c4plantedprobe
+      # The check must still fail on a package nobody drew, and fail
+      # because of it; a check that passes everything, or fails for an
+      # unrelated reason, would pass here too.
+      - name: planted packages fail the check
+        run: architecture/check_c4_coverage_plants.sh
       - run: architecture/check_c4_coverage.sh

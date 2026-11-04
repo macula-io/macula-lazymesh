@@ -15,8 +15,12 @@ goreleaser from a `v*` tag; this file records what each one changes.
   `confinedshell`, `gittools`, `checkoutnotes`, `prompthistory`) and the
   agent's `Outlet`. `architecture/check_c4_coverage.sh` fails CI when a
   package is neither drawn nor excluded with a reason, when the diagram
-  names a package that no longer exists, or when the SVGs are not what the
-  generator produces.
+  names a package that no longer exists, when a directory of Go files is
+  no package `go list -tags live` reports, or when the SVGs are not what
+  the generator produces. Packages are matched by their full path, so a
+  nested `internal/tui/agent` is not taken for the drawn `agent`.
+  `architecture/check_c4_coverage_plants.sh` plants four undrawn packages
+  in CI and requires each to fail the check by name.
 
 - **Find a command by name (#78, gap 6).** The leader then `p` (`ctrl+x p`
   by default) opens a list of the leader's commands. Type part of a name

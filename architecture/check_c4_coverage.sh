@@ -4,15 +4,21 @@
 #
 # 1. The SVGs in assets/ are what architecture/c4_diagrams.py generates now:
 #    an edit to the generator that was never rendered fails here.
-# 2. Every package `go list ./...` reports is named in the Component diagram,
-#    or listed with a reason in architecture/c4_exclusions.txt.
-# 3. Every name the Component diagram sets in code type is a package, and
+# 2. Every package `go list -tags live ./...` reports is named in the
+#    Component diagram, or listed with a reason in
+#    architecture/c4_exclusions.txt. The live tag is the one build tag the
+#    module uses (CI vets with it), so a package built only with it counts.
+# 3. Every directory holding .go files is a package go list reports: a
+#    package hidden behind some other build tag fails rather than vanishes.
+# 4. Every name the Component diagram sets in code type is a package, and
 #    every exclusion is one: a renamed or removed package fails too.
 #
 # Component names are the monospace titles (class t-code) of
 # assets/c4-components.svg, comma-separated where one box holds several.
-# A package under internal/ is named by its last element, any other by its
-# path relative to the module (cmd/lazymesh, sdk).
+# A package under internal/ is named by its path below internal/ (agent,
+# tui/agent), any other by its path relative to the module (cmd/lazymesh,
+# sdk). The full path, not the last element: internal/tui/agent is not
+# internal/agent.
 #
 # Run from anywhere: architecture/check_c4_coverage.sh
 set -euo pipefail
@@ -40,7 +46,15 @@ for svg in "$fresh"/*.svg; do
 done
 
 module=$(go list -m)
-packages=$(go list ./... | sed "s|^$module/||")
+packages=$(go list -tags live ./... | sed "s|^$module/||")
+
+# Go skips testdata, vendor and directories starting with . or _.
+while read -r dir; do
+    [ -n "$dir" ] || continue
+    grep -qxF "$dir" <<<"$packages" \
+        || fail "$dir has Go files that go list -tags live does not report as a package"
+done < <(find . \( -name testdata -o -name vendor -o -name '.?*' -o -name '_*' \) -prune \
+    -o -name '*.go' -type f -printf '%h\n' | sed 's|^\./||' | sort -u)
 
 named=$(grep -o 'class="t-code"[^>]*>[^<]*<' "$components" \
     | sed -e 's/.*>\(.*\)</\1/' -e 's/, /\n/g' | sort -u)
@@ -49,7 +63,7 @@ excluded=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$exclusions" | awk '{print $
 
 diagram_name() {
     case "$1" in
-        internal/*) echo "${1##*/}" ;;
+        internal/*) echo "${1#internal/}" ;;
         *) echo "$1" ;;
     esac
 }
